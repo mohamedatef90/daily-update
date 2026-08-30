@@ -1,0 +1,434 @@
+{
+  "items": [
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "category": "app",
+      "description": "AI code editor",
+      "detect": { "type": "app", "appName": "Cursor", "paths": ["/Applications/Cursor.app", "~/Applications/Cursor.app"] },
+      "versionCommand": "for p in /Applications/Cursor.app ~/Applications/Cursor.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask cursor /Applications/Cursor.app ~/Applications/Cursor.app",
+      "updateCommand": "brew reinstall --cask cursor 2>/dev/null || open -a Cursor"
+    },
+    {
+      "id": "codex-app",
+      "name": "Codex",
+      "category": "app",
+      "description": "OpenAI Codex desktop app",
+      "detect": { "type": "app", "appName": "Codex", "paths": ["/Applications/Codex.app", "~/Applications/Codex.app"] },
+      "versionCommand": "for p in /Applications/Codex.app ~/Applications/Codex.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask codex /Applications/Codex.app ~/Applications/Codex.app",
+      "updateCommand": "brew reinstall --cask codex 2>/dev/null || open -a Codex"
+    },
+    {
+      "id": "claude-app",
+      "name": "Claude",
+      "category": "app",
+      "description": "Anthropic Claude desktop app",
+      "detect": { "type": "app", "appName": "Claude", "paths": ["/Applications/Claude.app", "~/Applications/Claude.app"] },
+      "versionCommand": "for p in /Applications/Claude.app ~/Applications/Claude.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask claude /Applications/Claude.app ~/Applications/Claude.app",
+      "updateCommand": "brew reinstall --cask claude 2>/dev/null || open -a Claude"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "category": "app",
+      "description": "OpenAI ChatGPT desktop app",
+      "detect": { "type": "app", "appName": "ChatGPT", "paths": ["/Applications/ChatGPT.app", "~/Applications/ChatGPT.app"] },
+      "versionCommand": "for p in /Applications/ChatGPT.app ~/Applications/ChatGPT.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-or-sparkle chatgpt 'https://persistent.oaistatic.com/codex-app-prod/appcast.xml' /Applications/ChatGPT.app ~/Applications/ChatGPT.app",
+      "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a ChatGPT"
+    },
+    {
+      "id": "chatgpt-atlas",
+      "name": "ChatGPT Atlas",
+      "category": "app",
+      "description": "OpenAI ChatGPT Atlas browser",
+      "detect": { "type": "app", "paths": ["/Applications/ChatGPT Atlas.app", "~/Applications/ChatGPT Atlas.app"] },
+      "versionCommand": "for p in \"/Applications/ChatGPT Atlas.app\" \"~/Applications/ChatGPT Atlas.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} sparkle-feed https://persistent.oaistatic.com/atlas/public/sparkle_public_appcast.xml \"/Applications/ChatGPT Atlas.app\" \"~/Applications/ChatGPT Atlas.app\"",
+      "updateCommand": "open -a \"ChatGPT Atlas\""
+    },
+    {
+      "id": "chatgpt-classic",
+      "name": "ChatGPT Classic",
+      "category": "app",
+      "description": "Legacy OpenAI ChatGPT desktop app",
+      "detect": { "type": "app", "paths": ["/Applications/ChatGPT Classic.app", "~/Applications/ChatGPT Classic.app"] },
+      "versionCommand": "for p in \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask chatgpt \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
+      "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a \"ChatGPT Classic\""
+    },
+    {
+      "id": "zcode",
+      "name": "Zcode",
+      "category": "app",
+      "description": "Zcode IDE",
+      "detect": { "type": "app", "paths": ["/Applications/ZCode.app", "/Applications/Zcode.app", "~/Applications/ZCode.app", "~/Applications/Zcode.app"] },
+      "versionCommand": "for p in /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask zcode /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app",
+      "updateCommand": "brew reinstall --cask zcode 2>/dev/null || open -a ZCode"
+    },
+    {
+      "id": "antigravity",
+      "name": "Antigravity IDE",
+      "category": "app",
+      "description": "Google Antigravity IDE",
+      "detect": { "type": "app", "paths": ["/Applications/Antigravity IDE.app", "~/Applications/Antigravity IDE.app"] },
+      "versionCommand": "for p in \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask antigravity \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"",
+      "updateCommand": "brew reinstall --cask antigravity 2>/dev/null || open -a \"Antigravity IDE\""
+    },
+    {
+      "id": "warp",
+      "name": "Warp",
+      "category": "app",
+      "description": "Warp terminal",
+      "detect": { "type": "app", "appName": "Warp", "paths": ["/Applications/Warp.app", "~/Applications/Warp.app"] },
+      "versionCommand": "for p in /Applications/Warp.app ~/Applications/Warp.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "checkCommand": "{CHECK_SCRIPT} brew-cask warp /Applications/Warp.app ~/Applications/Warp.app",
+      "updateCommand": "brew reinstall --cask warp 2>/dev/null || open -a Warp"
+    },
+    {
+      "id": "xcode",
+      "name": "Xcode",
+      "category": "app",
+      "description": "Apple Xcode IDE and iOS/macOS SDKs",
+      "detect": { "type": "app", "paths": ["/Applications/Xcode.app"] },
+      "versionCommand": "xcodebuild -version 2>/dev/null | head -1",
+      "checkCommand": "(out=$(/usr/sbin/softwareupdate -l 2>/dev/null) && echo \"$out\" | grep -Eiq 'xcode|command line tools' && echo UPDATE) || echo OK",
+      "updateCommand": "open 'macappstore://apps.apple.com/app/id497799835' || open -a 'App Store'"
+    },
+    {
+      "id": "cursor-agent",
+      "name": "Cursor Agent CLI",
+      "category": "cli",
+      "description": "Cursor agent command-line tool",
+      "detect": { "type": "command", "command": "command -v agent >/dev/null 2>&1 || command -v cursor-agent >/dev/null 2>&1" },
+      "versionCommand": "agent --version 2>/dev/null || cursor-agent --version 2>/dev/null",
+      "checkCommand": "npm outdated -g @cursor/agent 2>/dev/null | grep -q @cursor/agent && echo UPDATE || echo OK",
+      "updateCommand": "npm update -g @cursor/agent 2>/dev/null || brew upgrade cursor-agent 2>/dev/null || echo 'Update agent via Cursor settings'"
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "category": "cli",
+      "description": "OpenAI Codex CLI",
+      "detect": { "type": "command", "command": "command -v codex >/dev/null 2>&1" },
+      "versionCommand": "for pkg in \"$HOME/.local/lib/node_modules/@openai/codex/package.json\" \"$(npm root -g 2>/dev/null)/@openai/codex/package.json\"; do if [ -f \"$pkg\" ]; then node -p \"require('$pkg').version\" 2>/dev/null && exit 0; fi; done; codex --version 2>/dev/null | head -1",
+      "checkCommand": "installed=''; for pkg in \"$HOME/.local/lib/node_modules/@openai/codex/package.json\" \"$(npm root -g 2>/dev/null)/@openai/codex/package.json\"; do if [ -f \"$pkg\" ]; then installed=$(node -p \"require('$pkg').version\" 2>/dev/null); break; fi; done; latest=$(npm view @openai/codex version 2>/dev/null); if command -v codex >/dev/null 2>&1 && ! codex --version >/dev/null 2>&1; then echo BROKEN; [ -n \"$latest\" ] && echo \"latest: $latest\"; exit 0; fi; if [ -n \"$installed\" ] && [ -n \"$latest\" ] && [ \"$installed\" != \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; elif [ -n \"$installed\" ]; then echo OK; else (npm outdated -g @openai/codex 2>/dev/null | grep -q codex && echo UPDATE) || echo OK; fi",
+      "updateCommand": "npm install -g @openai/codex@latest 2>/dev/null || npm install -g @openai/codex@latest --prefix \"$HOME/.local\" 2>/dev/null || brew upgrade codex 2>/dev/null || echo 'Reinstall: npm install -g @openai/codex@latest'"
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "category": "cli",
+      "description": "Anthropic Claude Code CLI",
+      "detect": { "type": "command", "command": "command -v claude >/dev/null 2>&1" },
+      "versionCommand": "claude --version 2>/dev/null",
+      "checkCommand": "npm outdated -g @anthropic-ai/claude-code 2>/dev/null | grep -q claude && echo UPDATE || echo OK",
+      "updateCommand": "npm update -g @anthropic-ai/claude-code 2>/dev/null || curl -fsSL https://claude.ai/install.sh | bash"
+    },
+    {
+      "id": "gh-cli",
+      "name": "GitHub CLI",
+      "category": "cli",
+      "description": "gh command",
+      "detect": { "type": "command", "command": "command -v gh >/dev/null 2>&1" },
+      "versionCommand": "gh --version 2>/dev/null | head -1",
+      "checkCommand": "if brew list gh >/dev/null 2>&1; then if brew outdated gh 2>/dev/null | grep -q '^gh$'; then latest=$(brew info gh 2>/dev/null | head -1 | sed -E 's/.*stable ([^ )]+).*/\\1/'); echo UPDATE; [ -n \"$latest\" ] && echo \"latest: $latest\"; else echo OK; fi; else echo OK; fi",
+      "updateCommand": "brew upgrade gh 2>/dev/null || brew install gh 2>/dev/null || echo 'Update via brew install gh or https://cli.github.com'"
+    },
+    {
+      "id": "swift",
+      "name": "Swift",
+      "category": "runtime",
+      "description": "Apple Swift toolchain (ships with Xcode)",
+      "detect": { "type": "command", "command": "command -v swift >/dev/null 2>&1" },
+      "versionCommand": "swift --version 2>/dev/null | head -1",
+      "checkCommand": "(out=$(/usr/sbin/softwareupdate -l 2>/dev/null) && echo \"$out\" | grep -Eiq 'xcode|command line tools|swift' && echo UPDATE) || echo OK",
+      "updateCommand": "open 'macappstore://apps.apple.com/app/id497799835' || xcode-select --install"
+    },
+    {
+      "id": "flutter",
+      "name": "Flutter",
+      "category": "runtime",
+      "description": "Flutter SDK (mobile/web/desktop framework)",
+      "detect": { "type": "command", "command": "command -v flutter >/dev/null 2>&1" },
+      "versionCommand": "flutter --version 2>/dev/null | grep '^Flutter' | head -1",
+      "checkCommand": "(flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK",
+      "updateCommand": "flutter upgrade"
+    },
+    {
+      "id": "dart",
+      "name": "Dart",
+      "category": "runtime",
+      "description": "Dart SDK (bundled with Flutter or standalone)",
+      "detect": { "type": "command", "command": "command -v dart >/dev/null 2>&1" },
+      "versionCommand": "dart --version 2>/dev/null | head -1",
+      "checkCommand": "if command -v flutter >/dev/null 2>&1; then (flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK; else (brew outdated dart 2>/dev/null | grep -q dart && echo UPDATE) || echo OK; fi",
+      "updateCommand": "flutter upgrade 2>/dev/null || brew upgrade dart"
+    },
+    {
+      "id": "cocoapods",
+      "name": "CocoaPods",
+      "category": "runtime",
+      "description": "iOS/macOS dependency manager (pod)",
+      "detect": { "type": "command", "command": "command -v pod >/dev/null 2>&1" },
+      "versionCommand": "pod --version 2>/dev/null",
+      "checkCommand": "(gem outdated cocoapods 2>/dev/null | grep -q '^cocoapods ' && echo UPDATE) || echo OK",
+      "updateCommand": "gem update cocoapods 2>/dev/null || brew upgrade cocoapods"
+    },
+    {
+      "id": "dotnet",
+      "name": ".NET SDK",
+      "category": "runtime",
+      "description": "Microsoft .NET SDK",
+      "detect": { "type": "command", "command": "command -v dotnet >/dev/null 2>&1" },
+      "versionCommand": "dotnet --version 2>/dev/null",
+      "checkCommand": "(brew outdated dotnet 2>/dev/null | grep -q dotnet && echo UPDATE) || echo OK",
+      "updateCommand": "brew upgrade dotnet 2>/dev/null || echo 'Update via https://dotnet.microsoft.com/download'"
+    },
+    {
+      "id": "java",
+      "name": "Java (OpenJDK)",
+      "category": "runtime",
+      "description": "Java runtime and JDK",
+      "detect": { "type": "command", "command": "command -v java >/dev/null 2>&1" },
+      "versionCommand": "java -version 2>&1 | head -1",
+      "checkCommand": "(brew outdated openjdk 2>/dev/null | grep -q openjdk && echo UPDATE) || (brew outdated java 2>/dev/null | grep -q java && echo UPDATE) || echo OK",
+      "updateCommand": "brew upgrade openjdk 2>/dev/null || brew upgrade java"
+    },
+    {
+      "id": "go",
+      "name": "Go",
+      "category": "runtime",
+      "description": "Go programming language",
+      "detect": { "type": "command", "command": "command -v go >/dev/null 2>&1" },
+      "versionCommand": "go version 2>/dev/null",
+      "checkCommand": "(brew outdated go 2>/dev/null | grep -q '^go$' && echo UPDATE) || echo OK",
+      "updateCommand": "brew upgrade go"
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "category": "runtime",
+      "description": "JavaScript runtime",
+      "detect": { "type": "command", "command": "command -v node >/dev/null 2>&1" },
+      "versionCommand": "node --version 2>/dev/null",
+      "checkCommand": "if command -v nvm >/dev/null 2>&1; then source ~/.nvm/nvm.sh 2>/dev/null; nvm ls-remote --lts 2>/dev/null | tail -1 | grep -q \"$(node -v | tr -d v)\" && echo OK || echo UPDATE; elif command -v fnm >/dev/null 2>&1; then fnm list-remote 2>/dev/null | tail -1; brew outdated node 2>/dev/null | grep -q node && echo UPDATE || echo OK; else brew outdated node 2>/dev/null | grep -q node && echo UPDATE || echo OK; fi",
+      "updateCommand": "if command -v nvm >/dev/null 2>&1; then source ~/.nvm/nvm.sh && nvm install --lts && nvm alias default 'lts/*'; elif command -v fnm >/dev/null 2>&1; then fnm install --lts-latest && fnm default lts-latest; else brew upgrade node; fi"
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "category": "runtime",
+      "description": "Node package manager",
+      "detect": { "type": "command", "command": "command -v npm >/dev/null 2>&1" },
+      "versionCommand": "npm --version 2>/dev/null",
+      "checkCommand": "npm outdated -g npm 2>/dev/null | grep -q npm && echo UPDATE || echo OK",
+      "updateCommand": "npm install -g npm@latest"
+    },
+    {
+      "id": "pnpm",
+      "name": "pnpm",
+      "category": "runtime",
+      "description": "Fast Node package manager",
+      "detect": { "type": "command", "command": "command -v pnpm >/dev/null 2>&1" },
+      "versionCommand": "pnpm --version 2>/dev/null",
+      "checkCommand": "pnpm outdated -g 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated pnpm 2>/dev/null | grep -q pnpm && echo UPDATE || echo OK)",
+      "updateCommand": "pnpm add -g pnpm@latest 2>/dev/null || npm install -g pnpm@latest 2>/dev/null || brew upgrade pnpm"
+    },
+    {
+      "id": "yarn",
+      "name": "Yarn",
+      "category": "runtime",
+      "description": "Yarn package manager",
+      "detect": { "type": "command", "command": "command -v yarn >/dev/null 2>&1" },
+      "versionCommand": "yarn --version 2>/dev/null",
+      "checkCommand": "yarn global outdated 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated yarn 2>/dev/null | grep -q yarn && echo UPDATE || echo OK)",
+      "updateCommand": "yarn global upgrade 2>/dev/null || npm install -g yarn@latest 2>/dev/null || brew upgrade yarn"
+    },
+    {
+      "id": "bun",
+      "name": "Bun",
+      "category": "runtime",
+      "description": "Bun JavaScript runtime and package manager",
+      "detect": { "type": "command", "command": "command -v bun >/dev/null 2>&1" },
+      "versionCommand": "bun --version 2>/dev/null",
+      "checkCommand": "bun outdated -g 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "bun upgrade 2>/dev/null || brew upgrade bun"
+    },
+    {
+      "id": "corepack",
+      "name": "Corepack",
+      "category": "runtime",
+      "description": "Node package manager shim (yarn/pnpm)",
+      "detect": { "type": "command", "command": "command -v corepack >/dev/null 2>&1" },
+      "versionCommand": "corepack --version 2>/dev/null",
+      "checkCommand": "npm outdated -g corepack 2>/dev/null | grep -q corepack && echo UPDATE || echo OK",
+      "updateCommand": "npm install -g corepack@latest && corepack enable"
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "category": "runtime",
+      "description": "Python 3 runtime",
+      "detect": { "type": "command", "command": "command -v python3 >/dev/null 2>&1" },
+      "versionCommand": "python3 --version 2>/dev/null",
+      "checkCommand": "brew outdated python 2>/dev/null | grep -q python && echo UPDATE || echo OK",
+      "updateCommand": "brew upgrade python"
+    },
+    {
+      "id": "pip",
+      "name": "pip",
+      "category": "runtime",
+      "description": "Python package manager",
+      "detect": { "type": "command", "command": "command -v pip3 >/dev/null 2>&1" },
+      "versionCommand": "pip3 --version 2>/dev/null",
+      "checkCommand": "pip3 list --outdated 2>/dev/null | grep -q '^pip ' && echo UPDATE || echo OK",
+      "updateCommand": "python3 -m pip install --upgrade pip"
+    },
+    {
+      "id": "angular-cli",
+      "name": "Angular CLI",
+      "category": "runtime",
+      "description": "@angular/cli global package",
+      "detect": { "type": "command", "command": "command -v ng >/dev/null 2>&1" },
+      "versionCommand": "ng version 2>/dev/null | grep 'Angular CLI' | head -1",
+      "checkCommand": "npm outdated -g @angular/cli 2>/dev/null | grep -q angular && echo UPDATE || echo OK",
+      "updateCommand": "npm update -g @angular/cli"
+    },
+    {
+      "id": "brew",
+      "name": "Homebrew",
+      "category": "runtime",
+      "description": "macOS package manager",
+      "detect": { "type": "command", "command": "command -v brew >/dev/null 2>&1" },
+      "versionCommand": "brew --version 2>/dev/null | head -1",
+      "checkCommand": "brew update >/dev/null 2>&1; brew outdated --quiet 2>/dev/null | head -1 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "brew update && brew upgrade"
+    },
+    {
+      "id": "mise",
+      "name": "mise",
+      "category": "runtime",
+      "description": "Polyglot runtime manager",
+      "detect": { "type": "command", "command": "command -v mise >/dev/null 2>&1" },
+      "versionCommand": "mise --version 2>/dev/null",
+      "checkCommand": "mise outdated 2>/dev/null | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "mise upgrade 2>/dev/null || brew upgrade mise"
+    },
+    {
+      "id": "asdf",
+      "name": "asdf",
+      "category": "runtime",
+      "description": "Extendable version manager",
+      "detect": { "type": "command", "command": "command -v asdf >/dev/null 2>&1" },
+      "versionCommand": "asdf --version 2>/dev/null",
+      "checkCommand": "brew outdated asdf 2>/dev/null | grep -q asdf && echo UPDATE || echo OK",
+      "updateCommand": "asdf update 2>/dev/null; brew upgrade asdf 2>/dev/null || true"
+    },
+    {
+      "id": "rustup",
+      "name": "rustup",
+      "category": "runtime",
+      "description": "Rust toolchain manager",
+      "detect": { "type": "command", "command": "command -v rustup >/dev/null 2>&1" },
+      "versionCommand": "rustc --version 2>/dev/null",
+      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "updateCommand": "rustup update"
+    },
+    {
+      "id": "cargo",
+      "name": "Cargo",
+      "category": "runtime",
+      "description": "Rust package manager",
+      "detect": { "type": "command", "command": "command -v cargo >/dev/null 2>&1" },
+      "versionCommand": "cargo --version 2>/dev/null",
+      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "updateCommand": "rustup update"
+    },
+    {
+      "id": "gem",
+      "name": "RubyGems",
+      "category": "runtime",
+      "description": "Ruby gem manager",
+      "detect": { "type": "command", "command": "command -v gem >/dev/null 2>&1" },
+      "versionCommand": "gem --version 2>/dev/null",
+      "checkCommand": "gem outdated 2>/dev/null | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "gem update --system 2>/dev/null; gem update 2>/dev/null"
+    },
+    {
+      "id": "composer",
+      "name": "Composer",
+      "category": "runtime",
+      "description": "PHP dependency manager",
+      "detect": { "type": "command", "command": "command -v composer >/dev/null 2>&1" },
+      "versionCommand": "composer --version 2>/dev/null | head -1",
+      "checkCommand": "composer self-update --dry-run 2>&1 | grep -q 'new version' && echo UPDATE || echo OK",
+      "updateCommand": "composer self-update"
+    },
+    {
+      "id": "impeccable",
+      "name": "Impeccable",
+      "category": "library",
+      "description": "Impeccable library/repo",
+      "detect": { "type": "path", "paths": ["{ROOT}/impeccable", "{ROOT}/Projects/impeccable", "{ROOT}/dev/impeccable"] },
+      "versionCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do [ -d \"$d/.git\" ] && git -C \"$d\" rev-parse --short HEAD && break; done",
+      "checkCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do if [ -d \"$d/.git\" ]; then git -C \"$d\" fetch --quiet origin 2>/dev/null || true; commits=$(git -C \"$d\" rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE && exit 0; fi; done; echo OK",
+      "updateCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do if [ -d \"$d/.git\" ]; then git -C \"$d\" pull --ff-only && exit 0; fi; done; echo 'Impeccable repo not found — add path in Settings'"
+    },
+    {
+      "id": "agent-skills",
+      "name": "Agent Skills (global)",
+      "category": "library",
+      "description": "Skills from npx skills — Cursor, Claude, Codex, and other agents",
+      "detect": { "type": "command", "command": "command -v npx >/dev/null 2>&1" },
+      "versionCommand": "count=$(npx skills list -g 2>/dev/null | grep -cE '^[a-zA-Z0-9]' || echo 0); echo \"$count skills installed\"",
+      "checkCommand": "output=$(CI=1 npx skills check 2>&1 || true); echo \"$output\" | grep -E 'Found [1-9][0-9]* global update' >/dev/null && echo UPDATE || echo OK",
+      "updateCommand": "npx skills update"
+    },
+    {
+      "id": "global-npm",
+      "name": "Global npm packages",
+      "category": "library",
+      "description": "All globally outdated npm packages",
+      "detect": { "type": "command", "command": "command -v npm >/dev/null 2>&1" },
+      "versionCommand": "npm outdated -g --depth=0 2>/dev/null | tail -n +2 | wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'",
+      "checkCommand": "npm outdated -g --depth=0 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "npm update -g"
+    },
+    {
+      "id": "global-pnpm",
+      "name": "Global pnpm packages",
+      "category": "library",
+      "description": "All globally outdated pnpm packages",
+      "detect": { "type": "command", "command": "command -v pnpm >/dev/null 2>&1" },
+      "versionCommand": "pnpm outdated -g 2>/dev/null | tail -n +2 | wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'",
+      "checkCommand": "pnpm outdated -g 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "pnpm update -g"
+    },
+    {
+      "id": "global-yarn",
+      "name": "Global Yarn packages",
+      "category": "library",
+      "description": "All globally outdated Yarn packages",
+      "detect": { "type": "command", "command": "command -v yarn >/dev/null 2>&1" },
+      "versionCommand": "yarn global outdated 2>/dev/null | tail -n +2 | wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'",
+      "checkCommand": "yarn global outdated 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "yarn global upgrade"
+    },
+    {
+      "id": "pip-packages",
+      "name": "pip packages (user)",
+      "category": "library",
+      "description": "User-installed Python packages",
+      "detect": { "type": "command", "command": "command -v pip3 >/dev/null 2>&1" },
+      "versionCommand": "pip3 list --outdated 2>/dev/null | tail -n +3 | wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'",
+      "checkCommand": "pip3 list --outdated 2>/dev/null | tail -n +3 | grep -q . && echo UPDATE || echo OK",
+      "updateCommand": "pip3 list --outdated --format=freeze 2>/dev/null | cut -d= -f1 | xargs -n1 pip3 install -U"
+    }
+  ]
+}
