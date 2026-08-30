@@ -61,7 +61,7 @@ struct SidebarView: View {
             Section("Overview") {
                 sidebarRow(title: "Dashboard", icon: "chart.bar.fill", count: appState.updateAvailableCount, tint: .blue)
                     .tag(Tag.dashboard)
-                sidebarRow(title: "All Items", icon: "square.grid.2x2", count: appState.items.count)
+                sidebarRow(title: "All Items", icon: "square.grid.2x2", count: appState.installedItems.count)
                     .tag(Tag.all)
             }
 
@@ -70,7 +70,7 @@ struct SidebarView: View {
                     sidebarRow(
                         title: category.label,
                         icon: category.icon,
-                        count: appState.items.filter { $0.category == category }.count
+                        count: appState.installedItems.filter { $0.category == category }.count
                     )
                     .tag(category.rawValue)
                 }
