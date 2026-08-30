@@ -72,7 +72,9 @@ enum ShellRunner {
 
     private static var defaultPath: String {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-        return [
+        let inheritedPath = ProcessInfo.processInfo.environment["PATH"]
+            .map { $0.split(separator: ":").map(String.init) } ?? []
+        let paths = [
             "/opt/homebrew/bin",
             "/opt/homebrew/sbin",
             "/usr/local/bin",
@@ -91,7 +93,44 @@ enum ShellRunner {
             "\(home)/.yarn/bin",
             "\(home)/.asdf/shims"
         ]
-        .joined(separator: ":")
+        + userManagedBinDirectories(home: home)
+        + inheritedPath
+
+        var seen = Set<String>()
+        return paths
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+            .joined(separator: ":")
+    }
+
+    /// Adds common per-user tool locations without recursively scanning the home directory.
+    private static func userManagedBinDirectories(home: String) -> [String] {
+        let fileManager = FileManager.default
+        let homeURL = URL(fileURLWithPath: home, isDirectory: true)
+        var candidates = [
+            homeURL.appendingPathComponent("bin").path,
+            homeURL.appendingPathComponent(".local/bin").path,
+            homeURL.appendingPathComponent(".npm-global/bin").path,
+            homeURL.appendingPathComponent(".opencode/bin").path
+        ]
+
+        if let entries = try? fileManager.contentsOfDirectory(
+            at: homeURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants]
+        ) {
+            for entry in entries {
+                var isDirectory: ObjCBool = false
+                guard fileManager.fileExists(atPath: entry.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    continue
+                }
+                candidates.append(entry.appendingPathComponent("bin").path)
+            }
+        }
+
+        var seen = Set<String>()
+        return candidates.filter {
+            fileManager.fileExists(atPath: $0) && seen.insert($0).inserted
+        }
     }
 }
 

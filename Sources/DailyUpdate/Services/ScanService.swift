@@ -41,7 +41,7 @@ enum ItemBuilder {
         let folders = appFolders.map { $0.expandingTilde }
         let paths = folders.map { "\($0)/\(appName).app" }
         let versionCommand = """
-        for d in \(folders.map { "\"\($0)\"" }.joined(separator: " ")); do if [ -d "$d/\(appName).app" ]; then defaults read "$d/\(appName).app/Contents/Info" CFBundleShortVersionString 2>/dev/null && exit 0; fi; done
+        for d in \(folders.map { "\"\($0)\"" }.joined(separator: " ")); do if [ -d "$d/\(appName).app" ]; then /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$d/\(appName).app/Contents/Info.plist" 2>/dev/null && exit 0; fi; done
         """
 
         return DetectorConfig(
@@ -159,7 +159,7 @@ enum ItemBuilder {
 
     static func discoveredApp(info: InstalledAppInfo) -> DetectorConfig {
         let escapedPath = info.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let versionCommand = "defaults read \"\(escapedPath)/Contents/Info\" CFBundleShortVersionString 2>/dev/null"
+        let versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null"
         let checkCommand = "{CHECK_SCRIPT} auto \"\(escapedPath)\""
         let openName = info.name.replacingOccurrences(of: "\"", with: "\\\"")
         let updateCommand = "open -a \"\(openName)\""

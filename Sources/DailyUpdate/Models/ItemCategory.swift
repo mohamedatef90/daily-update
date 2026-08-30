@@ -72,6 +72,7 @@ struct UpdateItem: Identifiable, Hashable {
     var pinnedVersion: String? = nil
     var permanentlyIgnored: Bool = false
     var duplicateGroupID: String? = nil
+    let iconPath: String?
     let detectCommand: String?
     let versionCommand: String?
     let checkCommand: String?

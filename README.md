@@ -157,7 +157,8 @@ Additional scan folders (Settings → Folders) are always scanned fully. Use **R
 ## Pre-configured Items
 
 - **Apps:** Cursor, Codex, Claude, ChatGPT, Zcode, Antigravity, Warp, Xcode
-- **CLIs:** Cursor Agent, Codex CLI, Claude Code, GitHub CLI
+- **AI agent CLIs:** Cursor Agent, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline, Gemini CLI, Qwen Code, OpenCode
+- **Other CLIs:** GitHub CLI
 - **Runtimes:** Node.js, npm, pnpm, yarn, Bun, Python, pip, Go, Java, .NET, Flutter, Dart, Rust, Homebrew, mise, asdf
 - **Libraries:** Agent skills, global npm/pnpm/yarn/pip packages, Impeccable (uses your root folder)
 

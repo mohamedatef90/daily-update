@@ -121,12 +121,15 @@ struct AddItemView: View {
             TextField("Detect script", text: $detectScript, axis: .vertical)
                 .lineLimit(2...4)
         } else {
-            TextField("Command name (e.g. codex)", text: $commandName)
+            TextField("Command or absolute path (e.g. codex)", text: $commandName)
                 .onChange(of: commandName) { _ in
                     if versionCommand.isEmpty, !commandName.isEmpty {
                         versionCommand = "\(commandName) --version 2>/dev/null | head -1"
                     }
                 }
+            Text("Searches common user bin folders. Use an absolute executable path for a custom location.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
