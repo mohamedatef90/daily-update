@@ -11,6 +11,8 @@ final class AppState: ObservableObject {
     @Published var showHistory = false
     @Published var searchText = ""
     @Published var isChecking = false
+    @Published var checkedItemCount = 0
+    @Published var totalItemCount = 0
     @Published var isUpdating = false
     @Published var lastCheckDate: Date? = nil
     @Published var logLines: [String] = []
@@ -455,11 +457,13 @@ final class AppState: ObservableObject {
     func checkAll() async {
         guard !isChecking else { return }
         isChecking = true
+        checkedItemCount = 0
         appendLog("Starting update check…")
         if rescanReposOnLaunch { reloadConfigs() }
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
+        totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
         await withTaskGroup(of: (Int, UpdateItem).self) { group in
@@ -496,7 +500,10 @@ final class AppState: ObservableObject {
                     return (index, item)
                 }
             }
-            for await (index, updated) in group { items[index] = updated }
+            for await (index, updated) in group {
+                items[index] = updated
+                checkedItemCount += 1
+            }
         }
 
         lastCheckDate = Date()

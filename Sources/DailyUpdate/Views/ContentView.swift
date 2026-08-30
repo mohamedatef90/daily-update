@@ -4,19 +4,26 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-        } detail: {
-            detailView
+        ZStack {
+            NavigationSplitView {
+                SidebarView()
+            } detail: {
+                detailView
+            }
+
+            if appState.isChecking {
+                UpdateCheckLoadingView(
+                    checkedItemCount: appState.checkedItemCount,
+                    totalItemCount: appState.totalItemCount
+                )
+                .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.2), value: appState.isChecking)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { appState.showAddItem = true } label: {
                     Label("Add Item", systemImage: "plus")
-                }
-
-                if appState.isChecking {
-                    ProgressView().controlSize(.small)
                 }
 
                 Button { Task { await appState.checkAll() } } label: {
