@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ItemListView: View {
@@ -199,54 +200,132 @@ struct ItemNameCell: View {
     var onShowInfo: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(item.name).fontWeight(.medium)
-                if item.autoUpdate {
-                    Image(systemName: "bolt.fill")
+        HStack(alignment: .top, spacing: 9) {
+            ItemIdentityIcon(item: item)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(item.name).fontWeight(.medium)
+                    if item.autoUpdate {
+                        Image(systemName: "bolt.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                            .help("Auto-update enabled")
+                    }
+                    if item.isSnoozed {
+                        Image(systemName: "moon.zzz.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.purple)
+                            .help("Snoozed")
+                    }
+                    if item.duplicateGroupID != nil {
+                        Image(systemName: "doc.on.doc")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .help("Possible duplicate")
+                    }
+                    if item.isPinnedMismatch {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.blue)
+                            .help("Pinned version mismatch")
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        onShowInfo?()
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Item info")
+                }
+                HStack(spacing: 8) {
+                    if let desc = item.description {
+                        Text(desc).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Text(item.sourceLabel)
                         .font(.caption2)
-                        .foregroundStyle(.yellow)
-                        .help("Auto-update enabled")
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(Capsule())
                 }
-                if item.isSnoozed {
-                    Image(systemName: "moon.zzz.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.purple)
-                        .help("Snoozed")
-                }
-                if item.duplicateGroupID != nil {
-                    Image(systemName: "doc.on.doc")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .help("Possible duplicate")
-                }
-                if item.isPinnedMismatch {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.blue)
-                        .help("Pinned version mismatch")
-                }
-                Spacer(minLength: 0)
-                Button {
-                    onShowInfo?()
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Item info")
             }
-            HStack(spacing: 8) {
-                if let desc = item.description {
-                    Text(desc).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+    }
+}
+
+struct ItemIdentityIcon: View {
+    let item: UpdateItem
+
+    var body: some View {
+        Group {
+            if let appIcon {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(tint.gradient)
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
                 }
-                Text(item.sourceLabel)
-                    .font(.caption2)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(Capsule())
+            }
+        }
+        .frame(width: 30, height: 30)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private var appIcon: NSImage? {
+        guard item.category == .app, let iconPath = item.iconPath else { return nil }
+        let expandedPath = (iconPath as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expandedPath) else { return nil }
+        return NSWorkspace.shared.icon(forFile: expandedPath)
+    }
+
+    private var symbol: String {
+        switch item.id {
+        case "codex-app", "codex-cli", "chatgpt", "chatgpt-atlas", "chatgpt-classic": return "circle.hexagongrid.fill"
+        case "claude-app", "claude-code": return "text.quote"
+        case "cursor", "cursor-agent": return "cursorarrow.rays"
+        case "gemini-cli": return "sparkles"
+        case "gh-cli": return "chevron.left.forwardslash.chevron.right"
+        case "opencode": return "chevron.left.forwardslash.chevron.right"
+        case "hermes-agent", "openclaw", "cline-cli", "qwen-code": return "brain.head.profile"
+        case "node", "npm", "pnpm", "yarn", "bun", "corepack": return "curlybraces"
+        case "python", "pip", "pip-packages": return "chevron.left.forwardslash.chevron.right"
+        case "swift", "flutter", "dart", "cocoapods": return "hammer.fill"
+        case "go", "rustup", "cargo": return "gearshape.2.fill"
+        default: return item.category.icon
+        }
+    }
+
+    private var tint: Color {
+        switch item.id {
+        case "codex-app", "codex-cli", "chatgpt", "chatgpt-atlas", "chatgpt-classic": return .teal
+        case "claude-app", "claude-code": return .orange
+        case "cursor", "cursor-agent": return .indigo
+        case "gemini-cli": return .blue
+        case "gh-cli": return .gray
+        case "opencode": return .purple
+        case "hermes-agent", "openclaw", "cline-cli", "qwen-code": return .pink
+        case "node", "npm", "pnpm", "yarn", "bun", "corepack": return .green
+        case "python", "pip", "pip-packages": return .yellow
+        case "swift", "flutter", "dart", "cocoapods": return .red
+        case "go", "rustup", "cargo": return .brown
+        default:
+            switch item.category {
+            case .app: return .blue
+            case .cli: return .indigo
+            case .runtime: return .orange
+            case .library: return .purple
+            case .repo: return .teal
             }
         }
     }

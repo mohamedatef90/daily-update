@@ -6,7 +6,7 @@
       "category": "app",
       "description": "AI code editor",
       "detect": { "type": "app", "appName": "Cursor", "paths": ["/Applications/Cursor.app", "~/Applications/Cursor.app"] },
-      "versionCommand": "for p in /Applications/Cursor.app ~/Applications/Cursor.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/Cursor.app ~/Applications/Cursor.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask cursor /Applications/Cursor.app ~/Applications/Cursor.app",
       "updateCommand": "brew reinstall --cask cursor 2>/dev/null || open -a Cursor"
     },
@@ -16,7 +16,7 @@
       "category": "app",
       "description": "OpenAI Codex desktop app",
       "detect": { "type": "app", "appName": "Codex", "paths": ["/Applications/Codex.app", "~/Applications/Codex.app"] },
-      "versionCommand": "for p in /Applications/Codex.app ~/Applications/Codex.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/Codex.app ~/Applications/Codex.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask codex /Applications/Codex.app ~/Applications/Codex.app",
       "updateCommand": "brew reinstall --cask codex 2>/dev/null || open -a Codex"
     },
@@ -26,7 +26,7 @@
       "category": "app",
       "description": "Anthropic Claude desktop app",
       "detect": { "type": "app", "appName": "Claude", "paths": ["/Applications/Claude.app", "~/Applications/Claude.app"] },
-      "versionCommand": "for p in /Applications/Claude.app ~/Applications/Claude.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/Claude.app ~/Applications/Claude.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask claude /Applications/Claude.app ~/Applications/Claude.app",
       "updateCommand": "brew reinstall --cask claude 2>/dev/null || open -a Claude"
     },
@@ -36,7 +36,7 @@
       "category": "app",
       "description": "OpenAI ChatGPT desktop app",
       "detect": { "type": "app", "appName": "ChatGPT", "paths": ["/Applications/ChatGPT.app", "~/Applications/ChatGPT.app"] },
-      "versionCommand": "for p in /Applications/ChatGPT.app ~/Applications/ChatGPT.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/ChatGPT.app ~/Applications/ChatGPT.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-or-sparkle chatgpt 'https://persistent.oaistatic.com/codex-app-prod/appcast.xml' /Applications/ChatGPT.app ~/Applications/ChatGPT.app",
       "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a ChatGPT"
     },
@@ -46,7 +46,7 @@
       "category": "app",
       "description": "OpenAI ChatGPT Atlas browser",
       "detect": { "type": "app", "paths": ["/Applications/ChatGPT Atlas.app", "~/Applications/ChatGPT Atlas.app"] },
-      "versionCommand": "for p in \"/Applications/ChatGPT Atlas.app\" \"~/Applications/ChatGPT Atlas.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in \"/Applications/ChatGPT Atlas.app\" \"~/Applications/ChatGPT Atlas.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} sparkle-feed https://persistent.oaistatic.com/atlas/public/sparkle_public_appcast.xml \"/Applications/ChatGPT Atlas.app\" \"~/Applications/ChatGPT Atlas.app\"",
       "updateCommand": "open -a \"ChatGPT Atlas\""
     },
@@ -56,7 +56,7 @@
       "category": "app",
       "description": "Legacy OpenAI ChatGPT desktop app",
       "detect": { "type": "app", "paths": ["/Applications/ChatGPT Classic.app", "~/Applications/ChatGPT Classic.app"] },
-      "versionCommand": "for p in \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask chatgpt \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
       "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a \"ChatGPT Classic\""
     },
@@ -66,7 +66,7 @@
       "category": "app",
       "description": "Zcode IDE",
       "detect": { "type": "app", "paths": ["/Applications/ZCode.app", "/Applications/Zcode.app", "~/Applications/ZCode.app", "~/Applications/Zcode.app"] },
-      "versionCommand": "for p in /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask zcode /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app",
       "updateCommand": "brew reinstall --cask zcode 2>/dev/null || open -a ZCode"
     },
@@ -76,7 +76,7 @@
       "category": "app",
       "description": "Google Antigravity IDE",
       "detect": { "type": "app", "paths": ["/Applications/Antigravity IDE.app", "~/Applications/Antigravity IDE.app"] },
-      "versionCommand": "for p in \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask antigravity \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"",
       "updateCommand": "brew reinstall --cask antigravity 2>/dev/null || open -a \"Antigravity IDE\""
     },
@@ -86,7 +86,7 @@
       "category": "app",
       "description": "Warp terminal",
       "detect": { "type": "app", "appName": "Warp", "paths": ["/Applications/Warp.app", "~/Applications/Warp.app"] },
-      "versionCommand": "for p in /Applications/Warp.app ~/Applications/Warp.app; do [ -d \"$p\" ] && defaults read \"$p/Contents/Info\" CFBundleShortVersionString 2>/dev/null && break; done",
+      "versionCommand": "for p in /Applications/Warp.app ~/Applications/Warp.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
       "checkCommand": "{CHECK_SCRIPT} brew-cask warp /Applications/Warp.app ~/Applications/Warp.app",
       "updateCommand": "brew reinstall --cask warp 2>/dev/null || open -a Warp"
     },
@@ -129,6 +129,72 @@
       "versionCommand": "claude --version 2>/dev/null",
       "checkCommand": "npm outdated -g @anthropic-ai/claude-code 2>/dev/null | grep -q claude && echo UPDATE || echo OK",
       "updateCommand": "npm update -g @anthropic-ai/claude-code 2>/dev/null || curl -fsSL https://claude.ai/install.sh | bash"
+    },
+    {
+      "id": "hermes-agent",
+      "name": "Hermes Agent",
+      "category": "cli",
+      "description": "Nous Research self-improving AI agent",
+      "detect": { "type": "command", "command": "command -v hermes >/dev/null 2>&1" },
+      "versionCommand": "hermes --version 2>/dev/null",
+      "checkCommand": "out=$(hermes update --check 2>&1 || true); echo \"$out\" | grep -Eiq 'behind|update available|updates available' && echo UPDATE || echo OK",
+      "installCommand": "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+      "updateCommand": "hermes update --yes"
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "category": "cli",
+      "description": "OpenClaw personal AI agent and gateway",
+      "detect": { "type": "command", "command": "command -v openclaw >/dev/null 2>&1" },
+      "versionCommand": "openclaw --version 2>/dev/null",
+      "checkCommand": "out=$(openclaw update status --json 2>/dev/null || true); echo \"$out\" | grep -Eiq '\"available\"[[:space:]]*:[[:space:]]*true|update available' && echo UPDATE || echo OK",
+      "installCommand": "curl -fsSL https://openclaw.ai/install.sh | bash",
+      "updateCommand": "openclaw update --yes"
+    },
+    {
+      "id": "cline-cli",
+      "name": "Cline CLI",
+      "category": "cli",
+      "description": "Cline autonomous coding agent for the terminal",
+      "detect": { "type": "command", "command": "command -v cline >/dev/null 2>&1" },
+      "versionCommand": "cline version 2>/dev/null || cline --version 2>/dev/null",
+      "checkCommand": "npm outdated -g cline 2>/dev/null | grep -q '^cline' && echo UPDATE || echo OK",
+      "installCommand": "npm install -g cline",
+      "updateCommand": "cline update 2>/dev/null || npm install -g cline@latest"
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "category": "cli",
+      "description": "Google Gemini AI agent for the terminal",
+      "detect": { "type": "command", "command": "command -v gemini >/dev/null 2>&1" },
+      "versionCommand": "gemini --version 2>/dev/null",
+      "checkCommand": "npm outdated -g @google/gemini-cli 2>/dev/null | grep -q '@google/gemini-cli' && echo UPDATE || echo OK",
+      "installCommand": "npm install -g @google/gemini-cli",
+      "updateCommand": "gemini update 2>/dev/null || npm install -g @google/gemini-cli@latest"
+    },
+    {
+      "id": "qwen-code",
+      "name": "Qwen Code",
+      "category": "cli",
+      "description": "Qwen AI coding agent for the terminal",
+      "detect": { "type": "command", "command": "command -v qwen >/dev/null 2>&1" },
+      "versionCommand": "qwen --version 2>/dev/null",
+      "checkCommand": "npm outdated -g @qwen-code/qwen-code 2>/dev/null | grep -q '@qwen-code/qwen-code' && echo UPDATE || echo OK",
+      "installCommand": "npm install -g @qwen-code/qwen-code@latest",
+      "updateCommand": "npm install -g @qwen-code/qwen-code@latest"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "category": "cli",
+      "description": "OpenCode terminal AI coding agent",
+      "detect": { "type": "command", "command": "command -v opencode >/dev/null 2>&1" },
+      "versionCommand": "opencode --version 2>/dev/null",
+      "checkCommand": "current=$(opencode --version 2>/dev/null | sed 's/^v//'); if brew list opencode >/dev/null 2>&1; then brew outdated opencode 2>/dev/null | grep -q opencode && echo UPDATE || echo OK; elif npm list -g opencode-ai --depth=0 2>/dev/null | grep -q opencode-ai; then npm outdated -g opencode-ai 2>/dev/null | grep -q opencode-ai && echo UPDATE || echo OK; else latest=$(curl -fsSL --connect-timeout 5 https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null | sed -nE 's/.*\"tag_name\": \"v?([^\"]+)\".*/\\1/p' | head -1); if [ -n \"$current\" ] && [ -n \"$latest\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; else echo OK; fi; fi",
+      "installCommand": "curl -fsSL https://opencode.ai/install | bash",
+      "updateCommand": "opencode upgrade 2>/dev/null || npm install -g opencode-ai@latest 2>/dev/null || brew upgrade opencode"
     },
     {
       "id": "gh-cli",

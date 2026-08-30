@@ -56,6 +56,7 @@ extension DetectorConfig {
             isUserDefined: isUserDefined,
             source: source,
             autoUpdate: false,
+            iconPath: category == .app ? detect?.paths?.first : nil,
             detectCommand: detect?.command,
             versionCommand: versionCommand,
             checkCommand: checkCommand,

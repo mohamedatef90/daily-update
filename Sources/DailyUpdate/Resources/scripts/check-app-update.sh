@@ -5,8 +5,13 @@ set -eu
 SCRIPT_NAME="${0:t}"
 
 get_app_version() {
+  plist_value "$1" CFBundleShortVersionString
+}
+
+plist_value() {
   local app="$1"
-  defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null
+  local key="$2"
+  /usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist" 2>/dev/null || true
 }
 
 find_app() {
@@ -63,13 +68,13 @@ cmd_auto() {
   app="$(find_app "$@")" || { echo OK; return 0; }
 
   local feed bundle_id name current latest
-  feed="$(defaults read "$app/Contents/Info" SUFeedURL 2>/dev/null || true)"
+  feed="$(plist_value "$app" SUFeedURL)"
   if [[ -n "$feed" ]]; then
     cmd_sparkle_feed "$feed" "$app"
     return 0
   fi
 
-  bundle_id="$(defaults read "$app/Contents/Info" CFBundleIdentifier 2>/dev/null || true)"
+  bundle_id="$(plist_value "$app" CFBundleIdentifier)"
   name="${app:t:r}"
   current="$(get_app_version "$app")"
 
@@ -136,7 +141,7 @@ cmd_sparkle_plist() {
   local app
   app="$(find_app "$@")" || { echo OK; return 0; }
   local feed
-  feed="$(defaults read "$app/Contents/Info" SUFeedURL 2>/dev/null || true)"
+  feed="$(plist_value "$app" SUFeedURL)"
   if [[ -z "$feed" ]]; then
     echo OK
     return 0
