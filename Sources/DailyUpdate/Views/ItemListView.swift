@@ -21,7 +21,7 @@ struct ItemListView: View {
                         .foregroundStyle(.secondary)
                     Text("No Items")
                         .font(.title2.weight(.semibold))
-                    Text("Add an app, CLI, or repo using the + button.")
+                    Text("Run Check Updates to find installed apps, CLIs, and repos.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -105,9 +105,6 @@ struct ItemListView: View {
             Button("Select All Updates") { appState.selectAllUpdates() }
                 .disabled(appState.updateAvailableCount == 0)
 
-            Button("Select All Missing") { appState.selectAllInstallable() }
-                .disabled(appState.notInstalledCount == 0)
-
             Button("Deselect All") { appState.deselectAll() }
 
             Spacer()
@@ -130,7 +127,7 @@ struct ItemListView: View {
                 ProgressView("Checking for updates…")
                     .controlSize(.small)
             } else {
-                Text("\(appState.updateAvailableCount) updates · \(appState.notInstalledCount) missing · \(appState.selectedActionableItems.count) selected")
+                Text("\(appState.updateAvailableCount) updates · \(appState.selectedActionableItems.count) selected")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -11,6 +11,8 @@ final class AppState: ObservableObject {
     @Published var showHistory = false
     @Published var searchText = ""
     @Published var isChecking = false
+    @Published var checkedItemCount = 0
+    @Published var totalItemCount = 0
     @Published var isUpdating = false
     @Published var lastCheckDate: Date? = nil
     @Published var logLines: [String] = []
@@ -169,8 +171,14 @@ final class AppState: ObservableObject {
         return result
     }
 
+    /// Items confirmed by the most recent detection pass. Configured detectors that
+    /// are not present on this Mac stay internal to the scan and are not listed.
+    var installedItems: [UpdateItem] {
+        items.filter(\.isInstalled)
+    }
+
     var activeItems: [UpdateItem] {
-        items.filter { !$0.permanentlyIgnored && !$0.isSnoozed }
+        installedItems.filter { !$0.permanentlyIgnored && !$0.isSnoozed }
     }
 
     var listTitle: String {
@@ -185,12 +193,8 @@ final class AppState: ObservableObject {
         activeItems.filter { $0.status == .updateAvailable }.count
     }
 
-    var notInstalledCount: Int {
-        activeItems.filter { $0.status == .notInstalled }.count
-    }
-
     var selectedActionableItems: [UpdateItem] {
-        items.filter { $0.isSelected && $0.isActionable }
+        activeItems.filter { $0.isSelected && $0.isActionable }
     }
 
     var selectedActionLabel: String {
@@ -203,18 +207,18 @@ final class AppState: ObservableObject {
     }
 
     var selectedUpdatableItems: [UpdateItem] {
-        items.filter { $0.isSelected && $0.canUpdate && !$0.isSnoozed }
+        activeItems.filter { $0.isSelected && $0.canUpdate }
     }
 
     var dashboardStats: DashboardStats {
         DashboardStats(
-            totalItems: items.count,
-            installedCount: items.filter(\.isInstalled).count,
+            totalItems: installedItems.count,
+            installedCount: installedItems.count,
             updatesAvailable: updateAvailableCount,
-            snoozedCount: items.filter(\.isSnoozed).count,
-            autoUpdateCount: items.filter(\.autoUpdate).count,
+            snoozedCount: installedItems.filter(\.isSnoozed).count,
+            autoUpdateCount: installedItems.filter(\.autoUpdate).count,
             duplicateCount: duplicateGroups.count,
-            byCategory: ItemCategory.allCases.map { cat in (cat, items.filter { $0.category == cat }.count) },
+            byCategory: ItemCategory.allCases.map { cat in (cat, installedItems.filter { $0.category == cat }.count) },
             lastCheck: lastCheckDate
         )
     }
@@ -317,7 +321,7 @@ final class AppState: ObservableObject {
             discoveredSkills: discoveredSkills
         )
         items = configs.map { applyPreferences(to: $0.toUpdateItem()) }
-        duplicateGroups = DuplicateDetector.find(in: items)
+        duplicateGroups = DuplicateDetector.find(in: installedItems)
         markDuplicates()
         appendLog("Loaded \(configs.count) items (\(discoveredRepos.count) repos, \(discoveredApps.count) apps, \(discoveredSkills.count) skills discovered)")
         publishWidgetSnapshot()
@@ -444,7 +448,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshDuplicates() {
-        duplicateGroups = DuplicateDetector.find(in: items)
+        duplicateGroups = DuplicateDetector.find(in: installedItems)
         markDuplicates()
     }
 
@@ -453,11 +457,13 @@ final class AppState: ObservableObject {
     func checkAll() async {
         guard !isChecking else { return }
         isChecking = true
+        checkedItemCount = 0
         appendLog("Starting update check…")
         if rescanReposOnLaunch { reloadConfigs() }
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
+        totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
         await withTaskGroup(of: (Int, UpdateItem).self) { group in
@@ -494,7 +500,10 @@ final class AppState: ObservableObject {
                     return (index, item)
                 }
             }
-            for await (index, updated) in group { items[index] = updated }
+            for await (index, updated) in group {
+                items[index] = updated
+                checkedItemCount += 1
+            }
         }
 
         lastCheckDate = Date()
@@ -538,7 +547,7 @@ final class AppState: ObservableObject {
         }
 
         guard !isUpdating else { return }
-        let targets = orderedActionTargets(items.filter { $0.isSelected && $0.isActionable })
+        let targets = orderedActionTargets(selectedActionableItems)
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         isUpdating = true
