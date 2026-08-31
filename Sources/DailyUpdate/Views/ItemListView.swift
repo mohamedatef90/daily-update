@@ -10,6 +10,10 @@ struct ItemListView: View {
         appState.filteredItems
     }
 
+    private var selectionRefreshKey: String {
+        displayItems.map { "\($0.id):\($0.isSelected)" }.joined(separator: "|")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerBar
@@ -29,11 +33,18 @@ struct ItemListView: View {
             } else {
                 Table(displayItems, selection: .constant(Set<String>())) {
                     TableColumn("") { item in
-                        Toggle("", isOn: Binding(
-                            get: { item.isSelected },
-                            set: { _ in appState.toggleSelection(for: item.id) }
-                        ))
-                        .toggleStyle(.checkbox)
+                        Button {
+                            appState.toggleSelection(for: item.id)
+                        } label: {
+                            Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
+                                .imageScale(.large)
+                                .foregroundStyle(item.isSelected ? Color.accentColor : Color.secondary)
+                                .frame(width: 18, height: 18)
+                        }
+                        .buttonStyle(.plain)
+                        .id("\(item.id)-selected-\(item.isSelected)")
+                        .accessibilityLabel("Select \(item.name)")
+                        .accessibilityValue(item.isSelected ? "Selected" : "Not selected")
                         .disabled(!item.isActionable || appState.isUpdating)
                     }
                     .width(32)
@@ -84,6 +95,9 @@ struct ItemListView: View {
                     }
                     .width(min: 140, ideal: 180)
                 }
+                // SwiftUI Table reuses cells by row ID. Refresh it when selection
+                // changes so the rendered checkbox always matches the model.
+                .id(selectionRefreshKey)
             }
 
             if showLog {

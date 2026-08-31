@@ -454,7 +454,15 @@ final class AppState: ObservableObject {
 
     func toggleSelection(for id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        items[index].isSelected.toggle()
+        setSelection(for: id, isSelected: !items[index].isSelected)
+    }
+
+    func setSelection(for id: String, isSelected: Bool) {
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              items[index].isActionable else {
+            return
+        }
+        items[index].isSelected = isSelected
     }
 
     func selectAllUpdates() {
@@ -492,6 +500,7 @@ final class AppState: ObservableObject {
 
     func checkAll() async {
         guard !isChecking else { return }
+        let selectedItemIDs = Set(items.lazy.filter(\.isSelected).map(\.id))
         isChecking = true
         checkedItemCount = 0
         appendLog("Starting update check…")
@@ -536,7 +545,9 @@ final class AppState: ObservableObject {
                     if item.isPinnedMismatch {
                         item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
                     }
-                    item.isSelected = item.canUpdate
+                    // Update checks must not silently select every available update.
+                    // Preserve only an explicit user selection from before this scan.
+                    item.isSelected = selectedItemIDs.contains(item.id) && item.isActionable
                     return (index, item)
                 }
             }
@@ -671,8 +682,60 @@ final class AppState: ObservableObject {
         if notificationsEnabled {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
-        await checkAll()
+        // Re-check only the items that actually changed. A full scan here used to
+        // put every row into "Checking…", making unrelated checkboxes appear frozen.
+        let successfulItemIDs = Set(results.filter(\.success).map(\.id))
+        await refreshUpdatedItems(successfulItemIDs)
         showUpdateReport = true
+    }
+
+    private func refreshUpdatedItems(_ ids: Set<String>) async {
+        guard !ids.isEmpty else { return }
+
+        let appFolders = settingsStore.settings.applicationFolders
+        let preferences = settingsStore.settings.itemPreferences
+
+        for config in configs where ids.contains(config.id) {
+            guard let index = items.firstIndex(where: { $0.id == config.id }) else { continue }
+
+            var item = items[index]
+            item.status = .checking
+            item.statusMessage = "Verifying update…"
+            items[index] = item
+
+            if let preference = preferences[config.id] {
+                item.autoUpdate = preference.autoUpdate
+                item.snoozedUntil = preference.snoozedUntil
+                item.pinnedVersion = preference.pinnedVersion
+                item.permanentlyIgnored = preference.permanentlyIgnored
+            }
+
+            let (installed, detectionMessage) = await DetectionService.detect(
+                config,
+                applicationFolders: appFolders
+            )
+            item.isInstalled = installed
+            guard installed else {
+                item.status = .error
+                item.statusMessage = "Updated, but no longer detected: \(detectionMessage ?? "Unknown detection error")"
+                items[index] = item
+                continue
+            }
+
+            let (status, current, latest, message) = await UpdateCheckService.check(config, installed: true)
+            item.status = status
+            item.currentVersion = current
+            item.latestVersion = latest
+            item.statusMessage = item.isPinnedMismatch
+                ? "Pinned to \(item.pinnedVersion ?? "")"
+                : message
+            item.isSelected = false
+            items[index] = item
+        }
+
+        refreshDuplicates()
+        publishWidgetSnapshot()
+        appDelegate?.refreshStatusBar()
     }
 
     private func actionCommand(for item: UpdateItem) -> String {
