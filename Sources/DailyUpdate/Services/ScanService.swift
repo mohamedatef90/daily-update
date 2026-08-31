@@ -159,10 +159,16 @@ enum ItemBuilder {
 
     static func discoveredApp(info: InstalledAppInfo) -> DetectorConfig {
         let escapedPath = info.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null"
+        let versionCommand: String
+        if info.sparkleFeed != nil {
+            versionCommand = "short=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null); build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null); [ -n \"$short\" ] && { [ -n \"$build\" ] && [ \"$build\" != \"$short\" ] && echo \"$short ($build)\" || echo \"$short\"; }"
+        } else {
+            versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null"
+        }
         let checkCommand = "{CHECK_SCRIPT} auto \"\(escapedPath)\""
-        let openName = info.name.replacingOccurrences(of: "\"", with: "\\\"")
-        let updateCommand = "open -a \"\(openName)\""
+        // Discovery can identify available releases but cannot safely infer an updater.
+        // Keep these items informational instead of launching the app to update it.
+        let updateCommand = ""
 
         var descriptionParts: [String] = [info.path]
         if let sparkleFeed = info.sparkleFeed {

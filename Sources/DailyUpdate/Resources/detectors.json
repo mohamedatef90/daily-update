@@ -57,8 +57,8 @@
       "description": "Legacy OpenAI ChatGPT desktop app",
       "detect": { "type": "app", "paths": ["/Applications/ChatGPT Classic.app", "~/Applications/ChatGPT Classic.app"] },
       "versionCommand": "for p in \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask chatgpt \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
-      "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a \"ChatGPT Classic\""
+      "checkCommand": "{CHECK_SCRIPT} sparkle-plist \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
+      "updateCommand": "echo 'ChatGPT Classic must be updated manually' >&2; exit 1"
     },
     {
       "id": "zcode",
@@ -192,7 +192,7 @@
       "description": "OpenCode terminal AI coding agent",
       "detect": { "type": "command", "command": "command -v opencode >/dev/null 2>&1" },
       "versionCommand": "opencode --version 2>/dev/null",
-      "checkCommand": "current=$(opencode --version 2>/dev/null | sed 's/^v//'); if brew list opencode >/dev/null 2>&1; then brew outdated opencode 2>/dev/null | grep -q opencode && echo UPDATE || echo OK; elif npm list -g opencode-ai --depth=0 2>/dev/null | grep -q opencode-ai; then npm outdated -g opencode-ai 2>/dev/null | grep -q opencode-ai && echo UPDATE || echo OK; else latest=$(curl -fsSL --connect-timeout 5 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \"https://api.github.com/repos/anomalyco/opencode/releases/latest?daily_update_ts=$(date +%s)\" 2>/dev/null | sed -nE 's/.*\"tag_name\": \"v?([^\"]+)\".*/\\1/p' | head -1); if [ -n \"$current\" ] && [ -n \"$latest\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; else echo OK; fi; fi",
+      "checkCommand": "current=$(opencode --version 2>/dev/null | sed 's/^v//'); latest=$( (command -v gh >/dev/null 2>&1 && gh api repos/anomalyco/opencode/releases/latest --jq .tag_name 2>/dev/null) || curl -fsSL --connect-timeout 5 -A 'DailyUpdate/1.0' -H 'Accept: application/vnd.github+json' -H 'Cache-Control: no-cache' https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null | sed -nE 's/.*\"tag_name\": \"([^\"]+)\".*/\\1/p' | head -1 ); latest=${latest#v}; if [ -z \"$latest\" ]; then echo CHECK_FAILED: unable to fetch OpenCode latest release; elif [ -n \"$current\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; else echo OK; fi",
       "installCommand": "curl -fsSL https://opencode.ai/install | bash",
       "updateCommand": "opencode upgrade 2>/dev/null || npm install -g opencode-ai@latest 2>/dev/null || brew upgrade opencode"
     },

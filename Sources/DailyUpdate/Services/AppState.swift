@@ -676,7 +676,7 @@ final class AppState: ObservableObject {
     }
 
     private func actionCommand(for item: UpdateItem) -> String {
-        item.canInstall ? item.installCommand : item.updateCommand
+        UpdateExecutor.commandToRun(for: item, installing: item.canInstall) ?? "No safe automatic update command"
     }
 
     private func orderedActionTargets(_ targets: [UpdateItem]) -> [UpdateItem] {
@@ -693,7 +693,7 @@ final class AppState: ObservableObject {
     func retryUpdate(id: String) async {
         guard let index = items.firstIndex(where: { $0.id == id }),
               items[index].isInstalled,
-              !items[index].updateCommand.isEmpty else {
+              UpdateExecutor.commandToRun(for: items[index]) != nil else {
             return
         }
         deselectAll()

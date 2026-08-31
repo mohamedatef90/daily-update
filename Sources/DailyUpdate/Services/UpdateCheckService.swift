@@ -29,6 +29,11 @@ enum UpdateCheckService {
                 return (.error, current, latest, "Install broken — select Update to reinstall")
             }
 
+            if combinedLower.contains("check_failed") {
+                let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
+                return (.error, current, nil, detail ?? "Could not verify the latest available version")
+            }
+
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
                 let latest = parseLatest(from: output) ?? "newer"
                 return (.updateAvailable, current, latest, nil)

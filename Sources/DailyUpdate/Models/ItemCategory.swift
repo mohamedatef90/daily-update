@@ -109,7 +109,9 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var canUpdate: Bool {
-        isInstalled && (status == .updateAvailable || status == .error)
+        isInstalled
+            && (status == .updateAvailable || status == .error)
+            && UpdateExecutor.commandToRun(for: self) != nil
     }
 
     var isActionable: Bool {

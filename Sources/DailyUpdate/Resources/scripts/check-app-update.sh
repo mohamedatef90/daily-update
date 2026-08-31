@@ -5,7 +5,15 @@ set -eu
 SCRIPT_NAME="${0:t}"
 
 get_app_version() {
-  plist_value "$1" CFBundleShortVersionString
+  local short build
+  short="$(plist_value "$1" CFBundleShortVersionString)"
+  build="$(plist_value "$1" CFBundleVersion)"
+  [[ -z "$short" ]] && return 0
+  if [[ -n "$build" && "$build" != "$short" ]]; then
+    echo "$short ($build)"
+  else
+    echo "$short"
+  fi
 }
 
 plist_value() {
@@ -48,7 +56,7 @@ fetch_sparkle_version() {
   local feed="$1"
   local separator="?"
   [[ "$feed" == *\?* ]] && separator="&"
-  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${feed}${separator}daily_update_ts=$(date +%s)" 2>/dev/null | grep -m1 'sparkle:shortVersionString' 2>/dev/null | sed -E 's/.*>([^<]+)<.*/\1/' || true
+  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${feed}${separator}daily_update_ts=$(date +%s)" 2>/dev/null | sed -nE 's/.*sparkle:shortVersionString="([^"]+)".*/\1/p' | head -1 || true
 }
 
 brew_cask_latest() {

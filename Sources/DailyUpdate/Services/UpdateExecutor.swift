@@ -14,8 +14,7 @@ enum UpdateExecutor {
             }
         }
 
-        let requestedCommand = installing || !item.isInstalled ? item.installCommand : item.updateCommand
-        guard let command = nonLaunchingCommand(from: requestedCommand) else {
+        guard let command = commandToRun(for: item, installing: installing) else {
             return (
                 .error,
                 item.currentVersion,
@@ -48,6 +47,11 @@ enum UpdateExecutor {
         let message = detail.map { "\(action) failed (exit \(result.exitCode)): \($0)" }
             ?? "\(action) failed (exit \(result.exitCode))"
         return (.error, item.currentVersion, message)
+    }
+
+    static func commandToRun(for item: UpdateItem, installing: Bool = false) -> String? {
+        let requestedCommand = installing || !item.isInstalled ? item.installCommand : item.updateCommand
+        return nonLaunchingCommand(from: requestedCommand)
     }
 
     /// Removes `open` fallback commands so an update never launches an app or the App Store.
