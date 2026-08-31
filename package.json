@@ -1,0 +1,44 @@
+{
+  "name": "daily-update-windows",
+  "version": "1.0.0",
+  "description": "Windows desktop app to detect and update apps, CLIs, and git repos",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/scanner.test.js",
+    "build": "electron-builder --win --dir",
+    "package": "electron-builder --win"
+  },
+  "keywords": [
+    "update",
+    "git",
+    "winget",
+    "windows"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.0"
+  },
+  "dependencies": {},
+  "build": {
+    "appId": "com.dailyupdate.windows",
+    "productName": "Daily Update",
+    "icon": "assets/icon.png",
+    "win": {
+      "target": "nsis",
+      "sign": false,
+      "icon": "assets/icon.png"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "publish": null
+  },
+  "allowScripts": {
+    "electron@28.3.3": true
+  }
+}

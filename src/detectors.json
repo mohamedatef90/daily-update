@@ -1,0 +1,578 @@
+{
+  "items": [
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "category": "app",
+      "description": "AI code editor",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe",
+          "%LOCALAPPDATA%\\Programs\\Cursor\\Cursor.exe",
+          "%ProgramFiles%\\Cursor\\Cursor.exe"
+        ],
+        "commands": ["cursor"]
+      },
+      "wingetId": "Anysphere.Cursor",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "codex-app",
+      "name": "Codex",
+      "category": "app",
+      "description": "OpenAI Codex desktop app",
+      "detect": {
+        "type": "app",
+        "appName": "Codex",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\Codex\\Codex.exe",
+          "%LOCALAPPDATA%\\Programs\\codex\\Codex.exe"
+        ],
+        "packagePrefixes": ["OpenAI.Codex", "9PLM9XGG6VKS"]
+      },
+      "wingetId": "9PLM9XGG6VKS",
+      "wingetSource": "msstore",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "claude-app",
+      "name": "Claude",
+      "category": "app",
+      "description": "Anthropic Claude desktop app",
+      "detect": {
+        "type": "app",
+        "appName": "Claude",
+        "paths": [
+          "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe",
+          "%LOCALAPPDATA%\\Programs\\Claude\\Claude.exe",
+          "%LOCALAPPDATA%\\Programs\\claude\\Claude.exe",
+          "%ProgramFiles%\\Claude\\Claude.exe"
+        ],
+        "packagePrefixes": ["Claude_", "Anthropic.Claude"]
+      },
+      "wingetId": "Anthropic.Claude",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "category": "app",
+      "description": "OpenAI ChatGPT desktop app",
+      "detect": {
+        "type": "app",
+        "appName": "ChatGPT",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\ChatGPT\\ChatGPT.exe",
+          "%LOCALAPPDATA%\\Programs\\chatgpt\\ChatGPT.exe"
+        ],
+        "packagePrefixes": ["OpenAI.ChatGPT", "ChatGPT_", "9NT1R1C2HH7J", "OpenAI.Codex"]
+      },
+      "wingetId": "9NT1R1C2HH7J",
+      "wingetSource": "msstore",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "chatgpt-atlas",
+      "name": "ChatGPT Atlas",
+      "category": "app",
+      "description": "OpenAI ChatGPT Atlas browser",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\ChatGPT Atlas\\ChatGPT Atlas.exe",
+          "%LOCALAPPDATA%\\Programs\\chatgpt-atlas\\ChatGPT Atlas.exe"
+        ]
+      },
+      "versionFrom": "exe"
+    },
+    {
+      "id": "chatgpt-classic",
+      "name": "ChatGPT Classic",
+      "category": "app",
+      "description": "Legacy OpenAI ChatGPT desktop app",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\ChatGPT Classic\\ChatGPT Classic.exe"
+        ]
+      },
+      "wingetId": "9NT1R1C2HH7J",
+      "wingetSource": "msstore",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "zcode",
+      "name": "Zcode",
+      "category": "app",
+      "description": "Zcode IDE",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\ZCode\\ZCode.exe",
+          "%LOCALAPPDATA%\\Programs\\Zcode\\Zcode.exe"
+        ]
+      },
+      "versionFrom": "exe"
+    },
+    {
+      "id": "antigravity",
+      "name": "Antigravity IDE",
+      "category": "app",
+      "description": "Google Antigravity IDE",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\Antigravity\\Antigravity.exe",
+          "%LOCALAPPDATA%\\Programs\\Antigravity IDE\\Antigravity.exe"
+        ]
+      },
+      "wingetId": "Google.Antigravity",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "warp",
+      "name": "Warp",
+      "category": "app",
+      "description": "Warp terminal",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\Warp\\warp.exe",
+          "%LOCALAPPDATA%\\Programs\\Warp\\Warp.exe"
+        ],
+        "commands": ["warp"]
+      },
+      "wingetId": "Warp.Warp",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "category": "app",
+      "description": "Local LLM runtime",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe"
+        ],
+        "commands": ["ollama"]
+      },
+      "wingetId": "Ollama.Ollama",
+      "versionFrom": "command",
+      "versionCommand": ["ollama", "--version"]
+    },
+    {
+      "id": "openclaw",
+      "name": "OpenClaw",
+      "category": "cli",
+      "description": "OpenClaw AI agent CLI",
+      "detect": {
+        "type": "command",
+        "commands": ["openclaw"],
+        "paths": [
+          "%USERPROFILE%\\.local\\bin\\openclaw.cmd",
+          "%APPDATA%\\npm\\openclaw.cmd",
+          "%LOCALAPPDATA%\\OpenClaw\\bin\\openclaw.cmd"
+        ]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["openclaw", "--version"]
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "category": "app",
+      "description": "Hermes Agent",
+      "detect": {
+        "type": "app",
+        "appName": "hermes",
+        "paths": [
+          "%LOCALAPPDATA%\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe",
+          "%LOCALAPPDATA%\\hermes\\hermes.exe",
+          "%USERPROFILE%\\.local\\bin\\hermes.exe"
+        ],
+        "commands": ["hermes"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["hermes", "--version"]
+    },
+    {
+      "id": "vscode",
+      "name": "Visual Studio Code",
+      "category": "app",
+      "description": "Code editor",
+      "detect": {
+        "type": "app",
+        "paths": [
+          "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe",
+          "%ProgramFiles%\\Microsoft VS Code\\Code.exe"
+        ],
+        "commands": ["code"]
+      },
+      "wingetId": "Microsoft.VisualStudioCode",
+      "versionFrom": "exe"
+    },
+    {
+      "id": "cursor-agent",
+      "name": "Cursor Agent CLI",
+      "category": "cli",
+      "description": "Cursor agent command-line tool",
+      "detect": {
+        "type": "command",
+        "commands": ["agent", "cursor-agent"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["agent", "--version"]
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "category": "cli",
+      "description": "OpenAI Codex CLI",
+      "detect": {
+        "type": "command",
+        "commands": ["codex"]
+      },
+      "wingetId": "OpenAI.Codex",
+      "versionFrom": "command",
+      "versionCommand": ["codex", "--version"]
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "category": "cli",
+      "description": "Anthropic Claude Code CLI",
+      "detect": {
+        "type": "command",
+        "commands": ["claude"]
+      },
+      "wingetId": "Anthropic.ClaudeCode",
+      "versionFrom": "command",
+      "versionCommand": ["claude", "--version"]
+    },
+    {
+      "id": "gh-cli",
+      "name": "GitHub CLI",
+      "category": "cli",
+      "description": "gh command",
+      "detect": {
+        "type": "command",
+        "commands": ["gh"]
+      },
+      "wingetId": "GitHub.cli",
+      "versionFrom": "command",
+      "versionCommand": ["gh", "--version"]
+    },
+    {
+      "id": "flutter",
+      "name": "Flutter",
+      "category": "runtime",
+      "description": "Flutter SDK",
+      "detect": {
+        "type": "command",
+        "commands": ["flutter"]
+      },
+      "wingetId": "Google.Flutter",
+      "versionFrom": "command",
+      "versionCommand": ["flutter", "--version"]
+    },
+    {
+      "id": "dart",
+      "name": "Dart",
+      "category": "runtime",
+      "description": "Dart SDK",
+      "detect": {
+        "type": "command",
+        "commands": ["dart"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["dart", "--version"]
+    },
+    {
+      "id": "dotnet",
+      "name": ".NET SDK",
+      "category": "runtime",
+      "description": "Microsoft .NET SDK",
+      "detect": {
+        "type": "command",
+        "commands": ["dotnet"]
+      },
+      "wingetId": "Microsoft.DotNet.SDK.8",
+      "versionFrom": "command",
+      "versionCommand": ["dotnet", "--version"]
+    },
+    {
+      "id": "java",
+      "name": "Java (OpenJDK)",
+      "category": "runtime",
+      "description": "Java runtime and JDK",
+      "detect": {
+        "type": "command",
+        "commands": ["java"]
+      },
+      "wingetId": "Microsoft.OpenJDK.21",
+      "versionFrom": "command",
+      "versionCommand": ["java", "-version"]
+    },
+    {
+      "id": "go",
+      "name": "Go",
+      "category": "runtime",
+      "description": "Go programming language",
+      "detect": {
+        "type": "command",
+        "commands": ["go"]
+      },
+      "wingetId": "GoLang.Go",
+      "versionFrom": "command",
+      "versionCommand": ["go", "version"]
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "category": "runtime",
+      "description": "JavaScript runtime",
+      "detect": {
+        "type": "command",
+        "commands": ["node"]
+      },
+      "wingetId": "OpenJS.NodeJS.LTS",
+      "versionFrom": "command",
+      "versionCommand": ["node", "--version"]
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "category": "runtime",
+      "description": "Node package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["npm"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["npm", "--version"]
+    },
+    {
+      "id": "pnpm",
+      "name": "pnpm",
+      "category": "runtime",
+      "description": "Fast Node package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["pnpm"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["pnpm", "--version"]
+    },
+    {
+      "id": "yarn",
+      "name": "Yarn",
+      "category": "runtime",
+      "description": "Yarn package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["yarn"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["yarn", "--version"]
+    },
+    {
+      "id": "bun",
+      "name": "Bun",
+      "category": "runtime",
+      "description": "Bun JavaScript runtime",
+      "detect": {
+        "type": "command",
+        "commands": ["bun"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["bun", "--version"]
+    },
+    {
+      "id": "corepack",
+      "name": "Corepack",
+      "category": "runtime",
+      "description": "Node package manager shim",
+      "detect": {
+        "type": "command",
+        "commands": ["corepack"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["corepack", "--version"]
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "category": "runtime",
+      "description": "Python 3 runtime",
+      "detect": {
+        "type": "command",
+        "commands": ["python", "python3", "py"]
+      },
+      "wingetId": "Python.Python.3.12",
+      "versionFrom": "command",
+      "versionCommand": ["python", "--version"]
+    },
+    {
+      "id": "pip",
+      "name": "pip",
+      "category": "runtime",
+      "description": "Python package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["pip", "pip3"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["pip", "--version"]
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "category": "runtime",
+      "description": "Git version control",
+      "detect": {
+        "type": "command",
+        "commands": ["git"]
+      },
+      "wingetId": "Git.Git",
+      "versionFrom": "command",
+      "versionCommand": ["git", "--version"]
+    },
+    {
+      "id": "winget",
+      "name": "WinGet",
+      "category": "runtime",
+      "description": "Windows package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["winget"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["winget", "--version"]
+    },
+    {
+      "id": "mise",
+      "name": "mise",
+      "category": "runtime",
+      "description": "Polyglot runtime manager",
+      "detect": {
+        "type": "command",
+        "commands": ["mise"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["mise", "--version"]
+    },
+    {
+      "id": "rustup",
+      "name": "rustup",
+      "category": "runtime",
+      "description": "Rust toolchain manager",
+      "detect": {
+        "type": "command",
+        "commands": ["rustup"]
+      },
+      "wingetId": "Rustlang.Rustup",
+      "versionFrom": "command",
+      "versionCommand": ["rustc", "--version"]
+    },
+    {
+      "id": "cargo",
+      "name": "Cargo",
+      "category": "runtime",
+      "description": "Rust package manager",
+      "detect": {
+        "type": "command",
+        "commands": ["cargo"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["cargo", "--version"]
+    },
+    {
+      "id": "angular-cli",
+      "name": "Angular CLI",
+      "category": "runtime",
+      "description": "@angular/cli global package",
+      "detect": {
+        "type": "command",
+        "commands": ["ng"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["ng", "version"]
+    },
+    {
+      "id": "impeccable",
+      "name": "Impeccable",
+      "category": "library",
+      "description": "Impeccable library/repo",
+      "detect": {
+        "type": "path",
+        "paths": [
+          "{ROOT}\\impeccable",
+          "{ROOT}\\Projects\\impeccable",
+          "{ROOT}\\dev\\impeccable"
+        ]
+      }
+    },
+    {
+      "id": "agent-skills",
+      "name": "Agent Skills (global)",
+      "category": "library",
+      "description": "Skills from npx skills",
+      "detect": {
+        "type": "command",
+        "commands": ["npx"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["npx", "--version"]
+    },
+    {
+      "id": "global-npm",
+      "name": "Global npm packages",
+      "category": "library",
+      "description": "All globally outdated npm packages",
+      "detect": {
+        "type": "command",
+        "commands": ["npm"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["npm", "--version"]
+    },
+    {
+      "id": "global-pnpm",
+      "name": "Global pnpm packages",
+      "category": "library",
+      "description": "All globally outdated pnpm packages",
+      "detect": {
+        "type": "command",
+        "commands": ["pnpm"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["pnpm", "--version"]
+    },
+    {
+      "id": "global-yarn",
+      "name": "Global Yarn packages",
+      "category": "library",
+      "description": "All globally outdated Yarn packages",
+      "detect": {
+        "type": "command",
+        "commands": ["yarn"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["yarn", "--version"]
+    },
+    {
+      "id": "pip-packages",
+      "name": "pip packages (user)",
+      "category": "library",
+      "description": "User-installed Python packages",
+      "detect": {
+        "type": "command",
+        "commands": ["pip", "pip3"]
+      },
+      "versionFrom": "command",
+      "versionCommand": ["pip", "--version"]
+    }
+  ]
+}
