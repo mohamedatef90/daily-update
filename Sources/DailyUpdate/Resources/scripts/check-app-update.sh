@@ -46,7 +46,9 @@ compare_versions() {
 
 fetch_sparkle_version() {
   local feed="$1"
-  curl -fsSL "$feed" 2>/dev/null | grep -m1 'sparkle:shortVersionString' 2>/dev/null | sed -E 's/.*>([^<]+)<.*/\1/' || true
+  local separator="?"
+  [[ "$feed" == *\?* ]] && separator="&"
+  curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${feed}${separator}daily_update_ts=$(date +%s)" 2>/dev/null | grep -m1 'sparkle:shortVersionString' 2>/dev/null | sed -E 's/.*>([^<]+)<.*/\1/' || true
 }
 
 brew_cask_latest() {

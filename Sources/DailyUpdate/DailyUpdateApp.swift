@@ -72,6 +72,10 @@ struct DailyUpdateApp: App {
                 DryRunSheet()
                     .environmentObject(appState)
             }
+            .sheet(isPresented: $appState.showUpdateReport) {
+                UpdateReportSheet()
+                    .environmentObject(appState)
+            }
             .onAppear {
                 appDelegate.connect(appState: appState)
                 appState.appDelegate = appDelegate

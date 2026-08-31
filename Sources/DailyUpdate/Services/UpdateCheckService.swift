@@ -11,7 +11,12 @@ enum UpdateCheckService {
         let current = await DetectionService.getVersion(config)
 
         if let checkCommand = config.checkCommand {
-            let result = await ShellRunner.run(checkCommand, workingDirectory: cwd)
+            // npm otherwise favors its local metadata cache; prefer a live registry lookup.
+            let result = await ShellRunner.run(
+                checkCommand,
+                workingDirectory: cwd,
+                environment: ["npm_config_prefer_online": "true"]
+            )
             let output = result.stdout
             let combined = [result.stdout, result.stderr]
                 .filter { !$0.isEmpty }

@@ -14,6 +14,13 @@ final class AppState: ObservableObject {
     @Published var checkedItemCount = 0
     @Published var totalItemCount = 0
     @Published var isUpdating = false
+    @Published var completedUpdateItemCount = 0
+    @Published var totalUpdateItemCount = 0
+    @Published var currentUpdateItemName: String?
+    @Published var successfulUpdateItemCount = 0
+    @Published var failedUpdateItemCount = 0
+    @Published var showUpdateReport = false
+    @Published var updateReport: UpdateRunReport?
     @Published var lastCheckDate: Date? = nil
     @Published var logLines: [String] = []
     @Published var showOnboarding = false
@@ -131,6 +138,32 @@ final class AppState: ObservableObject {
     var scheduledCheckEnabled: Bool {
         get { settingsStore.settings.scheduledCheckEnabled }
         set { settingsStore.settings.scheduledCheckEnabled = newValue; settingsStore.save() }
+    }
+
+    var scheduledCheckInterval: ScheduledCheckInterval {
+        get { settingsStore.settings.scheduledCheckInterval ?? .hours6 }
+        set { settingsStore.settings.scheduledCheckInterval = newValue; settingsStore.save() }
+    }
+
+    var scheduledCheckCustomMinutes: Int {
+        get { max(15, settingsStore.settings.scheduledCheckCustomMinutes ?? 120) }
+        set { settingsStore.settings.scheduledCheckCustomMinutes = max(15, newValue); settingsStore.save() }
+    }
+
+    var scheduledCheckIntervalMinutes: Int {
+        scheduledCheckInterval.minutes(customMinutes: scheduledCheckCustomMinutes)
+    }
+
+    var updateProgressFraction: Double {
+        guard totalUpdateItemCount > 0 else { return 0 }
+        return Double(completedUpdateItemCount) / Double(totalUpdateItemCount)
+    }
+
+    var updateProgressLabel: String {
+        if let currentUpdateItemName {
+            return "Updating \(currentUpdateItemName) · \(completedUpdateItemCount) of \(totalUpdateItemCount) complete"
+        }
+        return "Updated \(completedUpdateItemCount) of \(totalUpdateItemCount)"
     }
 
     // MARK: - Menu bar
@@ -338,6 +371,9 @@ final class AppState: ObservableObject {
     }
 
     private func markDuplicates() {
+        for index in items.indices {
+            items[index].duplicateGroupID = nil
+        }
         for group in duplicateGroups {
             for id in group.itemIDs {
                 if let index = items.firstIndex(where: { $0.id == id }) {
@@ -459,6 +495,10 @@ final class AppState: ObservableObject {
         isChecking = true
         checkedItemCount = 0
         appendLog("Starting update check…")
+        appendLog("Refreshing package metadata…")
+        if !(await FreshnessService.refreshPackageMetadata()) {
+            appendLog("Package metadata refresh skipped or unavailable; continuing with live checks")
+        }
         if rescanReposOnLaunch { reloadConfigs() }
 
         let appFolders = settingsStore.settings.applicationFolders
@@ -551,15 +591,23 @@ final class AppState: ObservableObject {
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         isUpdating = true
+        completedUpdateItemCount = 0
+        totalUpdateItemCount = targets.count
+        currentUpdateItemName = nil
+        successfulUpdateItemCount = 0
+        failedUpdateItemCount = 0
         appendLog("Running \(targets.count) action(s)…")
         var successCount = 0
         var failCount = 0
+        var results: [UpdateRunItemResult] = []
 
         for target in targets {
             guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
             let installing = items[index].canInstall
             let verb = installing ? "Installing" : "Updating"
             items[index].status = .updating
+            items[index].statusMessage = "\(verb)…"
+            currentUpdateItemName = target.name
             appendLog("\(verb) \(target.name)…")
 
             let fromVersion = items[index].currentVersion
@@ -589,16 +637,33 @@ final class AppState: ObservableObject {
             UpdateHistoryStore.append(entry)
             history.insert(entry, at: 0)
 
+            results.append(UpdateRunItemResult(
+                id: target.id,
+                name: target.name,
+                success: status == .updated,
+                message: message
+            ))
+            completedUpdateItemCount += 1
+
             if status == .updated {
                 successCount += 1
+                successfulUpdateItemCount = successCount
                 appendLog("✓ \(target.name) \(installing ? "installed" : "updated")")
             } else {
                 failCount += 1
+                failedUpdateItemCount = failCount
                 appendLog("✗ \(target.name): \(message ?? "failed")")
             }
         }
 
         isUpdating = false
+        currentUpdateItemName = nil
+        updateReport = UpdateRunReport(
+            completedAt: Date(),
+            succeededCount: successCount,
+            failedCount: failCount,
+            results: results
+        )
         appendLog("Action run finished")
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
@@ -607,6 +672,7 @@ final class AppState: ObservableObject {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
         await checkAll()
+        showUpdateReport = true
     }
 
     private func actionCommand(for item: UpdateItem) -> String {
@@ -624,10 +690,49 @@ final class AppState: ObservableObject {
         await updateSelected(skipDryRun: true)
     }
 
+    func retryUpdate(id: String) async {
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              items[index].isInstalled,
+              !items[index].updateCommand.isEmpty else {
+            return
+        }
+        deselectAll()
+        items[index].isSelected = true
+        await updateSelected(skipDryRun: true)
+    }
+
     private func orderedUpdateTargets(_ targets: [UpdateItem]) -> [UpdateItem] {
         let order = settingsStore.settings.updateCategoryOrder.compactMap { ItemCategory(rawValue: $0) }
         let effectiveOrder = order.isEmpty ? UpdateGroupOrder.defaultOrder : order
-        return UpdateGroupOrder.sortItems(targets, order: effectiveOrder)
+        let preferredTargets = targets.sorted {
+            let lhsPriority = duplicateSourcePriority($0)
+            let rhsPriority = duplicateSourcePriority($1)
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        var selectedGroups = Set<String>()
+        var uniqueTargets: [UpdateItem] = []
+
+        for item in preferredTargets {
+            let memberships = duplicateGroups
+                .filter { $0.itemIDs.contains(item.id) }
+                .map(\.id)
+            guard !memberships.contains(where: { selectedGroups.contains($0) }) else {
+                appendLog("Skipped duplicate update target: \(item.name)")
+                continue
+            }
+            selectedGroups.formUnion(memberships)
+            uniqueTargets.append(item)
+        }
+        return UpdateGroupOrder.sortItems(uniqueTargets, order: effectiveOrder)
+    }
+
+    private func duplicateSourcePriority(_ item: UpdateItem) -> Int {
+        switch item.source {
+        case .user: return 0
+        case .bundled, .none: return 1
+        case .discovered: return 2
+        }
     }
 
     // MARK: - Health & Import/Export

@@ -59,6 +59,9 @@ struct DashboardView: View {
     private var duplicatesSection: some View {
         GroupBox("Possible Duplicates") {
             VStack(alignment: .leading, spacing: 10) {
+                Text("Only one preferred entry from each duplicate group is updated. Custom items take priority, followed by built-in and discovered items.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 ForEach(appState.duplicateGroups) { group in
                     DuplicateGroupRow(
                         group: group,

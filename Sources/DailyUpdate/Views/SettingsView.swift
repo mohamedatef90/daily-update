@@ -76,17 +76,32 @@ struct SettingsView: View {
             }
 
             Section("Scheduled Check") {
-                Toggle("Daily scheduled check", isOn: Binding(
+                Toggle("Run recurring update checks", isOn: Binding(
                     get: { appState.scheduledCheckEnabled },
                     set: { appState.scheduledCheckEnabled = $0 }
                 ))
-                Stepper("Time: \(appState.settingsStore.settings.scheduledCheckHour):\(String(format: "%02d", appState.settingsStore.settings.scheduledCheckMinute))", value: Binding(
-                    get: { appState.settingsStore.settings.scheduledCheckHour },
-                    set: {
-                        appState.settingsStore.settings.scheduledCheckHour = $0
-                        appState.settingsStore.save()
+                Picker("Check interval", selection: Binding(
+                    get: { appState.scheduledCheckInterval },
+                    set: { appState.scheduledCheckInterval = $0 }
+                )) {
+                    ForEach(ScheduledCheckInterval.allCases) { interval in
+                        Text(interval.label).tag(interval)
                     }
-                ), in: 0...23)
+                }
+                if appState.scheduledCheckInterval == .custom {
+                    Stepper(
+                        "Custom interval: \(appState.scheduledCheckCustomMinutes) minutes",
+                        value: Binding(
+                            get: { appState.scheduledCheckCustomMinutes },
+                            set: { appState.scheduledCheckCustomMinutes = $0 }
+                        ),
+                        in: 15...1_440,
+                        step: 15
+                    )
+                }
+                Text("Checks use the latest available registry and release-feed data.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Auto-update items marked for auto-update", isOn: Binding(
                     get: { appState.settingsStore.settings.autoUpdateScheduledItems },
                     set: {

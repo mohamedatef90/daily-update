@@ -67,6 +67,23 @@ struct DryRunEntry: Identifiable {
     let category: ItemCategory
 }
 
+struct UpdateRunItemResult: Identifiable {
+    let id: String
+    let name: String
+    let success: Bool
+    let message: String?
+}
+
+struct UpdateRunReport: Identifiable {
+    let id = UUID()
+    let completedAt: Date
+    let succeededCount: Int
+    let failedCount: Int
+    let results: [UpdateRunItemResult]
+
+    var totalCount: Int { succeededCount + failedCount }
+}
+
 struct WidgetSnapshot: Codable {
     var updateCount: Int
     var lastCheck: Date?

@@ -3,7 +3,7 @@ import Foundation
 final class SchedulerService {
     private var timer: Timer?
     private weak var appState: AppState?
-    private var lastScheduledRunDay: String?
+    private var lastScheduledRun: Date?
 
     func start(appState: AppState) {
         self.appState = appState
@@ -24,17 +24,14 @@ final class SchedulerService {
     private func tick() async {
         guard let appState else { return }
         let settings = appState.settingsStore.settings
-        guard settings.scheduledCheckEnabled else { return }
+        guard settings.scheduledCheckEnabled, !appState.isChecking, !appState.isUpdating else { return }
 
         let now = Date()
-        let calendar = Calendar.current
-        let hour = calendar.component(.hour, from: now)
-        let minute = calendar.component(.minute, from: now)
-        guard hour == settings.scheduledCheckHour, minute == settings.scheduledCheckMinute else { return }
-
-        let dayKey = calendar.startOfDay(for: now).description
-        guard lastScheduledRunDay != dayKey else { return }
-        lastScheduledRunDay = dayKey
+        let interval = TimeInterval((settings.scheduledCheckInterval ?? .hours6)
+            .minutes(customMinutes: max(15, settings.scheduledCheckCustomMinutes ?? 120)) * 60)
+        let latestCheck = [lastScheduledRun, appState.lastCheckDate].compactMap { $0 }.max() ?? .distantPast
+        guard now.timeIntervalSince(latestCheck) >= interval else { return }
+        lastScheduledRun = now
 
         await appState.checkAll()
         if settings.autoUpdateScheduledItems {

@@ -14,7 +14,14 @@ enum UpdateExecutor {
             }
         }
 
-        let command = installing || !item.isInstalled ? item.installCommand : item.updateCommand
+        let requestedCommand = installing || !item.isInstalled ? item.installCommand : item.updateCommand
+        guard let command = nonLaunchingCommand(from: requestedCommand) else {
+            return (
+                .error,
+                item.currentVersion,
+                "This update requires opening an app manually. Daily Update does not launch apps during updates."
+            )
+        }
         let cwd = item.workingDirectory?.expandingTilde
         let result = await ShellRunner.run(command, workingDirectory: cwd, timeout: 600)
 
@@ -37,8 +44,23 @@ enum UpdateExecutor {
         }
 
         let action = installing || !item.isInstalled ? "Install" : "Update"
-        let message = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty ?? "\(action) failed (exit \(result.exitCode))"
+        let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
+        let message = detail.map { "\(action) failed (exit \(result.exitCode)): \($0)" }
+            ?? "\(action) failed (exit \(result.exitCode))"
         return (.error, item.currentVersion, message)
+    }
+
+    /// Removes `open` fallback commands so an update never launches an app or the App Store.
+    private static func nonLaunchingCommand(from command: String) -> String? {
+        let safeParts = command
+            .components(separatedBy: "||")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { part in
+                let lower = part.lowercased()
+                return !lower.hasPrefix("open ") && !lower.hasPrefix("/usr/bin/open ")
+            }
+        let safeCommand = safeParts.joined(separator: " || ")
+        return safeCommand.nilIfEmpty
     }
 }
 

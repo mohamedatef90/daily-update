@@ -59,8 +59,17 @@ struct ItemListView: View {
                     .width(min: 120, ideal: 160)
 
                     TableColumn("Status") { item in
-                        HStack {
+                        HStack(alignment: .center) {
                             StatusBadge(status: item.status, message: item.statusMessage)
+                            if item.status == .error, item.isInstalled, !item.updateCommand.isEmpty {
+                                Button("Retry") {
+                                    Task { await appState.retryUpdate(id: item.id) }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(appState.isUpdating || appState.isChecking)
+                                .help("Retry this item's update")
+                            }
                             if item.isUserDefined {
                                 Button(role: .destructive) {
                                     appState.removeCustomItem(id: item.id)
@@ -121,8 +130,20 @@ struct ItemListView: View {
     private var bottomBar: some View {
         HStack {
             if appState.isUpdating {
-                ProgressView("Running…")
-                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(appState.updateProgressLabel)
+                            .font(.caption)
+                        if appState.failedUpdateItemCount > 0 {
+                            Text("\(appState.failedUpdateItemCount) failed")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    ProgressView(value: appState.updateProgressFraction)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 320)
+                }
             } else if appState.isChecking {
                 ProgressView("Checking for updates…")
                     .controlSize(.small)
@@ -144,19 +165,24 @@ struct StatusBadge: View {
     let message: String?
 
     var body: some View {
-        HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
             Circle()
                 .fill(color)
                 .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
                 Text(status.label)
                     .font(.caption.weight(.medium))
-                if let message, status == .error || status == .notInstalled {
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+            }
+            if status == .updating {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(width: 86)
+            }
+            if let message, status == .error || status == .notInstalled {
+                Text(status == .error ? "Reason: \(message)" : message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
     }
@@ -219,7 +245,7 @@ struct ItemNameCell: View {
                         Image(systemName: "doc.on.doc")
                             .font(.caption2)
                             .foregroundStyle(.orange)
-                            .help("Possible duplicate")
+                            .help("Possible duplicate; only one preferred entry is updated")
                     }
                     if item.isPinnedMismatch {
                         Image(systemName: "pin.fill")

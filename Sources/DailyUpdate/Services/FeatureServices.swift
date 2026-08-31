@@ -3,49 +3,63 @@ import Foundation
 enum DuplicateDetector {
     static func find(in items: [UpdateItem]) -> [DuplicateGroup] {
         var groups: [DuplicateGroup] = []
+        var groupIDs = Set<String>()
         var byName: [String: [UpdateItem]] = [:]
+        var byLocation: [String: [UpdateItem]] = [:]
 
         for item in items {
-            let key = item.name.lowercased().trimmingCharacters(in: .whitespaces)
+            let key = "\(item.category.rawValue):\(item.name.lowercased().trimmingCharacters(in: .whitespaces))"
             byName[key, default: []].append(item)
+            if item.category == .app, let iconPath = item.iconPath?.nilIfEmpty {
+                byLocation[iconPath.expandingTilde.lowercased(), default: []].append(item)
+            }
         }
 
         for (_, group) in byName where group.count > 1 {
-            groups.append(DuplicateGroup(
-                id: group.map(\.id).joined(separator: "-"),
-                itemIDs: group.map(\.id),
-                reason: "Same name: \(group[0].name)"
-            ))
+            appendGroup(group, reason: "Same name and category: \(group[0].name)", to: &groups, seen: &groupIDs)
+        }
+
+        for (_, group) in byLocation where group.count > 1 {
+            appendGroup(group, reason: "Same app location", to: &groups, seen: &groupIDs)
         }
 
         let commandGroups = Dictionary(grouping: items.filter { !$0.updateCommand.isEmpty }) {
-            normalizeCommand($0.updateCommand)
+            "\($0.category.rawValue):\(normalizeCommand($0.updateCommand)):\($0.workingDirectory?.expandingTilde ?? "")"
         }
         for (_, group) in commandGroups where group.count > 1 {
-            let ids = group.map(\.id)
-            if !groups.contains(where: { Set($0.itemIDs) == Set(ids) }) {
-                groups.append(DuplicateGroup(
-                    id: ids.joined(separator: "-"),
-                    itemIDs: ids,
-                    reason: "Similar update command"
-                ))
-            }
+            appendGroup(group, reason: "Same update command", to: &groups, seen: &groupIDs)
         }
 
         return groups
     }
 
+    private static func appendGroup(
+        _ items: [UpdateItem],
+        reason: String,
+        to groups: inout [DuplicateGroup],
+        seen: inout Set<String>
+    ) {
+        let ids = items.map(\.id).sorted()
+        let key = ids.joined(separator: "|")
+        guard seen.insert(key).inserted else { return }
+        groups.append(DuplicateGroup(id: key, itemIDs: ids, reason: reason))
+    }
+
     private static func normalizeCommand(_ command: String) -> String {
-        command
-            .replacingOccurrences(of: "brew upgrade --cask", with: "brew")
-            .replacingOccurrences(of: "brew upgrade", with: "brew")
-            .replacingOccurrences(of: "npm update -g", with: "npm")
-            .replacingOccurrences(of: "npm install -g", with: "npm")
+        (command
+            .components(separatedBy: "||")
+            .first ?? command)
+            .replacingOccurrences(of: "2>/dev/null", with: "")
+            .replacingOccurrences(of: "1>/dev/null", with: "")
+            .replacingOccurrences(of: "  ", with: " ")
             .components(separatedBy: .whitespaces)
-            .prefix(3)
             .joined(separator: " ")
             .lowercased()
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 enum HealthCheckService {

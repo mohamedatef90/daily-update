@@ -67,6 +67,36 @@ struct SkillDiscoverySettings: Codable, Equatable {
     static var defaults: SkillDiscoverySettings { SkillDiscoverySettings() }
 }
 
+enum ScheduledCheckInterval: String, Codable, CaseIterable, Identifiable {
+    case minutes30
+    case minutes60
+    case hours3
+    case hours6
+    case custom
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .minutes30: return "Every 30 minutes"
+        case .minutes60: return "Every hour"
+        case .hours3: return "Every 3 hours"
+        case .hours6: return "Every 6 hours"
+        case .custom: return "Custom"
+        }
+    }
+
+    func minutes(customMinutes: Int) -> Int {
+        switch self {
+        case .minutes30: return 30
+        case .minutes60: return 60
+        case .hours3: return 180
+        case .hours6: return 360
+        case .custom: return max(15, customMinutes)
+        }
+    }
+}
+
 struct UserSettings: Codable {
     var hasCompletedSetup: Bool = false
     var rootFolder: String = ""
@@ -94,6 +124,9 @@ struct UserSettings: Codable {
     var scheduledCheckEnabled: Bool = false
     var scheduledCheckHour: Int = 9
     var scheduledCheckMinute: Int = 0
+    // Optional values keep existing settings files compatible after this upgrade.
+    var scheduledCheckInterval: ScheduledCheckInterval? = .hours6
+    var scheduledCheckCustomMinutes: Int? = 120
     var autoUpdateScheduledItems: Bool = false
     var showDashboardOnLaunch: Bool = false
 
