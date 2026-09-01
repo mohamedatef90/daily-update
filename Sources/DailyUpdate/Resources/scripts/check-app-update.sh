@@ -53,8 +53,8 @@ normalize_version() {
 fetch_sparkle_latest() {
   local feed="$1"
   curl -fsSL "$feed" 2>/dev/null \
-    | grep 'sparkle:shortVersionString' 2>/dev/null \
-    | sed -E 's/.*>([^<]+)<.*/\1/' \
+    | grep -oE 'sparkle:shortVersionString="[^"]+"' 2>/dev/null \
+    | sed -E 's/^[^="]+="([^"]+)"$/\1/; s/[[:space:]]*\([^)]*\)//g' \
     | sort -V \
     | tail -1 || true
 }

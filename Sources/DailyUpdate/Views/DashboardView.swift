@@ -180,6 +180,17 @@ struct HistoryView: View {
                             .font(.caption)
                     }
                     .width(90)
+
+                    TableColumn("Reason") { entry in
+                        let reason = entry.message ?? (entry.success ? "Completed" : "No reason reported")
+                        Text(reason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                            .help(reason)
+                    }
+                    .width(min: 180, ideal: 320)
                 }
             }
         }
@@ -244,7 +255,6 @@ struct DryRunSheet: View {
                 Spacer()
                 Button(runButtonTitle) {
                     dismiss()
-                    appState.shouldSkipDryRun = true
                     Task { await appState.updateSelected(skipDryRun: true) }
                 }
                 .keyboardShortcut(.defaultAction)

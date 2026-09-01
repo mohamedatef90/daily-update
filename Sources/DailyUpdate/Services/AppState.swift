@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     @Published var history: [UpdateHistoryEntry] = []
     @Published var healthIssues: [HealthIssue] = []
     @Published var duplicateGroups: [DuplicateGroup] = []
+    @Published var launchAtLoginError: String?
 
     let settingsStore: UserSettingsStore
     private let scheduler = SchedulerService()
@@ -34,19 +35,14 @@ final class AppState: ObservableObject {
     private var configs: [DetectorConfig] = []
     private var wakeObserver: NSObjectProtocol?
     private var hasRunStartupCheck = false
-    private var pendingSkipDryRun = false
-
-    func confirmDryRunUpdate() {
-        pendingSkipDryRun = true
-    }
-
-    var shouldSkipDryRun: Bool {
-        get { pendingSkipDryRun }
-        set { pendingSkipDryRun = newValue }
-    }
+    private var cancellables = Set<AnyCancellable>()
 
     init(settingsStore: UserSettingsStore = UserSettingsStore()) {
         self.settingsStore = settingsStore
+        settingsStore.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         loadSettings()
         history = UpdateHistoryStore.load()
         showOnboarding = !settingsStore.settings.hasCompletedSetup
@@ -107,9 +103,14 @@ final class AppState: ObservableObject {
     var launchAtLogin: Bool {
         get { settingsStore.settings.launchAtLogin }
         set {
+            if let error = LaunchAtLogin.setEnabled(newValue) {
+                launchAtLoginError = error
+                appendLog("Launch at login: \(error)")
+                return
+            }
+            launchAtLoginError = nil
             settingsStore.settings.launchAtLogin = newValue
             settingsStore.save()
-            if let error = LaunchAtLogin.setEnabled(newValue) { appendLog("Launch at login: \(error)") }
         }
     }
 
@@ -178,7 +179,7 @@ final class AppState: ObservableObject {
     }
 
     var activeItems: [UpdateItem] {
-        installedItems.filter { !$0.permanentlyIgnored && !$0.isSnoozed }
+        items.filter { !$0.permanentlyIgnored && !$0.isSnoozed }
     }
 
     var listTitle: String {
@@ -212,11 +213,11 @@ final class AppState: ObservableObject {
 
     var dashboardStats: DashboardStats {
         DashboardStats(
-            totalItems: installedItems.count,
+            totalItems: activeItems.count,
             installedCount: installedItems.count,
             updatesAvailable: updateAvailableCount,
-            snoozedCount: installedItems.filter(\.isSnoozed).count,
-            autoUpdateCount: installedItems.filter(\.autoUpdate).count,
+            snoozedCount: items.filter(\.isSnoozed).count,
+            autoUpdateCount: items.filter(\.autoUpdate).count,
             duplicateCount: duplicateGroups.count,
             byCategory: ItemCategory.allCases.map { cat in (cat, installedItems.filter { $0.category == cat }.count) },
             lastCheck: lastCheckDate
@@ -381,6 +382,13 @@ final class AppState: ObservableObject {
         }
     }
 
+    func unignoreItem(id: String) {
+        settingsStore.updatePreference(for: id) { $0.permanentlyIgnored = false }
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].permanentlyIgnored = false
+        }
+    }
+
     // MARK: - Lifecycle
 
     func completeOnboarding(rootFolder: String, additionalFolders: [String]) {
@@ -466,8 +474,12 @@ final class AppState: ObservableObject {
         totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
-        await withTaskGroup(of: (Int, UpdateItem).self) { group in
-            for (index, config) in configs.enumerated() {
+        let maximumConcurrentChecks = 6
+        for batchStart in stride(from: 0, to: configs.count, by: maximumConcurrentChecks) {
+            let batchEnd = min(batchStart + maximumConcurrentChecks, configs.count)
+            await withTaskGroup(of: (Int, UpdateItem).self) { group in
+            for index in batchStart..<batchEnd {
+                let config = configs[index]
                 group.addTask {
                     var item = config.toUpdateItem()
                     if let pref = prefs[config.id] {
@@ -505,6 +517,7 @@ final class AppState: ObservableObject {
                 checkedItemCount += 1
             }
         }
+        }
 
         lastCheckDate = Date()
         isChecking = false
@@ -523,7 +536,7 @@ final class AppState: ObservableObject {
         let targets = orderedActionTargets(selectedActionableItems)
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
-        if confirmBeforeUpdate && !pendingSkipDryRun {
+        if confirmBeforeUpdate {
             dryRunEntries = targets.map { item in
                 DryRunEntry(
                     id: item.id,
@@ -536,7 +549,6 @@ final class AppState: ObservableObject {
             showDryRun = true
             return
         }
-        pendingSkipDryRun = false
         await updateSelected(skipDryRun: true)
     }
 
@@ -595,7 +607,7 @@ final class AppState: ObservableObject {
                 itemName: target.name,
                 fromVersion: fromVersion,
                 toVersion: result.currentVersion,
-                success: result.status == .updated,
+                success: result.completedOrInitiated,
                 message: result.message,
                 command: command
             )
@@ -608,7 +620,7 @@ final class AppState: ObservableObject {
                 successfulIDs.insert(target.id)
                 appendLog("✓ \(target.name) \(installing ? "installed" : "updated")")
             case .updatePending:
-                failCount += 1
+                successCount += 1
                 appendLog("↪ \(target.name): \(result.message ?? "Finish update in app")")
             case .updateAvailable:
                 failCount += 1
@@ -706,8 +718,11 @@ final class AppState: ObservableObject {
     }
 
     func updateAutoItems() async {
-        for index in items.indices where items[index].autoUpdate && (items[index].status == .updateAvailable || items[index].status == .updatePending) {
-            items[index].isSelected = true
+        for index in items.indices {
+            items[index].isSelected = items[index].autoUpdate &&
+                !items[index].isSnoozed &&
+                !items[index].permanentlyIgnored &&
+                (items[index].status == .updateAvailable || items[index].status == .updatePending)
         }
         await updateSelected(skipDryRun: true)
     }

@@ -40,8 +40,10 @@ enum ItemBuilder {
     static func appFromFolder(name: String, appName: String, appFolders: [String], checkCommand: String?, installCommand: String? = nil, updateCommand: String, description: String?) -> DetectorConfig {
         let folders = appFolders.map { $0.expandingTilde }
         let paths = folders.map { "\($0)/\(appName).app" }
+        let appBundleName = "\(appName).app"
+        let quotedAppBundleName = ShellEscaping.quote(appBundleName)
         let versionCommand = """
-        for d in \(folders.map { "\"\($0)\"" }.joined(separator: " ")); do if [ -d "$d/\(appName).app" ]; then /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$d/\(appName).app/Contents/Info.plist" 2>/dev/null && exit 0; fi; done
+        for d in \(folders.map(ShellEscaping.quote).joined(separator: " ")); do if [ -d "$d"/\(quotedAppBundleName) ]; then /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$d"/\(quotedAppBundleName)/Contents/Info.plist 2>/dev/null && exit 0; fi; done
         """
 
         return DetectorConfig(
@@ -109,6 +111,7 @@ enum ItemBuilder {
 
     static func repo(name: String, path: String, installCommand: String? = nil, description: String?) -> DetectorConfig {
         let expanded = path.expandingTilde
+        let quotedPath = ShellEscaping.quote(expanded)
         return DetectorConfig(
             id: makeID(prefix: "repo"),
             name: name,
@@ -116,53 +119,65 @@ enum ItemBuilder {
             description: description,
             source: .user,
             detect: DetectRule(type: .path, paths: [expanded], command: nil, appName: nil),
-            versionCommand: "git -C \"\(expanded)\" rev-parse --short HEAD 2>/dev/null",
-            checkCommand: "git -C \"\(expanded)\" fetch --quiet origin 2>/dev/null || true; commits=$(git -C \"\(expanded)\" rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
+            versionCommand: "git -C \(quotedPath) rev-parse --short HEAD 2>/dev/null",
+            checkCommand: "git -C \(quotedPath) fetch --quiet origin 2>/dev/null || true; commits=$(git -C \(quotedPath) rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
             installCommand: installCommand,
-            updateCommand: "cd \"\(expanded)\" && git pull --ff-only",
+            updateCommand: "git -C \(quotedPath) pull --ff-only",
             workingDirectory: expanded
         )
     }
 
     static func discoveredRepo(path: String) -> DetectorConfig {
         let name = URL(fileURLWithPath: path).lastPathComponent
+        let quotedPath = ShellEscaping.quote(path)
         return DetectorConfig(
-            id: "discovered-\(path.hashValue)",
+            id: stableID(prefix: "discovered", path: path),
             name: name,
             category: .repo,
             description: path,
             source: .discovered,
             detect: DetectRule(type: .path, paths: [path], command: nil, appName: nil),
-            versionCommand: "git -C \"\(path)\" rev-parse --short HEAD 2>/dev/null",
-            checkCommand: "git -C \"\(path)\" fetch --quiet origin 2>/dev/null || true; commits=$(git -C \"\(path)\" rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
+            versionCommand: "git -C \(quotedPath) rev-parse --short HEAD 2>/dev/null",
+            checkCommand: "git -C \(quotedPath) fetch --quiet origin 2>/dev/null || true; commits=$(git -C \(quotedPath) rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
             installCommand: nil,
-            updateCommand: "git -C \"\(path)\" pull --ff-only",
+            updateCommand: "git -C \(quotedPath) pull --ff-only",
             workingDirectory: path
         )
     }
 
     static func discoveredSkill(path: String, name: String, kind: String) -> DetectorConfig {
-        DetectorConfig(
-            id: "discovered-skill-\(path.hashValue)",
+        let quotedPath = ShellEscaping.quote(path)
+        return DetectorConfig(
+            id: stableID(prefix: "discovered-skill", path: path),
             name: name,
             category: .library,
             description: "\(kind) · \(path)",
             source: .discovered,
             detect: DetectRule(type: .path, paths: [path], command: nil, appName: nil),
-            versionCommand: "git -C \"\(path)\" rev-parse --short HEAD 2>/dev/null",
-            checkCommand: "git -C \"\(path)\" fetch --quiet origin 2>/dev/null || true; commits=$(git -C \"\(path)\" rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
+            versionCommand: "git -C \(quotedPath) rev-parse --short HEAD 2>/dev/null",
+            checkCommand: "git -C \(quotedPath) fetch --quiet origin 2>/dev/null || true; commits=$(git -C \(quotedPath) rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE || echo OK",
             installCommand: nil,
-            updateCommand: "git -C \"\(path)\" pull --ff-only",
+            updateCommand: "git -C \(quotedPath) pull --ff-only",
             workingDirectory: path
         )
     }
 
     static func discoveredApp(info: InstalledAppInfo) -> DetectorConfig {
-        let escapedPath = info.path.replacingOccurrences(of: "\"", with: "\\\"")
-        let versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"\(escapedPath)/Contents/Info.plist\" 2>/dev/null"
-        let checkCommand = "{CHECK_SCRIPT} auto \"\(escapedPath)\""
-        let openName = info.name.replacingOccurrences(of: "\"", with: "\\\"")
-        let updateCommand = "open -a \"\(openName)\""
+        let quotedPath = ShellEscaping.quote(info.path)
+        let isObsidian = info.bundleID == "md.obsidian"
+        let versionCommand: String
+        let checkCommand: String
+
+        if isObsidian {
+            // Obsidian updates its application package separately from the macOS
+            // bundle. The bundle version is often older than the running app.
+            versionCommand = "for f in \"$HOME/Library/Application Support/obsidian\"/obsidian-*.asar; do [ -f \"$f\" ] && basename \"${f%.asar}\" | sed 's/^obsidian-//'; done | sort -V | tail -1"
+            checkCommand = "echo OK"
+        } else {
+            versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \(quotedPath)/Contents/Info.plist 2>/dev/null"
+            checkCommand = "{CHECK_SCRIPT} auto \(quotedPath)"
+        }
+        let updateCommand = "open \(quotedPath)"
 
         var descriptionParts: [String] = [info.path]
         if let sparkleFeed = info.sparkleFeed {
@@ -173,7 +188,7 @@ enum ItemBuilder {
         }
 
         return DetectorConfig(
-            id: "discovered-app-\(info.path.hashValue)",
+            id: stableID(prefix: "discovered-app", path: info.path),
             name: info.name,
             category: .app,
             description: descriptionParts.joined(separator: " · "),
@@ -201,6 +216,15 @@ enum ItemBuilder {
             updateCommand: updateCommand,
             workingDirectory: nil
         )
+    }
+
+    static func stableID(prefix: String, path: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in path.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "\(prefix)-\(String(hash, radix: 16))"
     }
 }
 

@@ -31,23 +31,29 @@ enum CLIRunner {
         }
 
         if flags.contains("--install-all") {
+            await state.checkAll()
             state.selectAllInstallable()
             await state.updateSelected(skipDryRun: true)
             return state.items.contains { $0.status == .error } ? 1 : 0
         }
 
         if flags.contains("--update-all") {
+            await state.checkAll()
             state.selectAllUpdates()
             await state.updateSelected(skipDryRun: true)
             return state.items.contains { $0.status == .error } ? 1 : 0
         }
 
         if flags.contains("--install") {
+            await state.checkAll()
+            state.selectAllInstallable()
             await state.updateSelected(skipDryRun: true)
             return state.items.contains { $0.status == .error } ? 1 : 0
         }
 
         if flags.contains("--update") {
+            await state.checkAll()
+            state.selectAllUpdates()
             await state.updateSelected(skipDryRun: true)
             return state.items.contains { $0.status == .error } ? 1 : 0
         }
@@ -72,26 +78,15 @@ enum CLIRunner {
         return 1
     }
 
-    static func runSync(arguments: [String]) -> Int32 {
-        let semaphore = DispatchSemaphore(value: 0)
-        var code: Int32 = 1
-        Task { @MainActor in
-            code = await run(arguments: arguments)
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return code
-    }
-
     private static func printHelp() {
         print("""
         Daily Update CLI
 
         Usage:
           DailyUpdate --check              Check for updates
-          DailyUpdate --update             Update selected items
+          DailyUpdate --update             Alias for --update-all
           DailyUpdate --update-all         Update all available items
-          DailyUpdate --install            Install selected missing items
+          DailyUpdate --install            Alias for --install-all
           DailyUpdate --install-all        Install all missing items
           DailyUpdate --health             Run health checks
           DailyUpdate --json               JSON output (with --check or --health)

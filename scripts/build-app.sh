@@ -22,6 +22,9 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if [[ -d "$BUILD_DIR/${APP_NAME}_${APP_NAME}.bundle" ]]; then
+    cp -R "$BUILD_DIR/${APP_NAME}_${APP_NAME}.bundle" "$APP_BUNDLE/"
+fi
 cp "$ROOT/Sources/DailyUpdate/Resources/detectors.json" "$APP_BUNDLE/Contents/Resources/"
 mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
 cp "$ROOT/Sources/DailyUpdate/Resources/scripts/check-app-update.sh" "$APP_BUNDLE/Contents/Resources/scripts/"

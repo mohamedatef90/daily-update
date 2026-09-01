@@ -19,6 +19,13 @@ enum UpdateCheckService {
             let lower = output.lowercased()
             let combinedLower = combined.lowercased()
 
+            if lower.hasPrefix("manual:") {
+                let message = output
+                    .dropFirst("manual:".count)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (.unknown, current, nil, message.nilIfEmpty ?? "Check manually")
+            }
+
             if combinedLower.contains("broken") {
                 let latest = parseLatest(from: combined)
                 return (.error, current, latest, "Install broken — select Update to reinstall")
@@ -81,12 +88,14 @@ enum UpdateCheckService {
             return (.updateAvailable, current, latest, nil)
         }
 
-        if let current, !current.isEmpty {
-            // Script reported UPDATE but we cannot parse a concrete latest — avoid false positives.
-            return (.upToDate, current, current, nil)
-        }
-
-        return (.updateAvailable, current, latest, nil)
+        // A detector explicitly reporting UPDATE is authoritative even when its
+        // upstream source does not expose a concrete version number.
+        return (
+            .updateAvailable,
+            current,
+            latest,
+            latest == nil ? "Update available (latest version not reported)" : nil
+        )
     }
 
     private static func isConcreteVersion(_ value: String) -> Bool {

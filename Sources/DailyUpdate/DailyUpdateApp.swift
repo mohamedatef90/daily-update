@@ -5,7 +5,10 @@ enum DailyUpdateMain {
     static func main() {
         let args = CommandLine.arguments
         if args.count > 1, args.dropFirst().contains(where: { $0.hasPrefix("-") }) {
-            exit(CLIRunner.runSync(arguments: args))
+            Task { @MainActor in
+                exit(await CLIRunner.run(arguments: args))
+            }
+            dispatchMain()
         }
         DailyUpdateApp.main()
     }

@@ -36,17 +36,8 @@ enum ShellRunner {
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 
-                let group = DispatchGroup()
-                group.enter()
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                    if process.isRunning {
-                        process.terminate()
-                    }
-                }
-
                 do {
                     try process.run()
-                    process.waitUntilExit()
                 } catch {
                     continuation.resume(returning: Result(
                         exitCode: 127,
@@ -56,8 +47,35 @@ enum ShellRunner {
                     return
                 }
 
-                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                // Drain both pipes while the process is running. Waiting first can
+                // deadlock whenever a child writes more than a pipe buffer.
+                let readGroup = DispatchGroup()
+                var stdoutData = Data()
+                var stderrData = Data()
+
+                readGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                    readGroup.leave()
+                }
+
+                readGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    readGroup.leave()
+                }
+
+                let timeoutWork = DispatchWorkItem {
+                    if process.isRunning {
+                        process.terminate()
+                    }
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
+
+                process.waitUntilExit()
+                timeoutWork.cancel()
+                readGroup.wait()
+
                 let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 

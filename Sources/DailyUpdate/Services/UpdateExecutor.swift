@@ -3,24 +3,12 @@ import Foundation
 enum UpdateExecutor {
     static func update(_ item: UpdateItem, installing: Bool = false, stashRepos: Bool = true) async -> UpdateResult {
         if installing || !item.isInstalled {
-            return await performInstall(item, stashRepos: stashRepos)
+            return await performInstall(item)
         }
         return await performUpdate(item, stashRepos: stashRepos)
     }
 
-    private static func performInstall(_ item: UpdateItem, stashRepos: Bool) async -> UpdateResult {
-        var notes: [String] = []
-
-        if stashRepos, item.category == .repo {
-            let (safe, message) = await RepoSafetyService.preflight(item)
-            if !safe, let message {
-                return .failed(reason: message, current: item.currentVersion, latest: item.latestVersion)
-            }
-            if let stashNote = await RepoSafetyService.stashAndPull(item) {
-                notes.append(stashNote)
-            }
-        }
-
+    private static func performInstall(_ item: UpdateItem) async -> UpdateResult {
         let command = item.installCommand
         let result = await ShellRunner.run(command, workingDirectory: item.workingDirectory?.expandingTilde, timeout: 600)
         guard result.succeeded else {
@@ -29,20 +17,22 @@ enum UpdateExecutor {
         }
 
         let version = await DetectionService.getVersion(detectorConfig(from: item))
-        let note = notes.isEmpty ? nil : notes.joined(separator: "; ")
-        return .success(current: version, latest: version, note: note)
+        return .success(current: version, latest: version)
     }
 
     private static func performUpdate(_ item: UpdateItem, stashRepos: Bool) async -> UpdateResult {
         var notes: [String] = []
 
-        if stashRepos, item.category == .repo {
-            let (safe, message) = await RepoSafetyService.preflight(item)
-            if !safe, let message {
-                return .failed(reason: message, current: item.currentVersion, latest: item.latestVersion)
-            }
-            if let stashNote = await RepoSafetyService.stashAndPull(item) {
-                notes.append(stashNote)
+        if item.category == .repo {
+            if stashRepos {
+                if let stashNote = await RepoSafetyService.stashLocalChanges(item) {
+                    notes.append(stashNote)
+                }
+            } else {
+                let (safe, message) = await RepoSafetyService.preflight(item)
+                if !safe, let message {
+                    return .failed(reason: message, current: item.currentVersion, latest: item.latestVersion)
+                }
             }
         }
 
@@ -140,6 +130,9 @@ enum UpdateExecutor {
     }
 
     private static func failureReason(from result: ShellRunner.Result, action: String) -> String {
+        if result.exitCode == 15 {
+            return "\(action) timed out after 10 minutes. Check your network connection and try again."
+        }
         if let stderr = result.stderr.nilIfEmpty {
             return stderr
         }
@@ -157,7 +150,7 @@ enum UpdateExecutor {
 
     private static func usesInAppUpdateFlow(_ command: String) -> Bool {
         let lower = command.lowercased()
-        if lower.contains("open -a") || lower.contains("open \"-a") {
+        if lower.contains("open -a") || lower.contains("open \"-a") || lower.hasPrefix("open ") {
             return true
         }
         if lower.contains("macappstore://") || lower.contains("apps.apple.com") {

@@ -94,7 +94,7 @@ enum RepoSafetyService {
         }
 
         let cwd = item.workingDirectory?.expandingTilde ?? "."
-        let status = await ShellRunner.run("git -C \"\(cwd)\" status --porcelain 2>/dev/null")
+        let status = await ShellRunner.run("git -C \(ShellEscaping.quote(cwd)) status --porcelain 2>/dev/null")
         guard status.succeeded else { return (true, nil) }
 
         if !status.stdout.isEmpty {
@@ -104,9 +104,9 @@ enum RepoSafetyService {
         return (true, nil)
     }
 
-    static func stashAndPull(_ item: UpdateItem) async -> String? {
+    static func stashLocalChanges(_ item: UpdateItem) async -> String? {
         let cwd = item.workingDirectory?.expandingTilde ?? "."
-        let stash = await ShellRunner.run("git -C \"\(cwd)\" stash push -m 'Daily Update auto-stash' 2>/dev/null")
+        let stash = await ShellRunner.run("git -C \(ShellEscaping.quote(cwd)) stash push -m 'Daily Update auto-stash' 2>/dev/null")
         if stash.succeeded && !stash.stdout.isEmpty && !stash.stdout.contains("No local changes") {
             return "Stashed local changes before pull"
         }

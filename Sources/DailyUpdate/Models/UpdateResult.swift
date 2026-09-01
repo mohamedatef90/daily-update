@@ -7,6 +7,10 @@ struct UpdateResult {
     let message: String?
     let canRetry: Bool
 
+    var completedOrInitiated: Bool {
+        status == .updated || status == .updatePending
+    }
+
     static func success(current: String?, latest: String?, note: String? = nil) -> UpdateResult {
         UpdateResult(
             status: .updated,

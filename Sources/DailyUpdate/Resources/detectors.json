@@ -213,7 +213,7 @@
       "description": "Apple Swift toolchain (ships with Xcode)",
       "detect": { "type": "command", "command": "command -v swift >/dev/null 2>&1" },
       "versionCommand": "swift --version 2>/dev/null | head -1",
-      "checkCommand": "(out=$(/usr/sbin/softwareupdate -l 2>/dev/null) && echo \"$out\" | grep -Eiq 'xcode|command line tools|swift' && echo UPDATE) || echo OK",
+      "checkCommand": "echo 'MANUAL: Swift updates are delivered with Xcode; check the App Store for updates'",
       "updateCommand": "open 'macappstore://apps.apple.com/app/id497799835' || xcode-select --install"
     },
     {

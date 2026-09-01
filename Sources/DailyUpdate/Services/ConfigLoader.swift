@@ -98,13 +98,18 @@ enum ConfigLoader {
     }
 
     static var checkAppUpdateScriptPath: String {
-        let candidates: [URL] = [
-            Bundle.module.url(forResource: "check-app-update", withExtension: "sh", subdirectory: "scripts"),
+        let mainCandidates: [URL] = [
             Bundle.main.resourceURL?.appendingPathComponent("scripts/check-app-update.sh"),
+            Bundle.main.resourceURL?.appendingPathComponent("check-app-update.sh"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/scripts/check-app-update.sh")
         ].compactMap { $0 }
 
-        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+        for url in mainCandidates where FileManager.default.fileExists(atPath: url.path) {
+            return url.path
+        }
+
+        if let url = Bundle.module.url(forResource: "check-app-update", withExtension: "sh"),
+           FileManager.default.fileExists(atPath: url.path) {
             return url.path
         }
 
@@ -197,6 +202,16 @@ enum ConfigLoader {
     }
 
     private static func loadBundledConfigs() -> [DetectorConfig]? {
+        let mainCandidates: [URL] = [
+            Bundle.main.resourceURL?.appendingPathComponent("detectors.json"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/detectors.json")
+        ].compactMap { $0 }
+
+        if let url = mainCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+           let data = try? Data(contentsOf: url) {
+            return decode(data)
+        }
+
         guard let url = Bundle.module.url(forResource: "detectors", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return nil }
         return decode(data)

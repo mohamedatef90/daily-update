@@ -163,7 +163,7 @@ struct StatusBadge: View {
 
     private func shouldShowMessage(for status: ItemStatus) -> Bool {
         switch status {
-        case .error, .notInstalled, .updatePending, .updateAvailable:
+        case .unknown, .error, .notInstalled, .updatePending, .updateAvailable:
             return message != nil
         default:
             return false

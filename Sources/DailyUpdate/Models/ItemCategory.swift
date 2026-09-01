@@ -111,7 +111,7 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var canUpdate: Bool {
-        isInstalled && (status == .updateAvailable || status == .updatePending || status == .error)
+        isInstalled && (status == .updateAvailable || status == .updatePending)
     }
 
     var canRetryUpdate: Bool {

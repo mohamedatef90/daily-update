@@ -5,7 +5,6 @@ struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var newSubfolder = ""
     @State private var newSkipDir = ""
-    @State private var launchAtLoginError: String?
 
     var body: some View {
         TabView {
@@ -159,12 +158,9 @@ struct SettingsView: View {
             Section("Startup") {
                 Toggle("Launch at login", isOn: Binding(
                     get: { appState.launchAtLogin },
-                    set: { newValue in
-                        appState.launchAtLogin = newValue
-                        launchAtLoginError = LaunchAtLogin.setEnabled(newValue)
-                    }
+                    set: { appState.launchAtLogin = $0 }
                 ))
-                if let launchAtLoginError {
+                if let launchAtLoginError = appState.launchAtLoginError {
                     Text(launchAtLoginError)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -471,6 +467,28 @@ struct SettingsView: View {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            Section("Ignored Items") {
+                let ignoredIDs = appState.settingsStore.settings.itemPreferences
+                    .filter { $0.value.permanentlyIgnored }
+                    .map(\.key)
+                    .sorted()
+                if ignoredIDs.isEmpty {
+                    Text("No ignored items")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(ignoredIDs, id: \.self) { id in
+                        HStack {
+                            Text(appState.items.first(where: { $0.id == id })?.name ?? id)
+                            Spacer()
+                            Button("Restore") {
+                                appState.unignoreItem(id: id)
+                            }
                         }
                     }
                 }
