@@ -79,6 +79,23 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertTrue(result.completedOrInitiated)
     }
 
+    func testBrewFallbackOpenIsNotTreatedAsInAppUpdate() {
+        let command = "brew upgrade --cask cursor 2>/dev/null || open -a Cursor"
+        XCTAssertFalse(UpdateCommandSemantics.usesInAppUpdateFlow(command))
+        XCTAssertTrue(UpdateCommandSemantics.hasInAppFallback(command))
+    }
+
+    func testBrewElseOpenHasInAppFallback() {
+        let command = "if brew list --cask chatgpt >/dev/null 2>&1; then brew upgrade --cask chatgpt; else open -a ChatGPT; fi"
+        XCTAssertFalse(UpdateCommandSemantics.usesInAppUpdateFlow(command))
+        XCTAssertTrue(UpdateCommandSemantics.hasInAppFallback(command))
+    }
+
+    func testPrimaryOpenCommandIsInAppUpdate() {
+        XCTAssertTrue(UpdateCommandSemantics.usesInAppUpdateFlow("open -a \"ChatGPT Atlas\""))
+        XCTAssertTrue(UpdateCommandSemantics.usesInAppUpdateFlow("open 'macappstore://apps.apple.com/app/id497799835'"))
+    }
+
     func testTimedOutCommandsExposeAUsefulFailureReason() async {
         let result = await ShellRunner.run("sleep 2", timeout: 0.01)
 
@@ -128,5 +145,7 @@ final class CoreServiceTests: XCTestCase {
     func testBundledResourcesResolveForSwiftPMRuns() {
         XCTAssertFalse(ConfigLoader.checkAppUpdateScriptPath.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: ConfigLoader.checkAppUpdateScriptPath))
+        XCTAssertFalse(ConfigLoader.updateAppScriptPath.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ConfigLoader.updateAppScriptPath))
     }
 }

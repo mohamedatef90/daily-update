@@ -55,7 +55,7 @@ enum UpdateExecutor {
             )
         }
 
-        if usesInAppUpdateFlow(command) {
+        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         } else {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -70,7 +70,7 @@ enum UpdateExecutor {
             checkStatus: checkStatus
         )
 
-        if usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
+        if UpdateCommandSemantics.usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
@@ -88,7 +88,12 @@ enum UpdateExecutor {
             )
         }
 
-        if usesInAppUpdateFlow(command) {
+        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
+            return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
+        }
+
+        if UpdateCommandSemantics.hasInAppFallback(command),
+           checkStatus == .updateAvailable || checkStatus == .updatePending {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
@@ -146,17 +151,6 @@ enum UpdateExecutor {
         guard let after, !after.isEmpty else { return false }
         guard let before, !before.isEmpty else { return true }
         return VersionComparator.normalize(before) != VersionComparator.normalize(after)
-    }
-
-    private static func usesInAppUpdateFlow(_ command: String) -> Bool {
-        let lower = command.lowercased()
-        if lower.contains("open -a") || lower.contains("open \"-a") || lower.hasPrefix("open ") {
-            return true
-        }
-        if lower.contains("macappstore://") || lower.contains("apps.apple.com") {
-            return true
-        }
-        return false
     }
 
     private static func looksLikeGuidanceOnly(_ output: String) -> Bool {

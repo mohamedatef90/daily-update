@@ -98,23 +98,32 @@ enum ConfigLoader {
     }
 
     static var checkAppUpdateScriptPath: String {
+        scriptPath(named: "check-app-update.sh")
+    }
+
+    static var updateAppScriptPath: String {
+        scriptPath(named: "update-app.sh")
+    }
+
+    private static func scriptPath(named filename: String) -> String {
+        let baseName = (filename as NSString).deletingPathExtension
         let mainCandidates: [URL] = [
-            Bundle.main.resourceURL?.appendingPathComponent("scripts/check-app-update.sh"),
-            Bundle.main.resourceURL?.appendingPathComponent("check-app-update.sh"),
-            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/scripts/check-app-update.sh")
+            Bundle.main.resourceURL?.appendingPathComponent("scripts/\(filename)"),
+            Bundle.main.resourceURL?.appendingPathComponent(filename),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/scripts/\(filename)")
         ].compactMap { $0 }
 
         for url in mainCandidates where FileManager.default.fileExists(atPath: url.path) {
             return url.path
         }
 
-        if let url = Bundle.module.url(forResource: "check-app-update", withExtension: "sh"),
+        if let url = Bundle.module.url(forResource: baseName, withExtension: "sh"),
            FileManager.default.fileExists(atPath: url.path) {
             return url.path
         }
 
         if let execURL = Bundle.main.executableURL {
-            let sibling = execURL.deletingLastPathComponent().appendingPathComponent("check-app-update.sh")
+            let sibling = execURL.deletingLastPathComponent().appendingPathComponent(filename)
             if FileManager.default.fileExists(atPath: sibling.path) {
                 return sibling.path
             }
@@ -124,7 +133,14 @@ enum ConfigLoader {
     }
 
     static var quotedCheckScript: String {
-        let path = checkAppUpdateScriptPath
+        quotedScript(at: checkAppUpdateScriptPath)
+    }
+
+    static var quotedUpdateScript: String {
+        quotedScript(at: updateAppScriptPath)
+    }
+
+    private static func quotedScript(at path: String) -> String {
         guard !path.isEmpty else { return "" }
         return "'\(path.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
@@ -196,6 +212,12 @@ enum ConfigLoader {
             let script = quotedCheckScript
             if !script.isEmpty {
                 expanded = expanded.replacingOccurrences(of: "{CHECK_SCRIPT}", with: script)
+            }
+        }
+        if expanded.contains("{UPDATE_SCRIPT}") {
+            let script = quotedUpdateScript
+            if !script.isEmpty {
+                expanded = expanded.replacingOccurrences(of: "{UPDATE_SCRIPT}", with: script)
             }
         }
         return expanded

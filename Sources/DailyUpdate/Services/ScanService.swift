@@ -177,7 +177,7 @@ enum ItemBuilder {
             versionCommand = "/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \(quotedPath)/Contents/Info.plist 2>/dev/null"
             checkCommand = "{CHECK_SCRIPT} auto \(quotedPath)"
         }
-        let updateCommand = "open \(quotedPath)"
+        let updateCommand = "{UPDATE_SCRIPT} auto \(quotedPath)"
 
         var descriptionParts: [String] = [info.path]
         if let sparkleFeed = info.sparkleFeed {

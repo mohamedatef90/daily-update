@@ -28,7 +28,9 @@ fi
 cp "$ROOT/Sources/DailyUpdate/Resources/detectors.json" "$APP_BUNDLE/Contents/Resources/"
 mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
 cp "$ROOT/Sources/DailyUpdate/Resources/scripts/check-app-update.sh" "$APP_BUNDLE/Contents/Resources/scripts/"
+cp "$ROOT/Sources/DailyUpdate/Resources/scripts/update-app.sh" "$APP_BUNDLE/Contents/Resources/scripts/"
 chmod +x "$APP_BUNDLE/Contents/Resources/scripts/check-app-update.sh"
+chmod +x "$APP_BUNDLE/Contents/Resources/scripts/update-app.sh"
 cp "$ICNS" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'

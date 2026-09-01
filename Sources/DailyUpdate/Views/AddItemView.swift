@@ -101,7 +101,7 @@ struct AddItemView: View {
             TextField("App name (e.g. Cursor)", text: $appName)
                 .onChange(of: appName) { _ in
                     if updateCommand.isEmpty {
-                        updateCommand = "brew upgrade --cask \(appName.lowercased()) 2>/dev/null || echo 'Update via app or brew'"
+                        updateCommand = "{UPDATE_SCRIPT} smart \(appName.lowercased()) /Applications/\(appName).app ~/Applications/\(appName).app"
                     }
                 }
             Text("Looks for \(appName.isEmpty ? "AppName" : appName).app in your Applications folders.")
