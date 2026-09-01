@@ -17,13 +17,24 @@ enum VersionComparator {
     }
 
     static func normalize(_ version: String) -> String {
-        version
+        var cleaned = version
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "^v", with: "", options: .regularExpression)
             .replacingOccurrences(of: ",", with: ".")
             .replacingOccurrences(of: "_", with: ".")
             .replacingOccurrences(of: " ", with: "")
             .lowercased()
+
+        // Keep only semver-like characters so "1.2.3 (build 45)" still compares cleanly.
+        cleaned = cleaned.replacingOccurrences(
+            of: "[^0-9.a-z-]",
+            with: "",
+            options: .regularExpression
+        )
+        while cleaned.contains("..") {
+            cleaned = cleaned.replacingOccurrences(of: "..", with: ".")
+        }
+        return cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     }
 
     private static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult {

@@ -564,6 +564,7 @@ final class AppState: ObservableObject {
         var successCount = 0
         var failCount = 0
         var updatedIDs: [String] = []
+        var successfulIDs = Set<String>()
 
         for target in targets {
             guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
@@ -604,6 +605,7 @@ final class AppState: ObservableObject {
             switch result.status {
             case .updated:
                 successCount += 1
+                successfulIDs.insert(target.id)
                 appendLog("✓ \(target.name) \(installing ? "installed" : "updated")")
             case .updatePending:
                 failCount += 1
@@ -625,10 +627,10 @@ final class AppState: ObservableObject {
         if notificationsEnabled {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
-        await recheckItems(ids: updatedIDs)
+        await recheckItems(ids: updatedIDs, successfulIDs: successfulIDs)
     }
 
-    func recheckItems(ids: [String]) async {
+    func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
         guard !ids.isEmpty else { return }
         let appFolders = settingsStore.settings.applicationFolders
         let idSet = Set(ids)
@@ -650,12 +652,18 @@ final class AppState: ObservableObject {
             }
 
             let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
-            items[index].status = status
+            let reconciled = reconcileAfterUpdate(
+                wasSuccessfulUpdate: successfulIDs.contains(items[index].id),
+                checkStatus: status,
+                current: current,
+                latest: latest
+            )
+            items[index].status = reconciled
             items[index].currentVersion = current
             items[index].latestVersion = latest
             if let message {
                 items[index].statusMessage = message
-            } else if status == .upToDate {
+            } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
             }
             if items[index].canRetryUpdate {
@@ -666,6 +674,27 @@ final class AppState: ObservableObject {
         refreshDuplicates()
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
+    }
+
+    private func reconcileAfterUpdate(
+        wasSuccessfulUpdate: Bool,
+        checkStatus: ItemStatus,
+        current: String?,
+        latest: String?
+    ) -> ItemStatus {
+        if wasSuccessfulUpdate,
+           let current,
+           let latest,
+           VersionComparator.isAtLeast(current: current, latest: latest) {
+            return .upToDate
+        }
+        if checkStatus == .updateAvailable,
+           let current,
+           let latest,
+           VersionComparator.isAtLeast(current: current, latest: latest) {
+            return .upToDate
+        }
+        return checkStatus
     }
 
     private func actionCommand(for item: UpdateItem) -> String {

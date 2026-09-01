@@ -28,6 +28,8 @@ find_app() {
 compare_versions() {
   local current="$1"
   local latest="$2"
+  current="$(normalize_version "$current")"
+  latest="$(normalize_version "$latest")"
   if [[ -z "$current" || -z "$latest" ]]; then
     echo OK
     return
@@ -42,6 +44,10 @@ compare_versions() {
   else
     echo OK
   fi
+}
+
+normalize_version() {
+  echo "$1" | tr ',' '.' | sed -E 's/[^0-9.]+//g; s/^\.+//; s/\.+$//; s/\.\././g'
 }
 
 fetch_sparkle_latest() {
@@ -134,14 +140,8 @@ cmd_smart() {
   current="$(get_app_version "$app")"
   feed="$(plist_value "$app" SUFeedURL)"
 
-  if [[ -n "$feed" ]]; then
-    latest="$(fetch_sparkle_latest "$feed")"
-    if [[ -n "$latest" ]]; then
-      report_update_if_behind "$current" "$latest"
-      return 0
-    fi
-  fi
-
+  # Prefer Homebrew when the app is brew-managed — avoids Sparkle showing a newer
+  # channel right after a successful brew upgrade.
   if brew list --cask "$cask" >/dev/null 2>&1; then
     if brew outdated --cask "$cask" 2>/dev/null | grep -q "$cask"; then
       latest="$(brew_cask_latest "$cask")"
@@ -151,6 +151,14 @@ cmd_smart() {
       echo OK
     fi
     return 0
+  fi
+
+  if [[ -n "$feed" ]]; then
+    latest="$(fetch_sparkle_latest "$feed")"
+    if [[ -n "$latest" ]]; then
+      report_update_if_behind "$current" "$latest"
+      return 0
+    fi
   fi
 
   if brew_cask_exists "$cask"; then
@@ -209,11 +217,6 @@ cmd_brew_or_sparkle() {
 
   local current latest
   current="$(get_app_version "$app")"
-  latest="$(fetch_sparkle_latest "$feed")"
-  if [[ -n "$latest" ]]; then
-    report_update_if_behind "$current" "$latest"
-    return 0
-  fi
 
   if brew list --cask "$cask" >/dev/null 2>&1; then
     if brew outdated --cask "$cask" 2>/dev/null | grep -q "$cask"; then
@@ -222,6 +225,12 @@ cmd_brew_or_sparkle() {
     else
       echo OK
     fi
+    return 0
+  fi
+
+  latest="$(fetch_sparkle_latest "$feed")"
+  if [[ -n "$latest" ]]; then
+    report_update_if_behind "$current" "$latest"
     return 0
   fi
 

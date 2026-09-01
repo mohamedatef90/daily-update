@@ -25,15 +25,17 @@ enum UpdateCheckService {
             }
 
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
-                let latest = parseLatest(from: output) ?? "newer"
-                if VersionComparator.isBehind(current: current, latest: latest) || latest == "newer" {
-                    return (.updateAvailable, current, latest, nil)
-                }
-                return (.upToDate, current, latest, nil)
+                let latest = parseLatest(from: output)
+                return reconcileUpdateSignal(
+                    current: current,
+                    latest: latest,
+                    rawIndicatesUpdate: true
+                )
             }
 
             if output.contains("OK") || lower.contains("up to date") || lower.contains("uptodate") {
-                return (.upToDate, current, current, nil)
+                let latest = parseLatest(from: output) ?? current
+                return (.upToDate, current, latest ?? current, nil)
             }
 
             if result.succeeded, !output.isEmpty {
@@ -41,7 +43,11 @@ enum UpdateCheckService {
             }
 
             if let parsed = parseLatest(from: output), !parsed.isEmpty {
-                return (.updateAvailable, current, parsed, nil)
+                return reconcileUpdateSignal(
+                    current: current,
+                    latest: parsed,
+                    rawIndicatesUpdate: true
+                )
             }
 
             let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
@@ -58,15 +64,46 @@ enum UpdateCheckService {
         return (.unknown, nil, nil, "No check configured")
     }
 
+    /// When both versions are known, trust numeric comparison over raw script output.
+    private static func reconcileUpdateSignal(
+        current: String?,
+        latest: String?,
+        rawIndicatesUpdate: Bool
+    ) -> (ItemStatus, String?, String?, String?) {
+        guard rawIndicatesUpdate else {
+            return (.upToDate, current, latest ?? current, nil)
+        }
+
+        if let current, let latest, isConcreteVersion(latest) {
+            if VersionComparator.isAtLeast(current: current, latest: latest) {
+                return (.upToDate, current, latest, nil)
+            }
+            return (.updateAvailable, current, latest, nil)
+        }
+
+        if let current, !current.isEmpty {
+            // Script reported UPDATE but we cannot parse a concrete latest — avoid false positives.
+            return (.upToDate, current, current, nil)
+        }
+
+        return (.updateAvailable, current, latest, nil)
+    }
+
+    private static func isConcreteVersion(_ value: String) -> Bool {
+        let normalized = VersionComparator.normalize(value)
+        return normalized.contains(where: \.isNumber)
+    }
+
     private static func parseLatest(from output: String) -> String? {
         let lines = output.components(separatedBy: .newlines)
         for line in lines {
             let lower = line.lowercased()
             if lower.contains("latest:") || lower.contains("remote:") || lower.contains("→") {
-                return line
+                let parsed = line
                     .replacingOccurrences(of: "latest:", with: "", options: .caseInsensitive)
                     .replacingOccurrences(of: "remote:", with: "", options: .caseInsensitive)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                return parsed.nilIfEmpty
             }
         }
         return nil

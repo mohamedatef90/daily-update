@@ -72,8 +72,13 @@ enum UpdateExecutor {
         }
 
         let afterVersion = await DetectionService.getVersion(config)
-        let (_, _, refreshedLatest, _) = await UpdateCheckService.check(config, installed: true)
-        let latest = refreshedLatest ?? targetLatest
+        let (checkStatus, _, refreshedLatest, _) = await UpdateCheckService.check(config, installed: true)
+        let latest = resolvedLatest(
+            afterVersion: afterVersion,
+            checkLatest: refreshedLatest,
+            targetLatest: targetLatest,
+            checkStatus: checkStatus
+        )
 
         if usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
@@ -120,6 +125,18 @@ enum UpdateExecutor {
             updateCommand: item.updateCommand,
             workingDirectory: item.workingDirectory
         )
+    }
+
+    private static func resolvedLatest(
+        afterVersion: String?,
+        checkLatest: String?,
+        targetLatest: String?,
+        checkStatus: ItemStatus
+    ) -> String? {
+        if checkStatus == .upToDate {
+            return afterVersion ?? checkLatest ?? targetLatest
+        }
+        return checkLatest ?? targetLatest ?? afterVersion
     }
 
     private static func failureReason(from result: ShellRunner.Result, action: String) -> String {
