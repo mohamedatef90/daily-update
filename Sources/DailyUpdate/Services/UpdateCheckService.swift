@@ -26,7 +26,10 @@ enum UpdateCheckService {
 
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
                 let latest = parseLatest(from: output) ?? "newer"
-                return (.updateAvailable, current, latest, nil)
+                if VersionComparator.isBehind(current: current, latest: latest) || latest == "newer" {
+                    return (.updateAvailable, current, latest, nil)
+                }
+                return (.upToDate, current, latest, nil)
             }
 
             if output.contains("OK") || lower.contains("up to date") || lower.contains("uptodate") {

@@ -37,6 +37,9 @@ struct ItemInfoView: View {
             infoRow("Source", item.sourceLabel)
             infoRow("Status", item.status.label)
             infoRow("Version", item.displayVersion, monospaced: true)
+            if let latest = item.latestVersion, !latest.isEmpty {
+                infoRow("Latest Available", latest, monospaced: true)
+            }
             infoRow("Installed", item.isInstalled ? "Yes" : "No")
 
             if let description = item.description, !description.isEmpty {

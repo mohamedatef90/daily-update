@@ -151,13 +151,22 @@ struct StatusBadge: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(status.label)
                     .font(.caption.weight(.medium))
-                if let message, status == .error || status == .notInstalled {
+                if let message, shouldShowMessage(for: status) {
                     Text(message)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(3)
                 }
             }
+        }
+    }
+
+    private func shouldShowMessage(for status: ItemStatus) -> Bool {
+        switch status {
+        case .error, .notInstalled, .updatePending, .updateAvailable:
+            return message != nil
+        default:
+            return false
         }
     }
 
@@ -166,6 +175,7 @@ struct StatusBadge: View {
         case .unknown, .checking: return .gray
         case .upToDate, .updated: return .green
         case .updateAvailable: return .orange
+        case .updatePending: return .yellow
         case .notInstalled: return .secondary
         case .error: return .red
         case .updating: return .blue
@@ -343,6 +353,16 @@ extension ItemListView {
                 appState.deselectAll()
                 appState.toggleSelection(for: item.id)
                 Task { await appState.requestUpdateSelected() }
+            }
+            if item.canRetryUpdate {
+                Button("Retry Update") {
+                    Task { await appState.retryUpdate(for: item.id) }
+                }
+            }
+            Divider()
+        } else if item.canRetryUpdate {
+            Button("Retry Update") {
+                Task { await appState.retryUpdate(for: item.id) }
             }
             Divider()
         }

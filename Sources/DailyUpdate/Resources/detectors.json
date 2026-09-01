@@ -7,7 +7,7 @@
       "description": "AI code editor",
       "detect": { "type": "app", "appName": "Cursor", "paths": ["/Applications/Cursor.app", "~/Applications/Cursor.app"] },
       "versionCommand": "for p in /Applications/Cursor.app ~/Applications/Cursor.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask cursor /Applications/Cursor.app ~/Applications/Cursor.app",
+      "checkCommand": "{CHECK_SCRIPT} smart cursor /Applications/Cursor.app ~/Applications/Cursor.app",
       "updateCommand": "brew reinstall --cask cursor 2>/dev/null || open -a Cursor"
     },
     {
@@ -17,7 +17,7 @@
       "description": "OpenAI Codex desktop app",
       "detect": { "type": "app", "appName": "Codex", "paths": ["/Applications/Codex.app", "~/Applications/Codex.app"] },
       "versionCommand": "for p in /Applications/Codex.app ~/Applications/Codex.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask codex /Applications/Codex.app ~/Applications/Codex.app",
+      "checkCommand": "{CHECK_SCRIPT} smart codex /Applications/Codex.app ~/Applications/Codex.app",
       "updateCommand": "brew reinstall --cask codex 2>/dev/null || open -a Codex"
     },
     {
@@ -27,7 +27,7 @@
       "description": "Anthropic Claude desktop app",
       "detect": { "type": "app", "appName": "Claude", "paths": ["/Applications/Claude.app", "~/Applications/Claude.app"] },
       "versionCommand": "for p in /Applications/Claude.app ~/Applications/Claude.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask claude /Applications/Claude.app ~/Applications/Claude.app",
+      "checkCommand": "{CHECK_SCRIPT} smart claude /Applications/Claude.app ~/Applications/Claude.app",
       "updateCommand": "brew reinstall --cask claude 2>/dev/null || open -a Claude"
     },
     {
@@ -57,7 +57,7 @@
       "description": "Legacy OpenAI ChatGPT desktop app",
       "detect": { "type": "app", "paths": ["/Applications/ChatGPT Classic.app", "~/Applications/ChatGPT Classic.app"] },
       "versionCommand": "for p in \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask chatgpt \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
+      "checkCommand": "{CHECK_SCRIPT} smart chatgpt \"/Applications/ChatGPT Classic.app\" \"~/Applications/ChatGPT Classic.app\"",
       "updateCommand": "brew reinstall --cask chatgpt 2>/dev/null || open -a \"ChatGPT Classic\""
     },
     {
@@ -67,7 +67,7 @@
       "description": "Zcode IDE",
       "detect": { "type": "app", "paths": ["/Applications/ZCode.app", "/Applications/Zcode.app", "~/Applications/ZCode.app", "~/Applications/Zcode.app"] },
       "versionCommand": "for p in /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask zcode /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app",
+      "checkCommand": "{CHECK_SCRIPT} smart zcode /Applications/ZCode.app /Applications/Zcode.app ~/Applications/ZCode.app ~/Applications/Zcode.app",
       "updateCommand": "brew reinstall --cask zcode 2>/dev/null || open -a ZCode"
     },
     {
@@ -77,7 +77,7 @@
       "description": "Google Antigravity IDE",
       "detect": { "type": "app", "paths": ["/Applications/Antigravity IDE.app", "~/Applications/Antigravity IDE.app"] },
       "versionCommand": "for p in \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask antigravity \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"",
+      "checkCommand": "{CHECK_SCRIPT} smart antigravity \"/Applications/Antigravity IDE.app\" \"~/Applications/Antigravity IDE.app\"",
       "updateCommand": "brew reinstall --cask antigravity 2>/dev/null || open -a \"Antigravity IDE\""
     },
     {
@@ -87,7 +87,7 @@
       "description": "Warp terminal",
       "detect": { "type": "app", "appName": "Warp", "paths": ["/Applications/Warp.app", "~/Applications/Warp.app"] },
       "versionCommand": "for p in /Applications/Warp.app ~/Applications/Warp.app; do [ -d \"$p\" ] && /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \"$p/Contents/Info.plist\" 2>/dev/null && break; done",
-      "checkCommand": "{CHECK_SCRIPT} brew-cask warp /Applications/Warp.app ~/Applications/Warp.app",
+      "checkCommand": "{CHECK_SCRIPT} smart warp /Applications/Warp.app ~/Applications/Warp.app",
       "updateCommand": "brew reinstall --cask warp 2>/dev/null || open -a Warp"
     },
     {

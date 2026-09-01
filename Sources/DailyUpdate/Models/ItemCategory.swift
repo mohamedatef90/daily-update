@@ -35,6 +35,7 @@ enum ItemStatus: String, Codable {
     case checking
     case upToDate
     case updateAvailable
+    case updatePending
     case notInstalled
     case error
     case updating
@@ -46,8 +47,9 @@ enum ItemStatus: String, Codable {
         case .checking: return "Checking…"
         case .upToDate: return "Up to date"
         case .updateAvailable: return "Update available"
+        case .updatePending: return "Finish in app"
         case .notInstalled: return "Not installed"
-        case .error: return "Error"
+        case .error: return "Update failed"
         case .updating: return "Updating…"
         case .updated: return "Updated"
         }
@@ -109,7 +111,11 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var canUpdate: Bool {
-        isInstalled && (status == .updateAvailable || status == .error)
+        isInstalled && (status == .updateAvailable || status == .updatePending || status == .error)
+    }
+
+    var canRetryUpdate: Bool {
+        isInstalled && (status == .error || status == .updatePending || (status == .updateAvailable && statusMessage != nil))
     }
 
     var isActionable: Bool {

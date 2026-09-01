@@ -159,7 +159,7 @@ final class AppState: ObservableObject {
     var filteredItems: [UpdateItem] {
         var result = activeItems
         if let selectedCategory { result = result.filter { $0.category == selectedCategory } }
-        if showUpdatesOnly { result = result.filter { $0.status == .updateAvailable } }
+        if showUpdatesOnly { result = result.filter { $0.status == .updateAvailable || $0.status == .updatePending } }
         if !searchText.isEmpty {
             let q = searchText.lowercased()
             result = result.filter {
@@ -190,7 +190,7 @@ final class AppState: ObservableObject {
     }
 
     var updateAvailableCount: Int {
-        activeItems.filter { $0.status == .updateAvailable }.count
+        activeItems.filter { $0.status == .updateAvailable || $0.status == .updatePending }.count
     }
 
     var selectedActionableItems: [UpdateItem] {
@@ -540,6 +540,15 @@ final class AppState: ObservableObject {
         await updateSelected(skipDryRun: true)
     }
 
+    func retryUpdate(for id: String) async {
+        guard let item = items.first(where: { $0.id == id }), item.canRetryUpdate else { return }
+        deselectAll()
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].isSelected = true
+        }
+        await updateSelected(skipDryRun: true)
+    }
+
     func updateSelected(skipDryRun: Bool = false) async {
         if !skipDryRun && confirmBeforeUpdate {
             await requestUpdateSelected()
@@ -554,6 +563,7 @@ final class AppState: ObservableObject {
         appendLog("Running \(targets.count) action(s)…")
         var successCount = 0
         var failCount = 0
+        var updatedIDs: [String] = []
 
         for target in targets {
             guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
@@ -564,37 +574,46 @@ final class AppState: ObservableObject {
 
             let fromVersion = items[index].currentVersion
             let command = actionCommand(for: items[index])
-            let (status, version, message) = await UpdateExecutor.update(
+            let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
                 stashRepos: stashReposBeforeUpdate
             )
-            items[index].status = status
-            if status == .updated {
+            items[index].status = result.status
+            if result.status == .updated {
                 items[index].isInstalled = true
             }
-            items[index].currentVersion = version ?? items[index].currentVersion
-            items[index].statusMessage = message
-            items[index].isSelected = false
+            items[index].currentVersion = result.currentVersion ?? items[index].currentVersion
+            items[index].latestVersion = result.latestVersion ?? items[index].latestVersion
+            items[index].statusMessage = result.message
+            items[index].isSelected = result.canRetry
+            updatedIDs.append(target.id)
 
             let entry = UpdateHistoryEntry(
                 itemID: target.id,
                 itemName: target.name,
                 fromVersion: fromVersion,
-                toVersion: version,
-                success: status == .updated,
-                message: message,
+                toVersion: result.currentVersion,
+                success: result.status == .updated,
+                message: result.message,
                 command: command
             )
             UpdateHistoryStore.append(entry)
             history.insert(entry, at: 0)
 
-            if status == .updated {
+            switch result.status {
+            case .updated:
                 successCount += 1
                 appendLog("✓ \(target.name) \(installing ? "installed" : "updated")")
-            } else {
+            case .updatePending:
                 failCount += 1
-                appendLog("✗ \(target.name): \(message ?? "failed")")
+                appendLog("↪ \(target.name): \(result.message ?? "Finish update in app")")
+            case .updateAvailable:
+                failCount += 1
+                appendLog("↪ \(target.name): \(result.message ?? "Still behind latest")")
+            default:
+                failCount += 1
+                appendLog("✗ \(target.name): \(result.message ?? "failed")")
             }
         }
 
@@ -606,7 +625,47 @@ final class AppState: ObservableObject {
         if notificationsEnabled {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
-        await checkAll()
+        await recheckItems(ids: updatedIDs)
+    }
+
+    func recheckItems(ids: [String]) async {
+        guard !ids.isEmpty else { return }
+        let appFolders = settingsStore.settings.applicationFolders
+        let idSet = Set(ids)
+
+        for index in items.indices where idSet.contains(items[index].id) {
+            items[index].status = .checking
+        }
+
+        for index in items.indices where idSet.contains(items[index].id) {
+            guard let config = configs.first(where: { $0.id == items[index].id }) else { continue }
+            if items[index].permanentlyIgnored || items[index].isSnoozed { continue }
+
+            let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
+            items[index].isInstalled = installed
+            if !installed {
+                items[index].status = .notInstalled
+                items[index].statusMessage = detectMsg
+                continue
+            }
+
+            let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
+            items[index].status = status
+            items[index].currentVersion = current
+            items[index].latestVersion = latest
+            if let message {
+                items[index].statusMessage = message
+            } else if status == .upToDate {
+                items[index].statusMessage = nil
+            }
+            if items[index].canRetryUpdate {
+                items[index].isSelected = true
+            }
+        }
+
+        refreshDuplicates()
+        publishWidgetSnapshot()
+        appDelegate?.refreshStatusBar()
     }
 
     private func actionCommand(for item: UpdateItem) -> String {
@@ -618,7 +677,7 @@ final class AppState: ObservableObject {
     }
 
     func updateAutoItems() async {
-        for index in items.indices where items[index].autoUpdate && items[index].status == .updateAvailable {
+        for index in items.indices where items[index].autoUpdate && (items[index].status == .updateAvailable || items[index].status == .updatePending) {
             items[index].isSelected = true
         }
         await updateSelected(skipDryRun: true)

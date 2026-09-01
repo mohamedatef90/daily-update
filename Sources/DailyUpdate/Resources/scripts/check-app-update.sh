@@ -44,9 +44,13 @@ compare_versions() {
   fi
 }
 
-fetch_sparkle_version() {
+fetch_sparkle_latest() {
   local feed="$1"
-  curl -fsSL "$feed" 2>/dev/null | grep -m1 'sparkle:shortVersionString' 2>/dev/null | sed -E 's/.*>([^<]+)<.*/\1/' || true
+  curl -fsSL "$feed" 2>/dev/null \
+    | grep 'sparkle:shortVersionString' 2>/dev/null \
+    | sed -E 's/.*>([^<]+)<.*/\1/' \
+    | sort -V \
+    | tail -1 || true
 }
 
 brew_cask_latest() {
@@ -63,20 +67,29 @@ slugify() {
   echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
 }
 
+report_update_if_behind() {
+  local current="$1"
+  local latest="$2"
+  compare_versions "$current" "$latest"
+}
+
 cmd_auto() {
   local app
   app="$(find_app "$@")" || { echo OK; return 0; }
 
   local feed bundle_id name current latest
   feed="$(plist_value "$app" SUFeedURL)"
+  current="$(get_app_version "$app")"
   if [[ -n "$feed" ]]; then
-    cmd_sparkle_feed "$feed" "$app"
-    return 0
+    latest="$(fetch_sparkle_latest "$feed")"
+    if [[ -n "$latest" ]]; then
+      report_update_if_behind "$current" "$latest"
+      return 0
+    fi
   fi
 
   bundle_id="$(plist_value "$app" CFBundleIdentifier)"
   name="${app:t:r}"
-  current="$(get_app_version "$app")"
 
   local -a slugs=()
   if [[ -n "$bundle_id" ]]; then
@@ -104,7 +117,45 @@ cmd_auto() {
   done
 
   if [[ -n "$best_latest" ]]; then
-    compare_versions "$current" "$best_latest"
+    report_update_if_behind "$current" "$best_latest"
+    return 0
+  fi
+
+  echo OK
+}
+
+cmd_smart() {
+  local cask="$1"
+  shift
+  local app
+  app="$(find_app "$@")" || { echo OK; return 0; }
+
+  local current latest feed
+  current="$(get_app_version "$app")"
+  feed="$(plist_value "$app" SUFeedURL)"
+
+  if [[ -n "$feed" ]]; then
+    latest="$(fetch_sparkle_latest "$feed")"
+    if [[ -n "$latest" ]]; then
+      report_update_if_behind "$current" "$latest"
+      return 0
+    fi
+  fi
+
+  if brew list --cask "$cask" >/dev/null 2>&1; then
+    if brew outdated --cask "$cask" 2>/dev/null | grep -q "$cask"; then
+      latest="$(brew_cask_latest "$cask")"
+      echo UPDATE
+      [[ -n "$latest" ]] && echo "latest: $latest"
+    else
+      echo OK
+    fi
+    return 0
+  fi
+
+  if brew_cask_exists "$cask"; then
+    latest="$(brew_cask_latest "$cask")"
+    report_update_if_behind "$current" "$latest"
     return 0
   fi
 
@@ -119,7 +170,7 @@ cmd_brew_cask() {
   local current latest
   current="$(get_app_version "$app")"
   latest="$(brew_cask_latest "$cask")"
-  compare_versions "$current" "$latest"
+  report_update_if_behind "$current" "$latest"
 }
 
 cmd_sparkle_feed() {
@@ -129,12 +180,12 @@ cmd_sparkle_feed() {
   app="$(find_app "$@")" || { echo OK; return 0; }
   local current latest
   current="$(get_app_version "$app")"
-  latest="$(fetch_sparkle_version "$feed")"
+  latest="$(fetch_sparkle_latest "$feed")"
   if [[ -z "$latest" ]]; then
     echo OK
     return 0
   fi
-  compare_versions "$current" "$latest"
+  report_update_if_behind "$current" "$latest"
 }
 
 cmd_sparkle_plist() {
@@ -155,6 +206,15 @@ cmd_brew_or_sparkle() {
   shift 2
   local app
   app="$(find_app "$@")" || { echo OK; return 0; }
+
+  local current latest
+  current="$(get_app_version "$app")"
+  latest="$(fetch_sparkle_latest "$feed")"
+  if [[ -n "$latest" ]]; then
+    report_update_if_behind "$current" "$latest"
+    return 0
+  fi
+
   if brew list --cask "$cask" >/dev/null 2>&1; then
     if brew outdated --cask "$cask" 2>/dev/null | grep -q "$cask"; then
       echo UPDATE
@@ -164,10 +224,7 @@ cmd_brew_or_sparkle() {
     fi
     return 0
   fi
-  if [[ -n "$feed" ]]; then
-    cmd_sparkle_feed "$feed" "$app"
-    return 0
-  fi
+
   cmd_brew_cask "$cask" "$app"
 }
 
@@ -176,6 +233,7 @@ usage() {
   echo "       $SCRIPT_NAME sparkle-feed <feed-url> <app-path>..." >&2
   echo "       $SCRIPT_NAME sparkle-plist <app-path>..." >&2
   echo "       $SCRIPT_NAME brew-or-sparkle <cask> <feed-url> <app-path>..." >&2
+  echo "       $SCRIPT_NAME smart <cask> <app-path>..." >&2
   echo "       $SCRIPT_NAME auto <app-path>..." >&2
   exit 2
 }
@@ -202,6 +260,11 @@ case "$1" in
     shift
     [[ $# -ge 3 ]] || usage
     cmd_brew_or_sparkle "$@"
+    ;;
+  smart)
+    shift
+    [[ $# -ge 2 ]] || usage
+    cmd_smart "$@"
     ;;
   auto)
     shift
