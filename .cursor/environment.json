@@ -1,0 +1,5 @@
+{
+    "name": "Daily Update (Swift on Linux)",
+    "user": "ubuntu",
+    "install": "bash .cursor/install.sh"
+}
