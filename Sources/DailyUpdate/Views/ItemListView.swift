@@ -29,12 +29,7 @@ struct ItemListView: View {
             } else {
                 Table(displayItems, selection: .constant(Set<String>())) {
                     TableColumn("") { item in
-                        Toggle("", isOn: Binding(
-                            get: { item.isSelected },
-                            set: { _ in appState.toggleSelection(for: item.id) }
-                        ))
-                        .toggleStyle(.checkbox)
-                        .disabled(!item.isActionable || appState.isUpdating)
+                        ItemSelectionToggle(item: item, appState: appState)
                     }
                     .width(32)
 
@@ -102,10 +97,14 @@ struct ItemListView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
 
-            Button("Select All Updates") { appState.selectAllUpdates() }
+            Button("Select All Updates") {
+                appState.selectAllUpdates(limitTo: displayItems.map(\.id))
+            }
                 .disabled(appState.updateAvailableCount == 0)
 
-            Button("Deselect All") { appState.deselectAll() }
+            Button("Deselect All") {
+                appState.deselectAll(limitTo: displayItems.map(\.id))
+            }
 
             Spacer()
 
@@ -136,6 +135,25 @@ struct ItemListView: View {
         .padding(.horizontal)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+}
+
+struct ItemSelectionToggle: View {
+    let item: UpdateItem
+    @ObservedObject var appState: AppState
+
+    init(item: UpdateItem, appState: AppState) {
+        self.item = item
+        _appState = ObservedObject(wrappedValue: appState)
+    }
+
+    var body: some View {
+        Toggle("", isOn: Binding(
+            get: { appState.items.first(where: { $0.id == item.id })?.isSelected ?? false },
+            set: { appState.setSelection(for: item.id, selected: $0) }
+        ))
+        .toggleStyle(.checkbox)
+        .disabled(!item.isActionable || appState.isUpdating)
     }
 }
 

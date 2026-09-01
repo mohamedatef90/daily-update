@@ -424,14 +424,23 @@ final class AppState: ObservableObject {
         appendLog("Removed item from update list")
     }
 
+    func setSelection(for id: String, selected: Bool) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        guard items[index].isSelected != selected else { return }
+        items[index].isSelected = selected
+    }
+
     func toggleSelection(for id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items[index].isSelected.toggle()
     }
 
-    func selectAllUpdates() {
+    func selectAllUpdates(limitTo ids: [String]? = nil) {
+        let visibleIDs = ids.map(Set.init)
         for index in items.indices {
-            items[index].isSelected = items[index].canUpdate && !items[index].isSnoozed
+            if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
+            let item = items[index]
+            items[index].isSelected = item.canUpdate && !item.isSnoozed
         }
     }
 
@@ -441,14 +450,20 @@ final class AppState: ObservableObject {
         }
     }
 
-    func selectAllActionable() {
+    func selectAllActionable(limitTo ids: [String]? = nil) {
+        let visibleIDs = ids.map(Set.init)
         for index in items.indices {
+            if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
             items[index].isSelected = items[index].isActionable
         }
     }
 
-    func deselectAll() {
-        for index in items.indices { items[index].isSelected = false }
+    func deselectAll(limitTo ids: [String]? = nil) {
+        let visibleIDs = ids.map(Set.init)
+        for index in items.indices {
+            if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
+            items[index].isSelected = false
+        }
     }
 
     func items(for group: DuplicateGroup) -> [UpdateItem] {

@@ -130,9 +130,25 @@ struct UpdateItem: Identifiable, Hashable {
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+        hasher.combine(isSelected)
+        hasher.combine(status)
+        hasher.combine(currentVersion)
+        hasher.combine(latestVersion)
+        hasher.combine(statusMessage)
     }
 
     static func == (lhs: UpdateItem, rhs: UpdateItem) -> Bool {
-        lhs.id == rhs.id
+        lhs.id == rhs.id &&
+            lhs.isSelected == rhs.isSelected &&
+            lhs.status == rhs.status &&
+            lhs.statusMessage == rhs.statusMessage &&
+            lhs.currentVersion == rhs.currentVersion &&
+            lhs.latestVersion == rhs.latestVersion &&
+            lhs.isInstalled == rhs.isInstalled &&
+            lhs.autoUpdate == rhs.autoUpdate &&
+            lhs.isSnoozed == rhs.isSnoozed &&
+            lhs.permanentlyIgnored == rhs.permanentlyIgnored &&
+            lhs.duplicateGroupID == rhs.duplicateGroupID &&
+            lhs.pinnedVersion == rhs.pinnedVersion
     }
 }
