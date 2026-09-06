@@ -102,6 +102,64 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 15)
     }
 
+    func testFailureReasonsAreActionable() {
+        let permissionFailure = ShellRunner.Result(
+            exitCode: 1,
+            stdout: "",
+            stderr: "npm error code EACCES\nnpm error permission denied"
+        )
+        let nodeFailure = ShellRunner.Result(
+            exitCode: 1,
+            stdout: "",
+            stderr: "npm error code EBADENGINE"
+        )
+
+        XCTAssertEqual(
+            UpdateExecutor.failureReason(from: permissionFailure, action: "Update"),
+            "Update needs permission to modify the installed files. Run it from Terminal with administrator rights."
+        )
+        XCTAssertEqual(
+            UpdateExecutor.failureReason(from: nodeFailure, action: "Update"),
+            "Update requires a newer Node.js version before this package can be updated."
+        )
+    }
+
+    func testFriendlyPermissionFailureRequestsAdministratorAuthentication() {
+        let item = UpdateItem(
+            id: "permission-required",
+            name: "Permission Required",
+            category: .runtime,
+            description: nil,
+            currentVersion: "1.0",
+            latestVersion: "1.1",
+            status: .error,
+            statusMessage: "Update needs permission to modify the installed files. Run it from Terminal with administrator rights.",
+            isInstalled: true,
+            isSelected: true,
+            isUserDefined: false,
+            source: .bundled,
+            iconPath: nil,
+            detectCommand: nil,
+            versionCommand: nil,
+            checkCommand: nil,
+            installCommand: "",
+            updateCommand: "npm update -g example",
+            workingDirectory: nil
+        )
+
+        XCTAssertTrue(item.needsAdministratorPermission)
+    }
+
+    func testAdministratorCommandUsesNativeAuthorizationPrompt() {
+        let source = AdminCommandRunner.appleScriptSource(
+            for: "npm install -g corepack@latest",
+            workingDirectory: nil
+        )
+
+        XCTAssertTrue(source.contains("with administrator privileges"))
+        XCTAssertTrue(source.contains("/bin/zsh -lc"))
+    }
+
     func testDiscoveredObsidianUsesItsManagedPackageVersion() {
         let config = ItemBuilder.discoveredApp(info: InstalledAppInfo(
             path: "/Applications/Obsidian.app",

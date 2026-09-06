@@ -31,12 +31,16 @@ struct UpdateResult {
         )
     }
 
-    static func pendingInApp(current: String?, latest: String?) -> UpdateResult {
+    static func pendingInApp(
+        current: String?,
+        latest: String?,
+        message: String = "Opened app — finish the update inside the app, then run Check Updates"
+    ) -> UpdateResult {
         UpdateResult(
             status: .updatePending,
             currentVersion: current,
             latestVersion: latest,
-            message: "Opened app — finish the update inside the app, then run Check Updates",
+            message: message,
             canRetry: true
         )
     }

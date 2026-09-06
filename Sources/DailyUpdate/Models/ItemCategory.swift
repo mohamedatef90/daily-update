@@ -118,6 +118,15 @@ struct UpdateItem: Identifiable, Hashable {
         isInstalled && (status == .error || status == .updatePending || (status == .updateAvailable && statusMessage != nil))
     }
 
+    var needsAdministratorPermission: Bool {
+        guard status == .error, let message = statusMessage?.lowercased() else { return false }
+        return message.contains("needs permission") ||
+            message.contains("permission denied") ||
+            message.contains("eacces") ||
+            message.contains("administrator password") ||
+            message.contains("sudo:")
+    }
+
     var isActionable: Bool {
         if isSnoozed || permanentlyIgnored { return false }
         if canInstall { return true }

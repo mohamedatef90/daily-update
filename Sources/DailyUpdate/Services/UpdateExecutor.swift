@@ -1,16 +1,33 @@
 import Foundation
 
 enum UpdateExecutor {
-    static func update(_ item: UpdateItem, installing: Bool = false, stashRepos: Bool = true) async -> UpdateResult {
-        if installing || !item.isInstalled {
-            return await performInstall(item)
+    typealias CommandRunner = @Sendable (String, String?, TimeInterval) async -> ShellRunner.Result
+
+    static func update(
+        _ item: UpdateItem,
+        installing: Bool = false,
+        stashRepos: Bool = true,
+        withAdministratorPrivileges: Bool = false
+    ) async -> UpdateResult {
+        let runner: CommandRunner
+        if withAdministratorPrivileges {
+            runner = { command, directory, timeout in
+                await AdminCommandRunner.run(command, workingDirectory: directory, timeout: timeout)
+            }
+        } else {
+            runner = { command, directory, timeout in
+                await ShellRunner.run(command, workingDirectory: directory, timeout: timeout)
+            }
         }
-        return await performUpdate(item, stashRepos: stashRepos)
+        if installing || !item.isInstalled {
+            return await performInstall(item, using: runner)
+        }
+        return await performUpdate(item, stashRepos: stashRepos, using: runner)
     }
 
-    private static func performInstall(_ item: UpdateItem) async -> UpdateResult {
+    private static func performInstall(_ item: UpdateItem, using runner: CommandRunner) async -> UpdateResult {
         let command = item.installCommand
-        let result = await ShellRunner.run(command, workingDirectory: item.workingDirectory?.expandingTilde, timeout: 600)
+        let result = await runner(command, item.workingDirectory?.expandingTilde, 600)
         guard result.succeeded else {
             let reason = failureReason(from: result, action: "Install")
             return .failed(reason: reason, current: item.currentVersion, latest: item.latestVersion)
@@ -20,7 +37,11 @@ enum UpdateExecutor {
         return .success(current: version, latest: version)
     }
 
-    private static func performUpdate(_ item: UpdateItem, stashRepos: Bool) async -> UpdateResult {
+    private static func performUpdate(
+        _ item: UpdateItem,
+        stashRepos: Bool,
+        using runner: CommandRunner
+    ) async -> UpdateResult {
         var notes: [String] = []
 
         if item.category == .repo {
@@ -40,11 +61,19 @@ enum UpdateExecutor {
         let beforeVersion = await DetectionService.getVersion(config)
         let targetLatest = item.latestVersion
         let command = item.updateCommand
-        let result = await ShellRunner.run(command, workingDirectory: item.workingDirectory?.expandingTilde, timeout: 600)
+        let result = await runner(command, item.workingDirectory?.expandingTilde, 600)
 
         if !result.succeeded {
             let reason = failureReason(from: result, action: "Update")
             return .failed(reason: reason, current: beforeVersion, latest: targetLatest)
+        }
+
+        if let message = appUpdaterHandoffMessage(from: result.stdout) {
+            return .pendingInApp(
+                current: beforeVersion,
+                latest: targetLatest,
+                message: message
+            )
         }
 
         if let guidance = result.stdout.nilIfEmpty, looksLikeGuidanceOnly(guidance) {
@@ -134,9 +163,22 @@ enum UpdateExecutor {
         return checkLatest ?? targetLatest ?? afterVersion
     }
 
-    private static func failureReason(from result: ShellRunner.Result, action: String) -> String {
+    static func failureReason(from result: ShellRunner.Result, action: String) -> String {
         if result.exitCode == 15 {
             return "\(action) timed out after 10 minutes. Check your network connection and try again."
+        }
+        let details = [result.stderr, result.stdout]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        let lower = details.lowercased()
+        if lower.contains("sudo: a terminal is required") || lower.contains("sudo: a password is required") {
+            return "\(action) needs an administrator password. Run it from Terminal, then try again."
+        }
+        if lower.contains("ebadengine") || lower.contains("unsupported engine") {
+            return "\(action) requires a newer Node.js version before this package can be updated."
+        }
+        if lower.contains("eacces") || lower.contains("permission denied") {
+            return "\(action) needs permission to modify the installed files. Run it from Terminal with administrator rights."
         }
         if let stderr = result.stderr.nilIfEmpty {
             return stderr
@@ -145,6 +187,14 @@ enum UpdateExecutor {
             return stdout
         }
         return "\(action) failed (exit \(result.exitCode))"
+    }
+
+    private static func appUpdaterHandoffMessage(from output: String) -> String? {
+        let marker = "IN_APP_UPDATE:"
+        guard let range = output.range(of: marker) else { return nil }
+        return String(output[range.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
     }
 
     private static func versionChanged(from before: String?, to after: String?) -> Bool {

@@ -20,6 +20,7 @@ final class AppState: ObservableObject {
     @Published var showAddItem = false
     @Published var showDryRun = false
     @Published var dryRunEntries: [DryRunEntry] = []
+    @Published var administratorPermissionItem: UpdateItem?
     @Published var discoveredRepoCount = 0
     @Published var discoveredAppCount = 0
     @Published var discoveredSkillCount = 0
@@ -36,6 +37,7 @@ final class AppState: ObservableObject {
     private var wakeObserver: NSObjectProtocol?
     private var hasRunStartupCheck = false
     private var cancellables = Set<AnyCancellable>()
+    private var administratorPermissionQueue: [UpdateItem] = []
 
     init(settingsStore: UserSettingsStore = UserSettingsStore()) {
         self.settingsStore = settingsStore
@@ -399,9 +401,12 @@ final class AppState: ObservableObject {
     }
 
     func runStartupFlow() async {
+        guard settingsStore.settings.hasCompletedSetup else { return }
         guard !hasRunStartupCheck else { return }
         hasRunStartupCheck = true
-        guard settingsStore.settings.hasCompletedSetup else { return }
+
+        await requestAdministratorPermissionAtStartup()
+
         if settingsStore.settings.showDashboardOnLaunch { setSidebarSelection("dashboard") }
         if autoCheckOnLaunch { await checkAll() }
         if autoUpdateOnLaunch, updateAvailableCount > 0 {
@@ -573,17 +578,27 @@ final class AppState: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: true)
+        await updateSelected(skipDryRun: true, retryItemID: item.id)
     }
 
-    func updateSelected(skipDryRun: Bool = false) async {
+    func updateSelected(
+        skipDryRun: Bool = false,
+        administratorItemID: String? = nil,
+        retryItemID: String? = nil
+    ) async {
         if !skipDryRun && confirmBeforeUpdate {
             await requestUpdateSelected()
             return
         }
 
         guard !isUpdating else { return }
-        let targets = orderedActionTargets(selectedActionableItems)
+        let targets: [UpdateItem]
+        if let retryItemID,
+           let retryItem = activeItems.first(where: { $0.id == retryItemID }) {
+            targets = [retryItem]
+        } else {
+            targets = orderedActionTargets(selectedActionableItems)
+        }
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         isUpdating = true
@@ -605,7 +620,8 @@ final class AppState: ObservableObject {
             let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
-                stashRepos: stashReposBeforeUpdate
+                stashRepos: stashReposBeforeUpdate,
+                withAdministratorPrivileges: administratorItemID == target.id
             )
             items[index].status = result.status
             if result.status == .updated {
@@ -616,6 +632,11 @@ final class AppState: ObservableObject {
             items[index].statusMessage = result.message
             items[index].isSelected = result.canRetry
             updatedIDs.append(target.id)
+
+            if !withAdministratorPrivileges(for: target, administratorItemID: administratorItemID),
+               items[index].needsAdministratorPermission {
+                queueAdministratorPermission(for: items[index])
+            }
 
             let entry = UpdateHistoryEntry(
                 itemID: target.id,
@@ -655,6 +676,45 @@ final class AppState: ObservableObject {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
         await recheckItems(ids: updatedIDs, successfulIDs: successfulIDs)
+        presentNextAdministratorPermissionRequest()
+    }
+
+    func retryUpdateWithAdministratorPermission(for id: String) async {
+        let wasRequestedByDialog = administratorPermissionItem?.id == id
+        administratorPermissionItem = nil
+        guard let item = items.first(where: { $0.id == id }),
+              item.needsAdministratorPermission || wasRequestedByDialog else { return }
+
+        if isUpdating {
+            queueAdministratorPermission(for: item)
+            appendLog("Administrator retry for \(item.name) is queued until the current updates finish.")
+            return
+        }
+
+        deselectAll()
+        if let index = items.firstIndex(where: { $0.id == id }) {
+            items[index].isSelected = true
+        }
+        appendLog("Requesting administrator permission for \(item.name)…")
+        await updateSelected(
+            skipDryRun: true,
+            administratorItemID: id,
+            retryItemID: id
+        )
+    }
+
+    func dismissAdministratorPermissionRequest() {
+        administratorPermissionItem = nil
+    }
+
+    private func requestAdministratorPermissionAtStartup() async {
+        appendLog("Requesting administrator permission at startup…")
+        let result = await AdminCommandRunner.requestAuthorization()
+        if result.succeeded {
+            appendLog("Administrator permission verified. macOS may ask again before a protected update.")
+        } else {
+            appendLog("Administrator permission was not granted. Updates that need it will ask again when you approve them.")
+        }
     }
 
     func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
@@ -726,6 +786,28 @@ final class AppState: ObservableObject {
 
     private func actionCommand(for item: UpdateItem) -> String {
         item.canInstall ? item.installCommand : item.updateCommand
+    }
+
+    private func withAdministratorPrivileges(for item: UpdateItem, administratorItemID: String?) -> Bool {
+        item.id == administratorItemID
+    }
+
+    private func queueAdministratorPermission(for item: UpdateItem) {
+        guard administratorPermissionItem?.id != item.id,
+              !administratorPermissionQueue.contains(where: { $0.id == item.id }) else { return }
+        administratorPermissionQueue.append(item)
+    }
+
+    private func presentNextAdministratorPermissionRequest() {
+        guard !isUpdating, administratorPermissionItem == nil else { return }
+
+        while !administratorPermissionQueue.isEmpty {
+            let item = administratorPermissionQueue.removeFirst()
+            guard items.contains(where: { $0.id == item.id }) else { continue }
+            administratorPermissionItem = item
+            appendLog("Administrator permission is needed to update \(item.name).")
+            return
+        }
     }
 
     private func orderedActionTargets(_ targets: [UpdateItem]) -> [UpdateItem] {

@@ -75,6 +75,21 @@ struct DailyUpdateApp: App {
                 DryRunSheet()
                     .environmentObject(appState)
             }
+            .confirmationDialog(
+                "Administrator Permission Needed",
+                isPresented: isShowingAdministratorPermissionRequest,
+                titleVisibility: .visible
+            ) {
+                Button("Authenticate and Retry") {
+                    guard let item = appState.administratorPermissionItem else { return }
+                    Task { await appState.retryUpdateWithAdministratorPermission(for: item.id) }
+                }
+                Button("Not Now", role: .cancel) {
+                    appState.dismissAdministratorPermissionRequest()
+                }
+            } message: {
+                Text(administratorPermissionMessage)
+            }
             .onAppear {
                 appDelegate.connect(appState: appState)
                 appState.appDelegate = appDelegate
@@ -87,6 +102,18 @@ struct DailyUpdateApp: App {
                     hideMainWindowIfNeeded()
                 }
             }
+    }
+
+    private var isShowingAdministratorPermissionRequest: Binding<Bool> {
+        Binding(
+            get: { appState.administratorPermissionItem != nil },
+            set: { if !$0 { appState.dismissAdministratorPermissionRequest() } }
+        )
+    }
+
+    private var administratorPermissionMessage: String {
+        guard let item = appState.administratorPermissionItem else { return "" }
+        return "\(item.name) needs permission to modify installed files. Daily Update will open the native macOS authentication dialog. Use Touch ID when your Mac offers it, or enter an administrator password."
     }
 
     private func hideMainWindowIfNeeded() {

@@ -1,5 +1,7 @@
 #!/bin/zsh
-# Install or upgrade macOS apps without opening them — via Homebrew cask or Sparkle download.
+# Install or upgrade macOS apps via Homebrew cask or Sparkle download. If an app
+# is managed by its own updater, hand control back to that app instead of trying
+# to install a conflicting Homebrew cask over it.
 set -eu
 
 SCRIPT_NAME="${0:t}"
@@ -33,6 +35,12 @@ upgrade_or_install_cask() {
   else
     brew install --cask "$cask"
   fi
+}
+
+handoff_to_app_updater() {
+  local app="$1"
+  open "$app"
+  echo "IN_APP_UPDATE: Opened ${app:t}. Its built-in updater will download and apply the update."
 }
 
 fetch_latest_sparkle_url() {
@@ -158,12 +166,6 @@ cmd_brew_or_sparkle() {
     return 0
   fi
 
-  if brew_cask_exists "$cask"; then
-    if upgrade_or_install_cask "$cask"; then
-      return 0
-    fi
-  fi
-
   download_and_install_sparkle "$feed" "$app"
 }
 
@@ -173,7 +175,9 @@ slugify() {
 
 resolve_brew_cask_for_app() {
   local app="$1"
-  local bundle_id name trimmed slug seen="|" -a slugs=()
+  local bundle_id name trimmed slug seen="|"
+  local -a slugs
+  slugs=()
 
   bundle_id="$(plist_value "$app" CFBundleIdentifier)"
   name="${app:t:r}"
@@ -203,8 +207,8 @@ cmd_auto() {
   local app cask feed
   app="$(find_app "$@")" || { echo "App not found" >&2; return 1; }
 
-  if cask="$(resolve_brew_cask_for_app "$app")"; then
-    upgrade_or_install_cask "$cask"
+  if cask="$(resolve_brew_cask_for_app "$app")" && brew list --cask "$cask" >/dev/null 2>&1; then
+    brew upgrade --cask "$cask"
     return 0
   fi
 
@@ -214,8 +218,7 @@ cmd_auto() {
     return 0
   fi
 
-  echo "No Homebrew cask or Sparkle feed found for ${app:t}" >&2
-  return 1
+  handoff_to_app_updater "$app"
 }
 
 cmd_smart() {
@@ -229,20 +232,13 @@ cmd_smart() {
     return 0
   fi
 
-  if brew_cask_exists "$cask"; then
-    if upgrade_or_install_cask "$cask"; then
-      return 0
-    fi
-  fi
-
   feed="$(plist_value "$app" SUFeedURL)"
   if [[ -n "$feed" ]]; then
     download_and_install_sparkle "$feed" "$app"
     return 0
   fi
 
-  echo "No Homebrew cask or Sparkle feed available for $cask" >&2
-  return 1
+  handoff_to_app_updater "$app"
 }
 
 usage() {

@@ -5,6 +5,7 @@ struct ItemListView: View {
     @EnvironmentObject var appState: AppState
     @State private var showLog = false
     @State private var infoItem: UpdateItem?
+    @State private var administratorItem: UpdateItem?
 
     private var displayItems: [UpdateItem] {
         appState.filteredItems
@@ -47,26 +48,12 @@ struct ItemListView: View {
                     .width(100)
 
                     TableColumn("Version") { item in
-                        Text(item.displayVersion)
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(item.status == .updateAvailable ? .primary : .secondary)
+                        VersionCell(item: item)
                     }
                     .width(min: 120, ideal: 160)
 
                     TableColumn("Status") { item in
-                        HStack {
-                            StatusBadge(status: item.status, message: item.statusMessage)
-                            if item.isUserDefined {
-                                Button(role: .destructive) {
-                                    appState.removeCustomItem(id: item.id)
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.plain)
-                                .help("Remove from update list")
-                            }
-                        }
+                        StatusCell(item: item, removeItem: appState.removeCustomItem)
                     }
                     .width(min: 140, ideal: 180)
                 }
@@ -89,6 +76,30 @@ struct ItemListView: View {
             }
             .frame(width: 380, height: 420)
         }
+        .confirmationDialog(
+            "Run with Admin Permission?",
+            isPresented: isShowingAdministratorConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Run with Admin Permission") {
+                guard let id = administratorItem?.id else { return }
+                Task { await appState.retryUpdateWithAdministratorPermission(for: id) }
+            }
+        } message: {
+            Text(administratorCommandMessage)
+        }
+    }
+
+    private var isShowingAdministratorConfirmation: Binding<Bool> {
+        Binding(
+            get: { administratorItem != nil },
+            set: { if !$0 { administratorItem = nil } }
+        )
+    }
+
+    private var administratorCommandMessage: String {
+        guard let item = administratorItem else { return "" }
+        return "Daily Update will run this command with administrator permission:\n\n\(item.updateCommand)"
     }
 
     private var headerBar: some View {
@@ -154,6 +165,37 @@ struct ItemSelectionToggle: View {
         ))
         .toggleStyle(.checkbox)
         .disabled(!item.isActionable || appState.isUpdating)
+    }
+}
+
+private struct VersionCell: View {
+    let item: UpdateItem
+
+    var body: some View {
+        Text(item.displayVersion)
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(item.status == .updateAvailable ? Color.primary : Color.secondary)
+    }
+}
+
+private struct StatusCell: View {
+    let item: UpdateItem
+    let removeItem: (String) -> Void
+
+    var body: some View {
+        HStack {
+            StatusBadge(status: item.status, message: item.statusMessage)
+            if item.isUserDefined {
+                Button(role: .destructive) {
+                    removeItem(item.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .help("Remove from update list")
+            }
+        }
     }
 }
 
@@ -381,6 +423,12 @@ extension ItemListView {
         } else if item.canRetryUpdate {
             Button("Retry Update") {
                 Task { await appState.retryUpdate(for: item.id) }
+            }
+            Divider()
+        }
+        if item.needsAdministratorPermission {
+            Button("Run with Admin Permission…") {
+                administratorItem = item
             }
             Divider()
         }
