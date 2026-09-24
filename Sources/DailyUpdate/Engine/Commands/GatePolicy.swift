@@ -37,6 +37,7 @@ enum GatePolicy {
 
     static func canRunScopedUpdateWithYes(_ item: UpdateItem) -> Bool {
         guard item.status == .gated else { return false }
+        guard item.blockReason == nil else { return false }
         let reasons = Set(item.gateReasons)
         guard !reasons.isEmpty else { return false }
         return reasons.isSubset(of: yesEligibleReasons)
@@ -47,7 +48,8 @@ enum GatePolicy {
         if classification.risks.contains(.bulk) ||
             classification.risks.contains(.remoteScript) ||
             classification.risks.contains(.privileged) ||
-            classification.risks.contains(.destructive) {
+            classification.risks.contains(.destructive) ||
+            classification.risks.contains(.unparseable) {
             return true
         }
         if CommandShapeClassifier.containsMutatingPackageManagerVerb(checkCommand) {

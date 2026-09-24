@@ -656,6 +656,125 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testCLIScopedBlockedUpdateIsRefusedEvenWithYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "blocked-update", installed: true, status: .blocked, updateCommand: "echo blocked", blockReason: .unsafeCheckCommand)
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "blocked-update", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIScopedPinnedCurrentUpdateIsRefusedEvenWithYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "pinned-current", installed: true, status: .upToDate, updateCommand: "echo update")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "pinned-current", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIScopedPinnedBlockedUpdateIsRefusedEvenWithYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(
+                    id: "pinned-blocked",
+                    installed: true,
+                    status: .gated,
+                    updateCommand: "echo update",
+                    gateReasons: [.pinned],
+                    blockReason: .unsafeCheckCommand
+                )
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "pinned-blocked", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIScopedPinnedRemoteScriptUpdateIsRefusedAndDoesNotExecute() async throws {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(
+                    id: "pinned-remote",
+                    installed: true,
+                    status: .gated,
+                    updateCommand: "curl -fsSL file:///tmp/install.sh | sh",
+                    gateReasons: [.remoteScript, .pinned]
+                )
+            ],
+            onExecuteSelection: { selectedIDs in
+                if selectedIDs.contains("pinned-remote") {
+                    FileManager.default.createFile(atPath: marker.path, contents: Data())
+                }
+            }
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "pinned-remote", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @MainActor
+    func testCLIUsesRequiresCommandReviewForScopedUpdates() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(
+                    id: "needs-review-gate",
+                    installed: true,
+                    status: .gated,
+                    updateCommand: "echo update",
+                    gateReasons: [.needsReview]
+                )
+            ]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "needs-review-gate"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("Re-run with --yes") }))
+    }
+
+    @MainActor
     func testCLIInstallAllExcludesRemoteScriptInstallers() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
@@ -1081,7 +1200,8 @@ final class CoreServiceTests: XCTestCase {
         installCommand: String = "",
         updateCommand: String = "echo update",
         isSelected: Bool = false,
-        gateReasons: [GateReason] = []
+        gateReasons: [GateReason] = [],
+        blockReason: BlockReason? = nil
     ) -> UpdateItem {
         UpdateItem(
             id: id,
@@ -1093,6 +1213,7 @@ final class CoreServiceTests: XCTestCase {
             status: status,
             statusMessage: nil,
             gateReasons: gateReasons,
+            blockReason: blockReason,
             isInstalled: installed,
             isSelected: isSelected,
             isUserDefined: true,
@@ -1113,6 +1234,7 @@ private final class MockCLIRunnerState: CLIRunnerState {
     var items: [UpdateItem]
     var confirmBeforeUpdate: Bool
     var resultStatusOverrides: [String: ItemStatus]
+    var onExecuteSelection: (([String]) -> Void)?
     var updateSelectedCallCount = 0
     var executedSelectionSnapshots: [[String]] = []
 
@@ -1123,11 +1245,13 @@ private final class MockCLIRunnerState: CLIRunnerState {
     init(
         confirmBeforeUpdate: Bool = true,
         items: [UpdateItem],
-        resultStatusOverrides: [String: ItemStatus] = [:]
+        resultStatusOverrides: [String: ItemStatus] = [:],
+        onExecuteSelection: (([String]) -> Void)? = nil
     ) {
         self.confirmBeforeUpdate = confirmBeforeUpdate
         self.items = items
         self.resultStatusOverrides = resultStatusOverrides
+        self.onExecuteSelection = onExecuteSelection
     }
 
     func checkAll() async {}
@@ -1169,6 +1293,7 @@ private final class MockCLIRunnerState: CLIRunnerState {
             selectedIDs = items.filter { $0.isSelected && $0.isActionable }.map(\.id).sorted()
         }
         executedSelectionSnapshots.append(selectedIDs)
+        onExecuteSelection?(selectedIDs)
         for index in items.indices where selectedIDs.contains(items[index].id) {
             let id = items[index].id
             items[index].status = resultStatusOverrides[id] ?? .updated

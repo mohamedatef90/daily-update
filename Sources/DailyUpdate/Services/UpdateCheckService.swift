@@ -26,7 +26,7 @@ enum UpdateCheckService {
 
         if let versionPattern = config.versionPattern {
             do {
-                try VersionTokenExtractor.validate(pattern: versionPattern)
+                try VersionExtractor.validate(pattern: versionPattern)
             } catch {
                 return CheckResult(
                     status: .checkFailed,
@@ -54,7 +54,7 @@ enum UpdateCheckService {
             )
         }
         let currentRaw = versionOutcome.value
-        let current = currentRaw.flatMap { VersionTokenExtractor.extract(from: $0, pattern: config.versionPattern) }
+        let current = currentRaw.flatMap { VersionExtractor.extract(from: $0, pattern: config.versionPattern) }
 
         if current == nil, config.versionCommand != nil {
             return CheckResult(
@@ -287,7 +287,7 @@ enum UpdateCheckService {
     }
 
     private static func isConcreteVersion(_ value: String) -> Bool {
-        VersionTokenExtractor.extract(from: value) != nil
+        VersionExtractor.extract(from: value) != nil
     }
 
     private static func parseLatest(from output: String, pattern: String?) -> String? {
@@ -299,7 +299,7 @@ enum UpdateCheckService {
                     .replacingOccurrences(of: "latest:", with: "", options: .caseInsensitive)
                     .replacingOccurrences(of: "remote:", with: "", options: .caseInsensitive)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                if let token = VersionTokenExtractor.extract(from: parsed, pattern: pattern) {
+                if let token = VersionExtractor.extract(from: parsed, pattern: pattern) {
                     return token
                 }
                 return parsed.nilIfEmpty
@@ -314,7 +314,7 @@ enum UpdateCheckService {
             let value = line
                 .replacingOccurrences(of: "current:", with: "", options: .caseInsensitive)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let token = VersionTokenExtractor.extract(from: value, pattern: pattern) {
+            if let token = VersionExtractor.extract(from: value, pattern: pattern) {
                 return token
             }
             return value.nilIfEmpty

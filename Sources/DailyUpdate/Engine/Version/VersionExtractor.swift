@@ -1,6 +1,6 @@
 import Foundation
 
-enum VersionTokenExtractor {
+enum VersionExtractor {
     static let defaultPattern =
         #"(?<![0-9.])v?(\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]*[0-9A-Za-z]|[a-z]+[0-9]*|_\d+)?)"#
     private static let shaPattern = #"(?i)(?<![0-9a-f])([0-9a-f]{7,40})(?![0-9a-f])"#

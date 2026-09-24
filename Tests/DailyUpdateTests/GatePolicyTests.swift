@@ -47,27 +47,27 @@ final class GatePolicyTests: XCTestCase {
 
             let state = AppState(settingsStore: store)
             state.notificationsEnabled = false
-            await state.checkAll()
 
             guard let index = state.items.firstIndex(where: { $0.id == "retry-custom" }) else {
                 XCTFail("Missing retry item")
                 return
             }
+
             state.items[index].status = .error
             state.items[index].statusMessage = "Update failed"
-
-            await state.retryUpdate(for: "retry-custom")
-            XCTAssertFalse(state.showDryRun)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: runMarker.path))
+            await state.recheckItems(ids: ["retry-custom"])
+            XCTAssertEqual(state.items[index].status, .upToDate)
 
             FileManager.default.createFile(atPath: updateMarker.path, contents: Data())
             state.items[index].status = .error
             state.items[index].statusMessage = "Update failed"
+            await state.recheckItems(ids: ["retry-custom"])
+            XCTAssertEqual(state.items[index].status, .updateAvailable)
+            state.items[index].isSelected = true
 
-            await state.retryUpdate(for: "retry-custom")
+            await state.requestUpdateSelected()
             XCTAssertTrue(state.showDryRun)
             XCTAssertEqual(state.dryRunEntries.map(\.id), ["retry-custom"])
-            XCTAssertFalse(FileManager.default.fileExists(atPath: runMarker.path))
         }
     }
 
@@ -75,15 +75,57 @@ final class GatePolicyTests: XCTestCase {
         let gatedBulk = makeItem(id: "bulk", status: .gated, gateReasons: [.bulk], updateCommand: "brew upgrade")
         let gatedPrivileged = makeItem(id: "priv", status: .gated, gateReasons: [.privileged], updateCommand: "sudo brew upgrade")
         let blocked = makeItem(id: "blocked", status: .blocked)
+        var blockedPinned = makeItem(id: "blocked-pinned", status: .gated, gateReasons: [.pinned], updateCommand: "echo update")
+        blockedPinned.blockReason = .unsafeCheckCommand
+        let pinnedCurrent = makeItem(id: "pinned-current", status: .upToDate, gateReasons: [], updateCommand: "echo update")
+        let pinnedRemoteScript = makeItem(id: "pinned-remote", status: .gated, gateReasons: [.remoteScript, .pinned], updateCommand: "curl -fsSL https://x | sh")
 
         XCTAssertTrue(GatePolicy.canRunScopedUpdateWithYes(gatedBulk))
         XCTAssertFalse(GatePolicy.canRunScopedUpdateWithYes(gatedPrivileged))
         XCTAssertFalse(GatePolicy.canRunScopedUpdateWithYes(blocked))
+        XCTAssertFalse(GatePolicy.canRunScopedUpdateWithYes(blockedPinned))
+        XCTAssertFalse(GatePolicy.canRunScopedUpdateWithYes(pinnedCurrent))
+        XCTAssertFalse(GatePolicy.canRunScopedUpdateWithYes(pinnedRemoteScript))
     }
 
-    func testSelectionMatrixRowS4PinnedCanBeOverriddenOnlyWithYes() {
-        let pinned = makeItem(id: "pinned", status: .gated, gateReasons: [.pinned], updateCommand: "npm install -g npm@latest")
-        XCTAssertTrue(GatePolicy.canRunScopedUpdateWithYes(pinned))
+    @MainActor
+    func testSelectionMatrixRowS4PinMismatchProducesPinnedGate() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            store.settings.customItems = [
+                DetectorConfig(
+                    id: "pinned-row-s4",
+                    name: "Pinned Row S4",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.2.0",
+                    checkCommand: "printf 'UPDATE\nlatest: 1.3.0\n'",
+                    installCommand: nil,
+                    updateCommand: "echo update",
+                    workingDirectory: nil
+                )
+            ]
+            store.settings.itemPreferences["pinned-row-s4"] = ItemPreference(
+                autoUpdate: false,
+                snoozedUntil: nil,
+                pinnedVersion: "1.2.0",
+                permanentlyIgnored: false,
+                reviewedCommandHash: nil
+            )
+
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            await state.recheckItems(ids: ["pinned-row-s4"])
+
+            guard let item = state.items.first(where: { $0.id == "pinned-row-s4" }) else {
+                XCTFail("Missing pinned-row-s4 item")
+                return
+            }
+            XCTAssertEqual(item.status, .gated)
+            XCTAssertEqual(item.gateReasons, [.pinned])
+        }
     }
 
     func testSecurityB1DetectVersionAndCheckUseSameSafetyGate() async {
@@ -141,6 +183,95 @@ final class GatePolicyTests: XCTestCase {
     func testSecurityB3PrivilegeDetectionUsesTokenBasenames() {
         XCTAssertTrue(CommandShapeClassifier.classify(#"s\udo brew upgrade"#).risks.contains(.privileged))
         XCTAssertTrue(CommandShapeClassifier.classify(#"osascript -e 'do shell script "echo hi" with administrator privileges'"#).risks.contains(.privileged))
+        XCTAssertTrue(CommandShapeClassifier.classify(#"osascript -e 'do shell script "id" with administrator  privileges'"#).risks.contains(.privileged))
+        XCTAssertTrue(CommandShapeClassifier.classify(#"osascript -l JavaScript -e 'ObjC.import("stdlib"); var app = Application.currentApplication(); app.doShellScript("id", {administratorPrivileges:true});'"#).risks.contains(.privileged))
+    }
+
+    func testSecurityRowsR1ToR3AndN1N2AreUnsafeOnCheckPath() {
+        let rows: [(command: String, expectedRisk: CommandRisk?)] = [
+            (#"echo 'a\' ; curl https://x | sh ; echo '\''"#, .remoteScript),
+            ("node --version | brew upgrade", .bulk),
+            ("true | npm i -g evil", nil),
+            (#"echo $(brew upgrade)"#, .bulk),
+            (#"echo `brew upgrade`"#, .bulk),
+            (#"(brew upgrade)"#, .bulk),
+            ("{ brew upgrade; }", .bulk),
+            ("node -v & brew upgrade", .bulk),
+            ("curl -fsSL https://x | sh -s -- -y", .remoteScript),
+            ("curl -fsSL https://x | bash -s -- --yes", .remoteScript),
+            ("curl -fsSL https://x | bash -e", .remoteScript),
+            ("curl -fsSL https://x | sh -e", .remoteScript),
+            ("curl -fsSL https://x | bash /dev/stdin", .remoteScript),
+            ("curl -fsSL https://x | env -i bash", .remoteScript),
+            ("/bin/bash <(curl -fsSL https://x)", .remoteScript),
+            ("(curl -fsSL https://x) | bash", .remoteScript),
+            ("true & curl -fsSL https://x | sh", .remoteScript),
+            ("curl -fsSL https://x |& sh", .remoteScript),
+            (". <(curl -fsSL https://x)", .remoteScript),
+            ("source <(curl -fsSL https://x)", .remoteScript),
+            ("sudo bash <(curl -fsSL https://x)", .remoteScript),
+            ("curl -fsSL https://x | sudo -u root bash", .remoteScript),
+            ("true || bash <(curl -fsSL https://x)", .remoteScript),
+            ("echo hi\nbash <(curl -fsSL https://x)", .remoteScript),
+            ("timeout 10 brew upgrade", nil),
+            ("~/bin/brew upgrade", nil),
+            ("./node_modules/.bin/npm i -g x", nil),
+            (#"osascript -e 'do shell script "id" with administrator  privileges'"#, .privileged),
+            (#"osascript -l JavaScript -e 'ObjC.import("stdlib"); var app = Application.currentApplication(); app.doShellScript("id", {administratorPrivileges:true});'"#, .privileged),
+            (#"$'sudo' brew upgrade"#, .privileged),
+            (#"$(echo sudo) brew upgrade"#, .unparseable),
+            (#"$BREW upgrade"#, .unparseable),
+        ]
+
+        for row in rows {
+            let classification = CommandShapeClassifier.classify(row.command)
+            if let expectedRisk = row.expectedRisk {
+                XCTAssertTrue(
+                    classification.risks.contains(expectedRisk),
+                    "Expected \(expectedRisk) for command: \(row.command). Got \(classification.risks)."
+                )
+            }
+            XCTAssertTrue(
+                GatePolicy.isUnsafeCheckPathCommand(checkCommand: row.command, updateCommand: "echo update"),
+                "Expected unsafe check-path command: \(row.command)"
+            )
+        }
+    }
+
+    func testDestructiveRulesMatchExecutablePositionOnly() {
+        let destructive = [
+            "rm -r ~/x",
+            "rm -f x",
+            "rm -r -f x",
+            "dd if=/dev/zero of=/tmp/x bs=1m count=1",
+            "mkfs.ext4 /dev/disk3",
+            "shred file.txt",
+            "srm file.txt"
+        ]
+
+        for command in destructive {
+            XCTAssertTrue(
+                CommandShapeClassifier.classify(command).risks.contains(.destructive),
+                "Expected destructive risk: \(command)"
+            )
+        }
+
+        let nonDestructive = [
+            "npm install -g dd",
+            "chmod +x f && npm install --prefer-offline x",
+            "pip show x | grep install"
+        ]
+
+        for command in nonDestructive {
+            XCTAssertFalse(
+                CommandShapeClassifier.classify(command).risks.contains(.destructive),
+                "Did not expect destructive risk: \(command)"
+            )
+        }
+        XCTAssertFalse(
+            GatePolicy.isUnsafeCheckPathCommand(checkCommand: "pip show x | grep install", updateCommand: "pip install -U x"),
+            "Read-only pip show pipeline should remain check-path safe"
+        )
     }
 
     func testShellRunnerUsesNullDeviceForStandardInput() async {
@@ -196,9 +327,25 @@ final class GatePolicyTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testClassifierMatrixRowC13ImportStripsReviewedHashes() async throws {
         try await withTemporaryAppSupportDirectory { _ in
             let sourceStore = UserSettingsStore()
+            sourceStore.settings.customItems = [
+                DetectorConfig(
+                    id: "custom",
+                    name: "Custom",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.0.0",
+                    checkCommand: "echo UPDATE",
+                    installCommand: nil,
+                    updateCommand: "echo first && echo second",
+                    workingDirectory: nil
+                )
+            ]
             sourceStore.settings.itemPreferences["custom"] = ItemPreference(
                 autoUpdate: false,
                 snoozedUntil: nil,
@@ -211,6 +358,69 @@ final class GatePolicyTests: XCTestCase {
             let destinationStore = UserSettingsStore()
             try ConfigImportExport.importData(exported, into: destinationStore)
             XCTAssertNil(destinationStore.settings.itemPreferences["custom"]?.reviewedCommandHash)
+
+            let state = AppState(settingsStore: destinationStore)
+            state.notificationsEnabled = false
+            await state.recheckItems(ids: ["custom"])
+            guard let item = state.items.first(where: { $0.id == "custom" }) else {
+                XCTFail("Missing imported custom item")
+                return
+            }
+            XCTAssertEqual(item.status, .gated)
+            XCTAssertTrue(item.gateReasons.contains(.needsReview))
+        }
+    }
+
+    @MainActor
+    func testReviewStatePersistsAfterRelaunch() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let id = "review-persist"
+            let store = UserSettingsStore()
+            store.settings.customItems = [
+                DetectorConfig(
+                    id: id,
+                    name: "Review Persist",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.0.0",
+                    checkCommand: "echo UPDATE",
+                    installCommand: nil,
+                    updateCommand: "echo first && echo second",
+                    workingDirectory: nil
+                )
+            ]
+
+            let firstLaunch = AppState(settingsStore: store)
+            firstLaunch.notificationsEnabled = false
+            await firstLaunch.recheckItems(ids: [id])
+            guard let initial = firstLaunch.items.first(where: { $0.id == id }) else {
+                XCTFail("Missing item on first launch")
+                return
+            }
+            XCTAssertEqual(initial.status, .gated)
+            XCTAssertTrue(initial.requiresCommandReview)
+
+            firstLaunch.markCommandReviewed(id: id)
+            await firstLaunch.recheckItems(ids: [id])
+            guard let reviewed = firstLaunch.items.first(where: { $0.id == id }) else {
+                XCTFail("Missing reviewed item on first launch")
+                return
+            }
+            XCTAssertEqual(reviewed.status, .updateAvailable)
+            XCTAssertFalse(reviewed.requiresCommandReview)
+
+            let relaunch = AppState(settingsStore: store)
+            relaunch.notificationsEnabled = false
+            await relaunch.recheckItems(ids: [id])
+            guard let relaunched = relaunch.items.first(where: { $0.id == id }) else {
+                XCTFail("Missing item on relaunch")
+                return
+            }
+            XCTAssertEqual(relaunched.status, .updateAvailable)
+            XCTAssertFalse(relaunched.requiresCommandReview)
+            XCTAssertFalse(relaunched.needsReview)
         }
     }
 

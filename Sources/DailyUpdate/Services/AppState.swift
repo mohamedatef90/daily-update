@@ -566,13 +566,8 @@ final class AppState: ObservableObject {
                     item.statusMessage = check.message
                     item.gateReasons = check.gateReasons
                     item.blockReason = check.blockReason
-                    if item.isPinnedMismatch {
-                        item.status = .gated
-                        if !item.gateReasons.contains(.pinned) {
-                            item.gateReasons.append(.pinned)
-                        }
-                        item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
-                    }
+                    item.needsReview = check.gateReasons.contains(.needsReview)
+                    applyPinnedGateIfNeeded(to: &item)
                     item.isSelected = item.status == .updateAvailable && !item.isSnoozed
                     return (index, item)
                 }
@@ -854,12 +849,12 @@ final class AppState: ObservableObject {
             items[index].latestVersion = check.latestVersion
             items[index].gateReasons = check.gateReasons
             items[index].blockReason = check.blockReason
-            if items[index].isPinnedMismatch {
-                items[index].status = .gated
-                if !items[index].gateReasons.contains(.pinned) {
-                    items[index].gateReasons.append(.pinned)
-                }
-                items[index].statusMessage = "Pinned to \(items[index].pinnedVersion ?? "")"
+            items[index].needsReview = check.gateReasons.contains(.needsReview)
+            applyPinnedGateIfNeeded(to: &items[index])
+            if items[index].status == .gated,
+               items[index].statusMessage == nil {
+                let labels = items[index].gateReasons.map(\.label).joined(separator: ", ")
+                items[index].statusMessage = labels.isEmpty ? "Gated" : "Gated: \(labels)"
             } else if let message = check.message {
                 items[index].statusMessage = message
             } else if reconciled == .upToDate {
@@ -1039,6 +1034,23 @@ final class AppState: ObservableObject {
     private func saveSettings() {
         UserDefaults.standard.set(lastCheckDate, forKey: "lastCheckDate")
     }
+}
+
+private func applyPinnedGateIfNeeded(to item: inout UpdateItem) {
+    guard let pinned = item.pinnedVersion?.nilIfEmpty,
+          let target = item.latestVersion?.nilIfEmpty,
+          target != pinned else {
+        return
+    }
+    guard item.status == .updateAvailable || item.status == .gated else {
+        return
+    }
+    if !item.gateReasons.contains(.pinned) {
+        item.gateReasons.append(.pinned)
+    }
+    item.status = .gated
+    let labels = item.gateReasons.map(\.label).joined(separator: ", ")
+    item.statusMessage = labels.isEmpty ? "Gated" : "Gated: \(labels)"
 }
 
 private extension String {

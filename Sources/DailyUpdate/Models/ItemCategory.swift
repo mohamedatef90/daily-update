@@ -156,8 +156,13 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var isPinnedMismatch: Bool {
-        guard let pinnedVersion, let currentVersion else { return false }
-        return !currentVersion.contains(pinnedVersion) && pinnedVersion != currentVersion
+        guard let pinnedVersion = pinnedVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !pinnedVersion.isEmpty,
+              let targetVersion = latestVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !targetVersion.isEmpty else {
+            return false
+        }
+        return targetVersion != pinnedVersion
     }
 
     var displayVersion: String {

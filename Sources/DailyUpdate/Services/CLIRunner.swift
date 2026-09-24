@@ -282,7 +282,7 @@ enum CLIRunner {
 
         let requiresRiskConfirmation = entries.contains { entry in
             guard let item = state.items.first(where: { $0.id == entry.id }) else { return false }
-            return item.isBulkOperation || item.isRemoteScriptOperation || item.needsReview
+            return item.isBulkOperation || item.isRemoteScriptOperation || item.requiresCommandReview
         }
 
         if requireExplicitConfirmation || requiresRiskConfirmation {
@@ -379,7 +379,7 @@ enum CLIRunner {
             return 2
         }
 
-        if item.needsReview, !confirmed {
+        if item.requiresCommandReview, !confirmed {
             printDryRunPlan(entries: [
                 DryRunEntry(
                     id: item.id,

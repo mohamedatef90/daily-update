@@ -31,7 +31,7 @@ final class VersionExtractorTests: XCTestCase {
 
         for row in rows {
             XCTAssertEqual(
-                VersionTokenExtractor.extract(from: row.output, pattern: row.pattern),
+                VersionExtractor.extract(from: row.output, pattern: row.pattern),
                 row.token,
                 "output=\(row.output)"
             )
@@ -39,7 +39,7 @@ final class VersionExtractorTests: XCTestCase {
     }
 
     func testVersionExtractorMatrixRowE24PatternValidation() {
-        XCTAssertThrowsError(try VersionTokenExtractor.validate(pattern: #"^\d+\.\d+\.\d+$"#))
-        XCTAssertThrowsError(try VersionTokenExtractor.validate(pattern: #"v?(\d+)\.(\d+)"#))
+        XCTAssertThrowsError(try VersionExtractor.validate(pattern: #"^\d+\.\d+\.\d+$"#))
+        XCTAssertThrowsError(try VersionExtractor.validate(pattern: #"v?(\d+)\.(\d+)"#))
     }
 }
