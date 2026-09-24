@@ -137,7 +137,7 @@ enum CLIRunner {
             } else {
                 printCheckResults(state, output: output)
             }
-            return 0
+            return state.items.contains(where: { $0.status == .checkFailed }) ? 1 : 0
         case .installAll:
             await state.checkAll()
             state.selectAllInstallable()
@@ -162,6 +162,7 @@ enum CLIRunner {
                 state: state,
                 itemID: itemID,
                 action: .install,
+                confirmed: parsed.yes,
                 output: output
             )
         case .update(let itemID):
@@ -170,6 +171,7 @@ enum CLIRunner {
                 state: state,
                 itemID: itemID,
                 action: .update,
+                confirmed: parsed.yes,
                 output: output
             )
         case .health:
@@ -280,8 +282,9 @@ enum CLIRunner {
             }
         }
 
+        let targetIDs = Set(entries.map(\.id))
         await state.updateSelected(skipDryRun: true)
-        return state.items.contains { $0.status == .error } ? 1 : 0
+        return actionExitCode(state: state, targetIDs: targetIDs)
     }
 
     @MainActor
@@ -289,6 +292,7 @@ enum CLIRunner {
         state: any CLIRunnerState,
         itemID: String,
         action: ScopedAction,
+        confirmed: Bool,
         output: (String) -> Void
     ) async -> Int32 {
         state.deselectAll(limitTo: nil)
@@ -303,9 +307,23 @@ enum CLIRunner {
             return 1
         }
 
+        if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand), !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.installCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This install command runs a remote script. Re-run with --yes to allow it.")
+            return 2
+        }
+
         state.setSelection(for: item.id, selected: true)
         await state.updateSelected(skipDryRun: true)
-        return state.items.contains { $0.status == .error } ? 1 : 0
+        return actionExitCode(state: state, targetIDs: Set([item.id]))
     }
 
     @MainActor
@@ -337,6 +355,22 @@ enum CLIRunner {
         }
     }
 
+    @MainActor
+    private static func actionExitCode(
+        state: any CLIRunnerState,
+        targetIDs: Set<String>
+    ) -> Int32 {
+        for item in state.items where targetIDs.contains(item.id) {
+            switch item.status {
+            case .updated, .upToDate, .updatePending:
+                continue
+            default:
+                return 1
+            }
+        }
+        return 0
+    }
+
     private static func printHelp(output: (String) -> Void = { print($0) }) {
         output("""
         Daily Update CLI
@@ -347,7 +381,7 @@ enum CLIRunner {
           DailyUpdate --update <item-id>   Update one item only
           DailyUpdate --install-all        Install all missing items
           DailyUpdate --install <item-id>  Install one item only
-          DailyUpdate --yes                Confirm --update-all / --install-all when required
+          DailyUpdate --yes                Confirm guarded CLI actions when required
           DailyUpdate --health             Run health checks
           DailyUpdate --json               JSON output (with --check or --health)
           DailyUpdate --help               Show this help

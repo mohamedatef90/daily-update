@@ -30,12 +30,12 @@ enum ConfigLoader {
 
         if let legacyUser = loadLegacyUserConfigs() {
             for item in legacyUser where byID[item.id] == nil {
-                byID[item.id] = expandConfig(item, settings: settings)
+                byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
             }
         }
 
         for item in settings.customItems {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
         }
 
         for item in discoveredRepos where byID[item.id] == nil {
@@ -150,7 +150,11 @@ enum ConfigLoader {
         return command.replacingOccurrences(of: "{CHECK_SCRIPT}", with: quotedCheckScript)
     }
 
-    private static func expandConfig(_ config: DetectorConfig, settings: UserSettings) -> DetectorConfig {
+    private static func expandConfig(
+        _ config: DetectorConfig,
+        settings: UserSettings,
+        flagNeedsReview: Bool = false
+    ) -> DetectorConfig {
         let home = settings.rootFolder.isEmpty ? NSHomeDirectory() : settings.rootFolder
         let folders = settings.allScanFolders
         var detect = config.detect
@@ -183,24 +187,31 @@ enum ConfigLoader {
         }
 
         let expandedUpdate = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
-        let sanitizedUpdate = UpdateCommandSemantics.sanitizingActionCommand(expandedUpdate)
-        let sanitizedInstall = resolvedInstallCommand(
+        let resolvedInstall = resolvedInstallCommand(
             config,
             home: home,
-            expandedUpdateCommand: sanitizedUpdate
+            expandedUpdateCommand: expandedUpdate
+        )
+        let description = mergedDescription(
+            base: config.description,
+            warning: commandReviewWarning(
+                updateCommand: expandedUpdate,
+                installCommand: resolvedInstall,
+                flagNeedsReview: flagNeedsReview
+            )
         )
 
         return DetectorConfig(
             id: config.id,
             name: config.name,
             category: config.category,
-            description: config.description,
+            description: description,
             source: config.source ?? .bundled,
             detect: detect,
             versionCommand: expandVariables(config.versionCommand, home: home),
             checkCommand: expandVariables(config.checkCommand, home: home),
-            installCommand: sanitizedInstall,
-            updateCommand: sanitizedUpdate,
+            installCommand: resolvedInstall,
+            updateCommand: expandedUpdate,
             workingDirectory: expandVariables(config.workingDirectory, home: home)
         )
     }
@@ -213,7 +224,36 @@ enum ConfigLoader {
         let update = expandedUpdateCommand
         let install = expandVariables(config.installCommand, home: home)
         let resolved = InstallCommandResolver.resolve(id: config.id, installCommand: install, updateCommand: update)
-        return UpdateCommandSemantics.sanitizingActionCommand(resolved)
+        return resolved
+    }
+
+    private static func commandReviewWarning(
+        updateCommand: String,
+        installCommand: String,
+        flagNeedsReview: Bool
+    ) -> String? {
+        guard flagNeedsReview else { return nil }
+
+        let risky = [
+            ActionCommandPolicy.hasFallbackChain(updateCommand),
+            ActionCommandPolicy.hasSuppressedStderr(updateCommand),
+            ActionCommandPolicy.hasCommandSeparator(updateCommand),
+            ActionCommandPolicy.hasFallbackChain(installCommand),
+            ActionCommandPolicy.hasSuppressedStderr(installCommand),
+            ActionCommandPolicy.hasCommandSeparator(installCommand)
+        ].contains(true)
+
+        guard risky else { return nil }
+        return "Needs review: custom command contains shell fallback/chaining patterns."
+    }
+
+    private static func mergedDescription(base: String?, warning: String?) -> String? {
+        guard let warning else { return base }
+        guard let base, !base.isEmpty else { return warning }
+        if base.contains(warning) {
+            return base
+        }
+        return "\(base)\n\(warning)"
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {

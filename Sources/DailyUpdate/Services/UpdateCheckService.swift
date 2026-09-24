@@ -10,6 +10,10 @@ enum UpdateCheckService {
         let cwd = config.workingDirectory?.expandingTilde
         let current = await DetectionService.getVersion(config)
 
+        if let current, config.versionCommand != nil, !containsVersionToken(current) {
+            return (.checkFailed, current, nil, "Version command returned no version token")
+        }
+
         if let checkCommand = config.checkCommand {
             let result = await ShellRunner.run(checkCommand, workingDirectory: cwd)
             let output = result.stdout
@@ -17,7 +21,6 @@ enum UpdateCheckService {
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
             let lower = output.lowercased()
-            let combinedLower = combined.lowercased()
 
             if !result.succeeded {
                 let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
@@ -31,12 +34,11 @@ enum UpdateCheckService {
                 return (.unknown, current, nil, message.nilIfEmpty ?? "Check manually")
             }
 
-            if combinedLower.contains("check_failed") || combinedLower.contains("check failed") {
-                let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
-                return (.checkFailed, current, nil, detail ?? "Check failed")
+            if let explicitCheckFailure = checkFailureMarker(in: output) {
+                return (.checkFailed, current, nil, explicitCheckFailure)
             }
 
-            if combinedLower.contains("broken") {
+            if combined.lowercased().contains("broken") {
                 let latest = parseLatest(from: combined)
                 return (.checkFailed, current, latest, "Install appears broken")
             }
@@ -119,6 +121,22 @@ enum UpdateCheckService {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return parsed.nilIfEmpty
             }
+        }
+        return nil
+    }
+
+    private static func containsVersionToken(_ value: String) -> Bool {
+        VersionComparator.normalize(value).contains(where: \.isNumber)
+    }
+
+    private static func checkFailureMarker(in output: String) -> String? {
+        for line in output.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("CHECK_FAILED:") else { continue }
+            let message = trimmed
+                .dropFirst("CHECK_FAILED:".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.nilIfEmpty ?? "Check failed"
         }
         return nil
     }

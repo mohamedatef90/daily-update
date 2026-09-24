@@ -94,6 +94,28 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertEqual(result.1, "1.0.0")
     }
 
+    func testVersionCommandWithoutVersionTokenIsCheckFailed() async {
+        let config = DetectorConfig(
+            id: "java-stub",
+            name: "Java Stub",
+            category: .runtime,
+            description: nil,
+            source: .user,
+            detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+            versionCommand: "echo \"The operation couldn't be completed. Unable to locate a Java Runtime.\"",
+            checkCommand: "echo OK",
+            installCommand: "true",
+            updateCommand: "true",
+            workingDirectory: nil
+        )
+
+        let result = await UpdateCheckService.check(config, installed: true)
+
+        XCTAssertEqual(result.0, .checkFailed)
+        XCTAssertEqual(result.1, "The operation couldn't be completed. Unable to locate a Java Runtime.")
+        XCTAssertEqual(result.3, "Version command returned no version token")
+    }
+
     func testInAppUpdateHandoffIsNotRecordedAsFailure() {
         let result = UpdateResult.pendingInApp(current: "1.0", latest: "1.1")
 
@@ -171,12 +193,12 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertTrue(item.needsAdministratorPermission)
     }
 
-    func testFallbackChainsAreRemovedFromActionCommands() {
+    func testCustomCommandsArePreservedAndFlaggedForReview() {
         var settings = UserSettings.defaults
         settings.customItems = [
             DetectorConfig(
-                id: "fallback-test",
-                name: "Fallback Test",
+                id: "custom-review-test",
+                name: "Custom Review Test",
                 category: .cli,
                 description: nil,
                 source: .user,
@@ -190,12 +212,48 @@ final class CoreServiceTests: XCTestCase {
         ]
 
         let configs = ConfigLoader.loadConfigs(settings: settings)
-        let config = try? XCTUnwrap(configs.first(where: { $0.id == "fallback-test" }))
+        let config = try? XCTUnwrap(configs.first(where: { $0.id == "custom-review-test" }))
 
         XCTAssertNotNil(config)
-        XCTAssertEqual(config?.updateCommand, "npm update -g test-tool")
-        XCTAssertFalse(UpdateCommandSemantics.hasFallbackChain(config?.updateCommand ?? ""))
-        XCTAssertFalse((config?.updateCommand ?? "").contains("2>/dev/null"))
+        XCTAssertEqual(config?.updateCommand, "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'")
+        XCTAssertTrue(config?.description?.contains("Needs review:") == true)
+    }
+
+    func testBundledActionCommandsPassLintAndBulkRules() {
+        let settings = UserSettings.defaults
+        let bundled = ConfigLoader.loadConfigs(settings: settings).filter { $0.source == .bundled }
+        let semicolonAllowlist: Set<String> = ["node", "impeccable"]
+
+        for config in bundled {
+            let commands = [
+                ("update", config.updateCommand),
+                ("install", config.installCommand ?? "")
+            ]
+
+            for (kind, command) in commands where !command.isEmpty {
+                XCTAssertFalse(
+                    ActionCommandPolicy.hasFallbackChain(command),
+                    "\(config.id) \(kind) command contains fallback chain: \(command)"
+                )
+                XCTAssertFalse(
+                    ActionCommandPolicy.hasSuppressedStderr(command),
+                    "\(config.id) \(kind) command suppresses stderr: \(command)"
+                )
+                if ActionCommandPolicy.hasCommandSeparator(command) {
+                    XCTAssertTrue(
+                        semicolonAllowlist.contains(config.id),
+                        "\(config.id) \(kind) command uses ';' without allowlist: \(command)"
+                    )
+                }
+
+                if ActionCommandPolicy.matchesBulkPattern(command) {
+                    XCTAssertTrue(
+                        BulkUpdatePolicy.isBulkOperation(itemID: config.id),
+                        "\(config.id) \(kind) matches bulk pattern but is not gated: \(command)"
+                    )
+                }
+            }
+        }
     }
 
     func testBulkItemsAreNotAutoSelectedForUpdateAll() {
@@ -303,6 +361,26 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertEqual(result.stdout, original)
     }
 
+    func testTerminalCommandRoundTripsThroughAppleScriptArgv() async {
+        let command = #"for d in "$HOME/project"; do echo "$d" "$(echo hi >&2)"; done"#
+        let args = TerminalCommandLauncher.arguments(for: command)
+        XCTAssertEqual(args.last, command)
+
+        let probe = await ShellRunner.runProcess(
+            executablePath: "/usr/bin/osascript",
+            arguments: [
+                "-e", "on run argv",
+                "-e", "return item 1 of argv",
+                "-e", "end run",
+                "--",
+                command
+            ]
+        )
+
+        XCTAssertTrue(probe.succeeded, probe.stderr)
+        XCTAssertEqual(probe.stdout, command)
+    }
+
     func testBundledResourcesResolveForSwiftPMRuns() {
         XCTAssertFalse(ConfigLoader.checkAppUpdateScriptPath.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: ConfigLoader.checkAppUpdateScriptPath))
@@ -388,6 +466,118 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testCLIUpdateAllWithYesStillExcludesBulkItems() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "brew", installed: true, status: .updateAvailable),
+                makeItem(id: "single-update", installed: true, status: .updateAvailable)
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["single-update"]])
+    }
+
+    @MainActor
+    func testCLIInstallAllExcludesRemoteScriptInstallers() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "safe-install", installed: false, status: .notInstalled, installCommand: "brew install safe-tool"),
+                makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--install-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["safe-install"]])
+    }
+
+    @MainActor
+    func testCLIScopedRemoteInstallRequiresYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
+            ]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--install", "remote-install"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("remote script") }))
+    }
+
+    @MainActor
+    func testCLIScopedRemoteInstallAllowsYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--install", "remote-install", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["remote-install"]])
+    }
+
+    @MainActor
+    func testCLICheckReturnsNonZeroWhenAnyItemCheckFailed() async {
+        let state = MockCLIRunnerState(
+            items: [
+                makeItem(id: "ok-item", installed: true, status: .upToDate),
+                makeItem(id: "failed-item", installed: true, status: .checkFailed)
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--check"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+    }
+
+    @MainActor
+    func testCLIUpdateReturnsNonZeroWhenActionFails() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "failing-update", installed: true, status: .updateAvailable)
+            ],
+            resultStatusOverrides: ["failing-update": .error]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+    }
+
+    @MainActor
     func testRequestUpdateSelectedShowsDryRunWhenConfirmationEnabled() async {
         let store = UserSettingsStore()
         store.settings.confirmBeforeUpdate = true
@@ -438,6 +628,7 @@ final class CoreServiceTests: XCTestCase {
 private final class MockCLIRunnerState: CLIRunnerState {
     var items: [UpdateItem]
     var confirmBeforeUpdate: Bool
+    var resultStatusOverrides: [String: ItemStatus]
     var updateSelectedCallCount = 0
     var executedSelectionSnapshots: [[String]] = []
 
@@ -445,16 +636,23 @@ private final class MockCLIRunnerState: CLIRunnerState {
         items.filter { $0.isSelected && $0.isActionable }
     }
 
-    init(confirmBeforeUpdate: Bool = true, items: [UpdateItem]) {
+    init(
+        confirmBeforeUpdate: Bool = true,
+        items: [UpdateItem],
+        resultStatusOverrides: [String: ItemStatus] = [:]
+    ) {
         self.confirmBeforeUpdate = confirmBeforeUpdate
         self.items = items
+        self.resultStatusOverrides = resultStatusOverrides
     }
 
     func checkAll() async {}
 
     func selectAllInstallable() {
         for index in items.indices {
-            items[index].isSelected = items[index].canInstall
+            let command = items[index].installCommand
+            let isRemoteScriptInstall = ActionCommandPolicy.isRemoteScriptInstaller(command)
+            items[index].isSelected = items[index].canInstall && !isRemoteScriptInstall
         }
     }
 
@@ -462,7 +660,7 @@ private final class MockCLIRunnerState: CLIRunnerState {
         let allowed = ids.map(Set.init)
         for index in items.indices {
             if let allowed, !allowed.contains(items[index].id) { continue }
-            items[index].isSelected = items[index].canUpdate
+            items[index].isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(items[index])
         }
     }
 
@@ -484,7 +682,8 @@ private final class MockCLIRunnerState: CLIRunnerState {
         let selectedIDs = items.filter { $0.isSelected && $0.isActionable }.map(\.id).sorted()
         executedSelectionSnapshots.append(selectedIDs)
         for index in items.indices where selectedIDs.contains(items[index].id) {
-            items[index].status = .updated
+            let id = items[index].id
+            items[index].status = resultStatusOverrides[id] ?? .updated
         }
     }
 }

@@ -449,7 +449,9 @@ final class AppState: ObservableObject {
 
     func selectAllInstallable() {
         for index in items.indices {
-            items[index].isSelected = items[index].canInstall && !items[index].isSnoozed
+            let command = items[index].installCommand
+            let isRemoteScriptInstall = ActionCommandPolicy.isRemoteScriptInstaller(command)
+            items[index].isSelected = items[index].canInstall && !items[index].isSnoozed && !isRemoteScriptInstall
         }
     }
 
@@ -699,13 +701,11 @@ final class AppState: ObservableObject {
 
     func openActionCommandInTerminal(for id: String) async {
         guard let command = manualActionCommand(for: id) else { return }
-        let escaped = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = """
-        osascript -e "tell application \\"Terminal\\" to activate" -e "tell application \\"Terminal\\" to do script \\"\(escaped)\\""
-        """
-        _ = await ShellRunner.run(script)
+        let result = await TerminalCommandLauncher.openInTerminal(command: command)
+        guard result.succeeded else {
+            appendLog("Failed to open Terminal command (\(result.stderr.nilIfEmpty ?? "unknown error")).")
+            return
+        }
         if let item = items.first(where: { $0.id == id }) {
             appendLog("Opened Terminal command for \(item.name).")
         }
