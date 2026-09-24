@@ -77,13 +77,17 @@ struct ItemListView: View {
             .frame(width: 380, height: 420)
         }
         .confirmationDialog(
-            "Run with Admin Permission?",
+            "Run Manually in Terminal",
             isPresented: isShowingAdministratorConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Run with Admin Permission") {
+            Button("Copy Command") {
                 guard let id = administratorItem?.id else { return }
-                Task { await appState.retryUpdateWithAdministratorPermission(for: id) }
+                _ = appState.copyActionCommandToClipboard(for: id)
+            }
+            Button("Open in Terminal") {
+                guard let id = administratorItem?.id else { return }
+                Task { await appState.openActionCommandInTerminal(for: id) }
             }
         } message: {
             Text(administratorCommandMessage)
@@ -99,7 +103,9 @@ struct ItemListView: View {
 
     private var administratorCommandMessage: String {
         guard let item = administratorItem else { return "" }
-        return "Daily Update will run this command with administrator permission:\n\n\(item.updateCommand)"
+        return appState.manualActionCommand(for: item.id)
+            .map { "Run this command in Terminal:\n\n\($0)" }
+            ?? "Run this command in Terminal:\n\n\(item.updateCommand)"
     }
 
     private var headerBar: some View {
@@ -223,7 +229,7 @@ struct StatusBadge: View {
 
     private func shouldShowMessage(for status: ItemStatus) -> Bool {
         switch status {
-        case .unknown, .error, .notInstalled, .updatePending, .updateAvailable:
+        case .unknown, .checkFailed, .error, .notInstalled, .updatePending, .updateAvailable:
             return message != nil
         default:
             return false
@@ -237,6 +243,7 @@ struct StatusBadge: View {
         case .updateAvailable: return .orange
         case .updatePending: return .yellow
         case .notInstalled: return .secondary
+        case .checkFailed: return .red
         case .error: return .red
         case .updating: return .blue
         }
@@ -427,7 +434,7 @@ extension ItemListView {
             Divider()
         }
         if item.needsAdministratorPermission {
-            Button("Run with Admin Permission…") {
+            Button("Manual Update Instructions…") {
                 administratorItem = item
             }
             Divider()

@@ -35,4 +35,8 @@ enum UpdateCommandSemantics {
         }
         return false
     }
+
+    static func hasFallbackChain(_ command: String) -> Bool {
+        command.contains("||")
+    }
 }

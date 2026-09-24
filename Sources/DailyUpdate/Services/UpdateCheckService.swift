@@ -10,6 +10,10 @@ enum UpdateCheckService {
         let cwd = config.workingDirectory?.expandingTilde
         let current = await DetectionService.getVersion(config)
 
+        if let current, config.versionCommand != nil, !containsVersionToken(current) {
+            return (.checkFailed, current, nil, "Version command returned no version token")
+        }
+
         if let checkCommand = config.checkCommand {
             let result = await ShellRunner.run(checkCommand, workingDirectory: cwd)
             let output = result.stdout
@@ -17,7 +21,11 @@ enum UpdateCheckService {
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
             let lower = output.lowercased()
-            let combinedLower = combined.lowercased()
+
+            if !result.succeeded {
+                let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
+                return (.checkFailed, current, nil, detail ?? "Check command failed")
+            }
 
             if lower.hasPrefix("manual:") {
                 let message = output
@@ -26,9 +34,13 @@ enum UpdateCheckService {
                 return (.unknown, current, nil, message.nilIfEmpty ?? "Check manually")
             }
 
-            if combinedLower.contains("broken") {
+            if let explicitCheckFailure = checkFailureMarker(in: output) {
+                return (.checkFailed, current, nil, explicitCheckFailure)
+            }
+
+            if combined.lowercased().contains("broken") {
                 let latest = parseLatest(from: combined)
-                return (.error, current, latest, "Install broken — select Update to reinstall")
+                return (.checkFailed, current, latest, "Install appears broken")
             }
 
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
@@ -45,10 +57,6 @@ enum UpdateCheckService {
                 return (.upToDate, current, latest ?? current, nil)
             }
 
-            if result.succeeded, !output.isEmpty {
-                return (.upToDate, current ?? output, current ?? output, nil)
-            }
-
             if let parsed = parseLatest(from: output), !parsed.isEmpty {
                 return reconcileUpdateSignal(
                     current: current,
@@ -57,12 +65,11 @@ enum UpdateCheckService {
                 )
             }
 
-            let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
-            if let detail, detail.lowercased().contains("parse error") {
-                return (.error, current, nil, "Check script misconfigured — rebuild the app")
+            if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return (.checkFailed, current, nil, "Check returned no status")
             }
 
-            return (.error, current, nil, detail ?? "Check failed")
+            return (.checkFailed, current, nil, "Unrecognized check output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
 
         if let current {
@@ -114,6 +121,22 @@ enum UpdateCheckService {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return parsed.nilIfEmpty
             }
+        }
+        return nil
+    }
+
+    private static func containsVersionToken(_ value: String) -> Bool {
+        VersionComparator.normalize(value).contains(where: \.isNumber)
+    }
+
+    private static func checkFailureMarker(in output: String) -> String? {
+        for line in output.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("CHECK_FAILED:") else { continue }
+            let message = trimmed
+                .dropFirst("CHECK_FAILED:".count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.nilIfEmpty ?? "Check failed"
         }
         return nil
     }

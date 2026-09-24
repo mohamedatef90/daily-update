@@ -38,6 +38,7 @@ final class AppState: ObservableObject {
     private var hasRunStartupCheck = false
     private var cancellables = Set<AnyCancellable>()
     private var administratorPermissionQueue: [UpdateItem] = []
+    private var pendingDryRunItemIDs: [String] = []
 
     init(settingsStore: UserSettingsStore = UserSettingsStore()) {
         self.settingsStore = settingsStore
@@ -405,13 +406,11 @@ final class AppState: ObservableObject {
         guard !hasRunStartupCheck else { return }
         hasRunStartupCheck = true
 
-        await requestAdministratorPermissionAtStartup()
-
         if settingsStore.settings.showDashboardOnLaunch { setSidebarSelection("dashboard") }
         if autoCheckOnLaunch { await checkAll() }
         if autoUpdateOnLaunch, updateAvailableCount > 0 {
             selectAllUpdates()
-            await updateSelected(skipDryRun: true)
+            await requestUpdateSelected()
         }
         await runHealthCheck()
     }
@@ -445,13 +444,13 @@ final class AppState: ObservableObject {
         for index in items.indices {
             if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
             let item = items[index]
-            items[index].isSelected = item.canUpdate && !item.isSnoozed
+            items[index].isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
         }
     }
 
     func selectAllInstallable() {
         for index in items.indices {
-            items[index].isSelected = items[index].canInstall && !items[index].isSnoozed
+            items[index].isSelected = ActionCommandPolicy.shouldAutoSelectForInstall(items[index])
         }
     }
 
@@ -459,7 +458,8 @@ final class AppState: ObservableObject {
         let visibleIDs = ids.map(Set.init)
         for index in items.indices {
             if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
-            items[index].isSelected = items[index].isActionable
+            let item = items[index]
+            items[index].isSelected = item.isActionable && !(item.isBulkOperation && item.canUpdate)
         }
     }
 
@@ -509,7 +509,7 @@ final class AppState: ObservableObject {
                         item.permanentlyIgnored = pref.permanentlyIgnored
                     }
                     if item.permanentlyIgnored || item.isSnoozed {
-                        item.status = .upToDate
+                        item.status = .unknown
                         item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
                         return (index, item)
                     }
@@ -528,7 +528,7 @@ final class AppState: ObservableObject {
                     if item.isPinnedMismatch {
                         item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
                     }
-                    item.isSelected = item.canUpdate
+                    item.isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
                     return (index, item)
                 }
             }
@@ -556,17 +556,8 @@ final class AppState: ObservableObject {
         let targets = orderedActionTargets(selectedActionableItems)
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
-        if confirmBeforeUpdate {
-            dryRunEntries = targets.map { item in
-                DryRunEntry(
-                    id: item.id,
-                    name: item.name,
-                    command: actionCommand(for: item),
-                    action: item.actionLabel,
-                    category: item.category
-                )
-            }
-            showDryRun = true
+        if confirmBeforeUpdate || requiresForcedConfirmation(for: targets) {
+            presentDryRun(for: targets)
             return
         }
         await updateSelected(skipDryRun: true)
@@ -578,28 +569,61 @@ final class AppState: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: true, retryItemID: item.id)
+        await updateSelected(skipDryRun: false, retryItemID: item.id)
+    }
+
+    func dismissDryRun() {
+        showDryRun = false
+        dryRunEntries = []
+        pendingDryRunItemIDs = []
+    }
+
+    func confirmDryRun() async {
+        let targetIDs = pendingDryRunItemIDs
+        let plannedEntries = dryRunEntries
+        guard !targetIDs.isEmpty else {
+            appendLog("No items selected")
+            return
+        }
+        dismissDryRun()
+
+        let plannedByID = Dictionary(uniqueKeysWithValues: plannedEntries.map { ($0.id, $0) })
+        let confirmedTargetIDs = actionTargets(for: targetIDs).compactMap { target -> String? in
+            guard let planned = plannedByID[target.id] else { return nil }
+            if planned.action != target.actionLabel || planned.command != actionCommand(for: target) {
+                appendLog("\(target.name): changed since you confirmed, not run")
+                return nil
+            }
+            return target.id
+        }
+        guard !confirmedTargetIDs.isEmpty else {
+            appendLog("No items selected")
+            return
+        }
+        await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
     }
 
     func updateSelected(
         skipDryRun: Bool = false,
-        administratorItemID: String? = nil,
-        retryItemID: String? = nil
+        retryItemID: String? = nil,
+        explicitTargetIDs: [String]? = nil
     ) async {
-        if !skipDryRun && confirmBeforeUpdate {
-            await requestUpdateSelected()
-            return
-        }
-
         guard !isUpdating else { return }
         let targets: [UpdateItem]
-        if let retryItemID,
+        if let explicitTargetIDs, !explicitTargetIDs.isEmpty {
+            targets = actionTargets(for: explicitTargetIDs)
+        } else if let retryItemID,
            let retryItem = activeItems.first(where: { $0.id == retryItemID }) {
             targets = [retryItem]
         } else {
             targets = orderedActionTargets(selectedActionableItems)
         }
         guard !targets.isEmpty else { appendLog("No items selected"); return }
+
+        if !skipDryRun && (confirmBeforeUpdate || requiresForcedConfirmation(for: targets)) {
+            presentDryRun(for: targets)
+            return
+        }
 
         isUpdating = true
         appendLog("Running \(targets.count) action(s)…")
@@ -620,8 +644,7 @@ final class AppState: ObservableObject {
             let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
-                stashRepos: stashReposBeforeUpdate,
-                withAdministratorPrivileges: administratorItemID == target.id
+                stashRepos: stashReposBeforeUpdate
             )
             items[index].status = result.status
             if result.status == .updated {
@@ -630,11 +653,10 @@ final class AppState: ObservableObject {
             items[index].currentVersion = result.currentVersion ?? items[index].currentVersion
             items[index].latestVersion = result.latestVersion ?? items[index].latestVersion
             items[index].statusMessage = result.message
-            items[index].isSelected = result.canRetry
+            items[index].isSelected = result.canRetry && !items[index].isBulkOperation
             updatedIDs.append(target.id)
 
-            if !withAdministratorPrivileges(for: target, administratorItemID: administratorItemID),
-               items[index].needsAdministratorPermission {
+            if items[index].needsAdministratorPermission {
                 queueAdministratorPermission(for: items[index])
             }
 
@@ -679,42 +701,42 @@ final class AppState: ObservableObject {
         presentNextAdministratorPermissionRequest()
     }
 
-    func retryUpdateWithAdministratorPermission(for id: String) async {
-        let wasRequestedByDialog = administratorPermissionItem?.id == id
-        administratorPermissionItem = nil
-        guard let item = items.first(where: { $0.id == id }),
-              item.needsAdministratorPermission || wasRequestedByDialog else { return }
+    func manualActionCommand(for id: String) -> String? {
+        guard let item = items.first(where: { $0.id == id }) else { return nil }
+        let command = ConfigLoader.resolveCommand(actionCommand(for: item))
+        guard !command.isEmpty else { return nil }
+        if let workingDirectory = item.workingDirectory?.expandingTilde, !workingDirectory.isEmpty {
+            return "cd \(ShellEscaping.quote(workingDirectory)) && \(command)"
+        }
+        return command
+    }
 
-        if isUpdating {
-            queueAdministratorPermission(for: item)
-            appendLog("Administrator retry for \(item.name) is queued until the current updates finish.")
+    @discardableResult
+    func copyActionCommandToClipboard(for id: String) -> Bool {
+        guard let command = manualActionCommand(for: id) else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let didCopy = pasteboard.setString(command, forType: .string)
+        if let item = items.first(where: { $0.id == id }), didCopy {
+            appendLog("Copied manual update command for \(item.name).")
+        }
+        return didCopy
+    }
+
+    func openActionCommandInTerminal(for id: String) async {
+        guard let command = manualActionCommand(for: id) else { return }
+        let result = await TerminalCommandLauncher.openInTerminal(command: command)
+        guard result.succeeded else {
+            appendLog("Failed to open Terminal command (\(result.stderr.nilIfEmpty ?? "unknown error")).")
             return
         }
-
-        deselectAll()
-        if let index = items.firstIndex(where: { $0.id == id }) {
-            items[index].isSelected = true
+        if let item = items.first(where: { $0.id == id }) {
+            appendLog("Opened Terminal command for \(item.name).")
         }
-        appendLog("Requesting administrator permission for \(item.name)…")
-        await updateSelected(
-            skipDryRun: true,
-            administratorItemID: id,
-            retryItemID: id
-        )
     }
 
     func dismissAdministratorPermissionRequest() {
         administratorPermissionItem = nil
-    }
-
-    private func requestAdministratorPermissionAtStartup() async {
-        appendLog("Requesting administrator permission at startup…")
-        let result = await AdminCommandRunner.requestAuthorization()
-        if result.succeeded {
-            appendLog("Administrator permission verified. macOS may ask again before a protected update.")
-        } else {
-            appendLog("Administrator permission was not granted. Updates that need it will ask again when you approve them.")
-        }
     }
 
     func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
@@ -753,7 +775,7 @@ final class AppState: ObservableObject {
             } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
             }
-            if items[index].canRetryUpdate {
+            if items[index].canRetryUpdate && !items[index].isBulkOperation {
                 items[index].isSelected = true
             }
         }
@@ -788,10 +810,6 @@ final class AppState: ObservableObject {
         item.canInstall ? item.installCommand : item.updateCommand
     }
 
-    private func withAdministratorPrivileges(for item: UpdateItem, administratorItemID: String?) -> Bool {
-        item.id == administratorItemID
-    }
-
     private func queueAdministratorPermission(for item: UpdateItem) {
         guard administratorPermissionItem?.id != item.id,
               !administratorPermissionQueue.contains(where: { $0.id == item.id }) else { return }
@@ -805,7 +823,7 @@ final class AppState: ObservableObject {
             let item = administratorPermissionQueue.removeFirst()
             guard items.contains(where: { $0.id == item.id }) else { continue }
             administratorPermissionItem = item
-            appendLog("Administrator permission is needed to update \(item.name).")
+            appendLog("Manual Terminal update is needed for \(item.name).")
             return
         }
     }
@@ -819,9 +837,33 @@ final class AppState: ObservableObject {
             items[index].isSelected = items[index].autoUpdate &&
                 !items[index].isSnoozed &&
                 !items[index].permanentlyIgnored &&
+                !items[index].isBulkOperation &&
                 (items[index].status == .updateAvailable || items[index].status == .updatePending)
         }
-        await updateSelected(skipDryRun: true)
+        await requestUpdateSelected()
+    }
+
+    private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
+        targets.contains(where: \.isBulkOperation)
+    }
+
+    private func presentDryRun(for targets: [UpdateItem]) {
+        pendingDryRunItemIDs = targets.map(\.id)
+        dryRunEntries = targets.map { item in
+            DryRunEntry(
+                id: item.id,
+                name: item.name,
+                command: actionCommand(for: item),
+                action: item.actionLabel,
+                category: item.category
+            )
+        }
+        showDryRun = true
+    }
+
+    private func actionTargets(for ids: [String]) -> [UpdateItem] {
+        let activeByID = Dictionary(uniqueKeysWithValues: activeItems.map { ($0.id, $0) })
+        return ids.compactMap { activeByID[$0] }
     }
 
     private func orderedUpdateTargets(_ targets: [UpdateItem]) -> [UpdateItem] {
@@ -912,5 +954,9 @@ final class AppState: ObservableObject {
 }
 
 private extension String {
+    var expandingTilde: String {
+        (self as NSString).expandingTildeInPath
+    }
+
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }

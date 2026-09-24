@@ -76,13 +76,17 @@ struct DailyUpdateApp: App {
                     .environmentObject(appState)
             }
             .confirmationDialog(
-                "Administrator Permission Needed",
+                "Run Manually in Terminal",
                 isPresented: isShowingAdministratorPermissionRequest,
                 titleVisibility: .visible
             ) {
-                Button("Authenticate and Retry") {
+                Button("Copy Command") {
                     guard let item = appState.administratorPermissionItem else { return }
-                    Task { await appState.retryUpdateWithAdministratorPermission(for: item.id) }
+                    _ = appState.copyActionCommandToClipboard(for: item.id)
+                }
+                Button("Open in Terminal") {
+                    guard let item = appState.administratorPermissionItem else { return }
+                    Task { await appState.openActionCommandInTerminal(for: item.id) }
                 }
                 Button("Not Now", role: .cancel) {
                     appState.dismissAdministratorPermissionRequest()
@@ -113,7 +117,8 @@ struct DailyUpdateApp: App {
 
     private var administratorPermissionMessage: String {
         guard let item = appState.administratorPermissionItem else { return "" }
-        return "\(item.name) needs permission to modify installed files. Daily Update will open the native macOS authentication dialog. Use Touch ID when your Mac offers it, or enter an administrator password."
+        let command = appState.manualActionCommand(for: item.id) ?? item.updateCommand
+        return "\(item.name) needs a manual Terminal update.\n\n\(command)"
     }
 
     private func hideMainWindowIfNeeded() {

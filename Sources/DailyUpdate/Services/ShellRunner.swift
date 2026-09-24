@@ -16,11 +16,27 @@ enum ShellRunner {
         timeout: TimeInterval = 120
     ) async -> Result {
         let resolvedCommand = ConfigLoader.resolveCommand(command)
+        return await runProcess(
+            executablePath: "/bin/zsh",
+            arguments: ["-lc", resolvedCommand],
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeout: timeout
+        )
+    }
+
+    static func runProcess(
+        executablePath: String,
+        arguments: [String],
+        workingDirectory: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 120
+    ) async -> Result {
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-                process.arguments = ["-lc", resolvedCommand]
+                process.executableURL = URL(fileURLWithPath: executablePath)
+                process.arguments = arguments
 
                 if let workingDirectory {
                     process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory.expandingTilde)

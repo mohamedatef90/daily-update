@@ -1,12 +1,27 @@
 import Foundation
 
 enum ConfigLoader {
-    static let appSupportDirectory: URL = {
+    private static let defaultAppSupportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("DailyUpdate", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
+
+    private static var appSupportDirectoryOverride: URL?
+
+    static var appSupportDirectory: URL {
+        let directory = appSupportDirectoryOverride ?? defaultAppSupportDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    static func setAppSupportDirectoryForTesting(_ directory: URL?) {
+        appSupportDirectoryOverride = directory
+        if let directory {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
 
     static var userConfigURL: URL {
         appSupportDirectory.appendingPathComponent("detectors.json")
@@ -30,12 +45,12 @@ enum ConfigLoader {
 
         if let legacyUser = loadLegacyUserConfigs() {
             for item in legacyUser where byID[item.id] == nil {
-                byID[item.id] = expandConfig(item, settings: settings)
+                byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
             }
         }
 
         for item in settings.customItems {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
         }
 
         for item in discoveredRepos where byID[item.id] == nil {
@@ -150,7 +165,11 @@ enum ConfigLoader {
         return command.replacingOccurrences(of: "{CHECK_SCRIPT}", with: quotedCheckScript)
     }
 
-    private static func expandConfig(_ config: DetectorConfig, settings: UserSettings) -> DetectorConfig {
+    private static func expandConfig(
+        _ config: DetectorConfig,
+        settings: UserSettings,
+        flagNeedsReview: Bool = false
+    ) -> DetectorConfig {
         let home = settings.rootFolder.isEmpty ? NSHomeDirectory() : settings.rootFolder
         let folders = settings.allScanFolders
         var detect = config.detect
@@ -182,25 +201,74 @@ enum ConfigLoader {
             detect = rule
         }
 
+        let expandedUpdate = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+        let resolvedInstall = resolvedInstallCommand(
+            config,
+            home: home,
+            expandedUpdateCommand: expandedUpdate
+        )
+        let description = mergedDescription(
+            base: config.description,
+            warning: commandReviewWarning(
+                updateCommand: expandedUpdate,
+                installCommand: resolvedInstall,
+                flagNeedsReview: flagNeedsReview
+            )
+        )
+
         return DetectorConfig(
             id: config.id,
             name: config.name,
             category: config.category,
-            description: config.description,
+            description: description,
             source: config.source ?? .bundled,
             detect: detect,
             versionCommand: expandVariables(config.versionCommand, home: home),
             checkCommand: expandVariables(config.checkCommand, home: home),
-            installCommand: resolvedInstallCommand(config, home: home),
-            updateCommand: expandVariables(config.updateCommand, home: home) ?? config.updateCommand,
+            installCommand: resolvedInstall,
+            updateCommand: expandedUpdate,
             workingDirectory: expandVariables(config.workingDirectory, home: home)
         )
     }
 
-    private static func resolvedInstallCommand(_ config: DetectorConfig, home: String) -> String {
-        let update = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+    private static func resolvedInstallCommand(
+        _ config: DetectorConfig,
+        home: String,
+        expandedUpdateCommand: String
+    ) -> String {
+        let update = expandedUpdateCommand
         let install = expandVariables(config.installCommand, home: home)
-        return InstallCommandResolver.resolve(id: config.id, installCommand: install, updateCommand: update)
+        let resolved = InstallCommandResolver.resolve(id: config.id, installCommand: install, updateCommand: update)
+        return resolved
+    }
+
+    private static func commandReviewWarning(
+        updateCommand: String,
+        installCommand: String,
+        flagNeedsReview: Bool
+    ) -> String? {
+        guard flagNeedsReview else { return nil }
+
+        let risky = [
+            ActionCommandPolicy.hasFallbackChain(updateCommand),
+            ActionCommandPolicy.hasSuppressedStderr(updateCommand),
+            ActionCommandPolicy.hasCommandSeparator(updateCommand),
+            ActionCommandPolicy.hasFallbackChain(installCommand),
+            ActionCommandPolicy.hasSuppressedStderr(installCommand),
+            ActionCommandPolicy.hasCommandSeparator(installCommand)
+        ].contains(true)
+
+        guard risky else { return nil }
+        return "Needs review: custom command contains shell fallback/chaining patterns."
+    }
+
+    private static func mergedDescription(base: String?, warning: String?) -> String? {
+        guard let warning else { return base }
+        guard let base, !base.isEmpty else { return warning }
+        if base.contains(warning) {
+            return base
+        }
+        return "\(base)\n\(warning)"
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {

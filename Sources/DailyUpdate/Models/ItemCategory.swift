@@ -33,6 +33,7 @@ enum ItemCategory: String, Codable, CaseIterable, Identifiable {
 enum ItemStatus: String, Codable {
     case unknown
     case checking
+    case checkFailed
     case upToDate
     case updateAvailable
     case updatePending
@@ -45,6 +46,7 @@ enum ItemStatus: String, Codable {
         switch self {
         case .unknown: return "Unknown"
         case .checking: return "Checking…"
+        case .checkFailed: return "Check failed"
         case .upToDate: return "Up to date"
         case .updateAvailable: return "Update available"
         case .updatePending: return "Finish in app"
@@ -125,6 +127,10 @@ struct UpdateItem: Identifiable, Hashable {
             message.contains("eacces") ||
             message.contains("administrator password") ||
             message.contains("sudo:")
+    }
+
+    var isBulkOperation: Bool {
+        BulkUpdatePolicy.isBulkOperation(itemID: id)
     }
 
     var isActionable: Bool {
