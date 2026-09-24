@@ -154,6 +154,8 @@ enum CLIRunner {
                 state: state,
                 requireExplicitConfirmation: state.confirmBeforeUpdate,
                 confirmed: parsed.yes,
+                emptySelectionExitCode: 1,
+                failOnAnyCheckFailure: true,
                 output: output
             )
         case .install(let itemID):
@@ -258,6 +260,8 @@ enum CLIRunner {
         state: any CLIRunnerState,
         requireExplicitConfirmation: Bool,
         confirmed: Bool,
+        emptySelectionExitCode: Int32 = 0,
+        failOnAnyCheckFailure: Bool = false,
         output: (String) -> Void
     ) async -> Int32 {
         let entries = state.selectedActionableItems.map { item in
@@ -271,7 +275,7 @@ enum CLIRunner {
         }
         if entries.isEmpty {
             output("No matching items found.")
-            return 0
+            return emptySelectionExitCode
         }
 
         if requireExplicitConfirmation {
@@ -284,7 +288,11 @@ enum CLIRunner {
 
         let targetIDs = Set(entries.map(\.id))
         await state.updateSelected(skipDryRun: true)
-        return actionExitCode(state: state, targetIDs: targetIDs)
+        return actionExitCode(
+            state: state,
+            targetIDs: targetIDs,
+            failOnAnyCheckFailure: failOnAnyCheckFailure
+        )
     }
 
     @MainActor
@@ -305,6 +313,20 @@ enum CLIRunner {
             output("Item '\(itemID)' is not available for \(action.noun).")
             printAvailableIDs(state: state, for: action, output: output)
             return 1
+        }
+
+        if case .update = action, item.isBulkOperation, !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("Bulk updates require --yes. Re-run with --yes to execute this action.")
+            return 2
         }
 
         if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand), !confirmed {
@@ -358,8 +380,12 @@ enum CLIRunner {
     @MainActor
     private static func actionExitCode(
         state: any CLIRunnerState,
-        targetIDs: Set<String>
+        targetIDs: Set<String>,
+        failOnAnyCheckFailure: Bool = false
     ) -> Int32 {
+        if failOnAnyCheckFailure && state.items.contains(where: { $0.status == .checkFailed }) {
+            return 1
+        }
         for item in state.items where targetIDs.contains(item.id) {
             switch item.status {
             case .updated, .upToDate, .updatePending:

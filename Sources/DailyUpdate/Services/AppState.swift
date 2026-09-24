@@ -449,9 +449,7 @@ final class AppState: ObservableObject {
 
     func selectAllInstallable() {
         for index in items.indices {
-            let command = items[index].installCommand
-            let isRemoteScriptInstall = ActionCommandPolicy.isRemoteScriptInstaller(command)
-            items[index].isSelected = items[index].canInstall && !items[index].isSnoozed && !isRemoteScriptInstall
+            items[index].isSelected = ActionCommandPolicy.shouldAutoSelectForInstall(items[index])
         }
     }
 
@@ -579,7 +577,7 @@ final class AppState: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: true, retryItemID: item.id)
+        await updateSelected(skipDryRun: false, retryItemID: item.id)
     }
 
     func updateSelected(
@@ -597,7 +595,16 @@ final class AppState: ObservableObject {
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         if !skipDryRun && (confirmBeforeUpdate || requiresForcedConfirmation(for: targets)) {
-            await requestUpdateSelected()
+            dryRunEntries = targets.map { item in
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: actionCommand(for: item),
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            }
+            showDryRun = true
             return
         }
 

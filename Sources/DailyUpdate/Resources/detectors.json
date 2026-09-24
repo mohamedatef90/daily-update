@@ -338,7 +338,7 @@
         "command": "command -v dart >/dev/null 2>&1"
       },
       "versionCommand": "dart --version 2>/dev/null | head -1",
-      "checkCommand": "if command -v flutter >/dev/null 2>&1; then (flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK; else (brew outdated dart 2>/dev/null | grep -q dart && echo UPDATE) || echo OK; fi",
+      "checkCommand": "brew outdated dart 2>/dev/null | grep -q '^dart$' && echo UPDATE || echo OK",
       "updateCommand": "brew upgrade dart"
     },
     {
@@ -429,7 +429,7 @@
         "command": "command -v pnpm >/dev/null 2>&1"
       },
       "versionCommand": "pnpm --version 2>/dev/null",
-      "checkCommand": "pnpm outdated -g 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated pnpm 2>/dev/null | grep -q pnpm && echo UPDATE || echo OK)",
+      "checkCommand": "npm outdated -g pnpm 2>/dev/null | grep -q pnpm && echo UPDATE || echo OK",
       "updateCommand": "npm install -g pnpm@latest"
     },
     {
@@ -442,7 +442,7 @@
         "command": "command -v yarn >/dev/null 2>&1"
       },
       "versionCommand": "yarn --version 2>/dev/null",
-      "checkCommand": "yarn global outdated 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated yarn 2>/dev/null | grep -q yarn && echo UPDATE || echo OK)",
+      "checkCommand": "npm outdated -g yarn 2>/dev/null | grep -q yarn && echo UPDATE || echo OK",
       "updateCommand": "npm install -g yarn@latest"
     },
     {
@@ -533,7 +533,7 @@
         "command": "command -v mise >/dev/null 2>&1"
       },
       "versionCommand": "mise --version 2>/dev/null",
-      "checkCommand": "mise outdated 2>/dev/null | grep -q . && echo UPDATE || echo OK",
+      "checkCommand": "mise self-update --dry-run 2>&1 | grep -qiE 'already up.?to.?date|up to date' && echo OK || echo UPDATE",
       "updateCommand": "mise self-update"
     },
     {

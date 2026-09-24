@@ -225,6 +225,16 @@ final class CoreServiceTests: XCTestCase {
         let semicolonAllowlist: Set<String> = ["node", "impeccable"]
 
         for config in bundled {
+            if let checkCommand = config.checkCommand {
+                XCTAssertTrue(
+                    ActionCommandPolicy.checkAndUpdateSharePackageManager(
+                        checkCommand: checkCommand,
+                        updateCommand: config.updateCommand
+                    ),
+                    "\(config.id) check/update commands do not share a package manager.\ncheck: \(checkCommand)\nupdate: \(config.updateCommand)"
+                )
+            }
+
             let commands = [
                 ("update", config.updateCommand),
                 ("install", config.installCommand ?? "")
@@ -485,6 +495,45 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testCLIScopedBulkUpdateRequiresYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade")
+            ]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "brew"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("Bulk updates require --yes") }))
+    }
+
+    @MainActor
+    func testCLIScopedBulkUpdateAllowsYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "brew", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["brew"]])
+    }
+
+    @MainActor
     func testCLIInstallAllExcludesRemoteScriptInstallers() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
@@ -578,6 +627,42 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testCLIUpdateAllReturnsNonZeroWhenNoItemsMatch() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIUpdateAllReturnsNonZeroWhenAnyItemCheckFailed() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "update-item", installed: true, status: .updateAvailable),
+                makeItem(id: "failed-check", installed: true, status: .checkFailed)
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+    }
+
+    @MainActor
     func testRequestUpdateSelectedShowsDryRunWhenConfirmationEnabled() async {
         let store = UserSettingsStore()
         store.settings.confirmBeforeUpdate = true
@@ -590,6 +675,56 @@ final class CoreServiceTests: XCTestCase {
 
         XCTAssertTrue(state.showDryRun)
         XCTAssertEqual(state.dryRunEntries.map(\.id), ["menu-bar-update"])
+    }
+
+    @MainActor
+    func testAppStateSelectAllInstallableExcludesRemoteScriptInstallers() {
+        let store = UserSettingsStore()
+        let state = AppState(settingsStore: store)
+        state.items = [
+            makeItem(id: "safe-install", installed: false, status: .notInstalled, installCommand: "brew install safe-tool"),
+            makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
+        ]
+
+        state.selectAllInstallable()
+
+        XCTAssertTrue(state.items.first(where: { $0.id == "safe-install" })?.isSelected == true)
+        XCTAssertTrue(state.items.first(where: { $0.id == "remote-install" })?.isSelected == false)
+    }
+
+    @MainActor
+    func testRetryUpdateForBulkItemUsesForcedDryRun() async {
+        let store = UserSettingsStore()
+        store.settings.confirmBeforeUpdate = false
+        let state = AppState(settingsStore: store)
+        state.items = [
+            UpdateItem(
+                id: "brew",
+                name: "Homebrew",
+                category: .runtime,
+                description: nil,
+                currentVersion: "1.0.0",
+                latestVersion: "1.1.0",
+                status: .updateAvailable,
+                statusMessage: "Still behind latest",
+                isInstalled: true,
+                isSelected: false,
+                isUserDefined: false,
+                source: .bundled,
+                iconPath: nil,
+                detectCommand: nil,
+                versionCommand: nil,
+                checkCommand: nil,
+                installCommand: "",
+                updateCommand: "brew upgrade",
+                workingDirectory: nil
+            )
+        ]
+
+        await state.retryUpdate(for: "brew")
+
+        XCTAssertTrue(state.showDryRun)
+        XCTAssertEqual(state.dryRunEntries.map(\.id), ["brew"])
     }
 
     private func makeItem(
@@ -650,9 +785,7 @@ private final class MockCLIRunnerState: CLIRunnerState {
 
     func selectAllInstallable() {
         for index in items.indices {
-            let command = items[index].installCommand
-            let isRemoteScriptInstall = ActionCommandPolicy.isRemoteScriptInstaller(command)
-            items[index].isSelected = items[index].canInstall && !isRemoteScriptInstall
+            items[index].isSelected = ActionCommandPolicy.shouldAutoSelectForInstall(items[index])
         }
     }
 
