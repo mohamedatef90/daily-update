@@ -6,8 +6,13 @@ Daily Update is a Swift Package Manager macOS 13+ app. Its executable target is
 `Sources/DailyUpdate`. Keep code grouped by responsibility:
 
 - `Models/` contains shared data types and settings models.
-- `Engine/` contains pure update logic (version parsing/comparison, shell lexing,
-  command classification, and gate policy decisions).
+- `Engine/` contains pure update logic.
+- `Engine/Owner/` contains ownership and path-resolution logic (`OwnerResolver`,
+  `PathTrust`) for typed command planning.
+- `Engine/Strategies/` contains update strategy planning logic (for example
+  `StrategyPlanner`).
+- `Engine/Commands/` and `Engine/Version/` hold command-shape analysis and
+  version parsing/comparison utilities.
 - `Services/` contains update detection, shell execution, persistence, scanning,
   scheduling, and app lifecycle behavior.
 - `Views/` contains SwiftUI screens and reusable UI components.

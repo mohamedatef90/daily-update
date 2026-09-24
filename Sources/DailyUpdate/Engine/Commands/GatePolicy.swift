@@ -15,8 +15,13 @@ enum GatePolicy {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    static func updateGateReasons(for config: DetectorConfig, reviewedHash: String?) -> [GateReason] {
-        let classification = CommandShapeClassifier.classify(config.updateCommand)
+    static func updateGateReasons(
+        for config: DetectorConfig,
+        reviewedHash: String?,
+        commandOverride: String? = nil
+    ) -> [GateReason] {
+        let command = commandOverride ?? config.updateCommand
+        let classification = CommandShapeClassifier.classify(command)
         var reasons: [GateReason] = []
 
         if classification.risks.contains(.bulk) { reasons.append(.bulk) }

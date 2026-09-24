@@ -176,7 +176,14 @@ enum ConfigLoader {
     ) -> DetectorConfig {
         let home = settings.rootFolder.isEmpty ? NSHomeDirectory() : settings.rootFolder
         let folders = settings.allScanFolders
-        var detect = config.detect
+        let resolvedSource = config.source ?? (flagNeedsReview ? .user : .bundled)
+        var sanitized = config
+        sanitized.source = resolvedSource
+        if resolvedSource != .bundled {
+            sanitized = sanitized.droppingTypedEngineFields()
+        }
+
+        var detect = sanitized.detect
 
         if var rule = detect {
             if rule.type == .app, let appName = rule.appName {
@@ -205,9 +212,9 @@ enum ConfigLoader {
             detect = rule
         }
 
-        let expandedUpdate = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+        let expandedUpdate = expandVariables(sanitized.updateCommand, home: home) ?? sanitized.updateCommand
         let resolvedInstall = resolvedInstallCommand(
-            config,
+            sanitized,
             home: home,
             expandedUpdateCommand: expandedUpdate
         )
@@ -218,18 +225,24 @@ enum ConfigLoader {
         )
 
         return DetectorConfig(
-            id: config.id,
-            name: config.name,
-            category: config.category,
-            description: config.description,
-            source: config.source ?? .bundled,
+            id: sanitized.id,
+            name: sanitized.name,
+            category: sanitized.category,
+            description: sanitized.description,
+            schemaVersion: sanitized.schemaVersion,
+            source: sanitized.source,
+            command: expandVariables(sanitized.command, home: home),
+            packages: sanitized.packages,
+            selfUpdater: sanitized.selfUpdater,
+            appcastURL: expandVariables(sanitized.appcastURL, home: home),
+            autoUpdates: sanitized.autoUpdates,
             detect: detect,
-            versionCommand: expandVariables(config.versionCommand, home: home),
-            versionPattern: config.versionPattern,
-            checkCommand: expandVariables(config.checkCommand, home: home),
+            versionCommand: expandVariables(sanitized.versionCommand, home: home),
+            versionPattern: sanitized.versionPattern,
+            checkCommand: expandVariables(sanitized.checkCommand, home: home),
             installCommand: resolvedInstall,
             updateCommand: expandedUpdate,
-            workingDirectory: expandVariables(config.workingDirectory, home: home),
+            workingDirectory: expandVariables(sanitized.workingDirectory, home: home),
             needsReview: needsReview
         )
     }
@@ -250,7 +263,9 @@ enum ConfigLoader {
         installCommand: String,
         flagNeedsReview: Bool
     ) -> Bool {
-        guard flagNeedsReview else { return false }
+        if flagNeedsReview {
+            return true
+        }
 
         let risky = [
             ActionCommandPolicy.hasFallbackChain(updateCommand),
@@ -295,24 +310,46 @@ enum ConfigLoader {
 
         if let url = mainCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
            let data = try? Data(contentsOf: url) {
-            return decode(data)
+            return decode(data, validateBundled: true)
         }
 
         guard let url = Bundle.module.url(forResource: "detectors", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return nil }
-        return decode(data)
+        return decode(data, validateBundled: true)
     }
 
     private static func loadLegacyUserConfigs() -> [DetectorConfig]? {
         guard FileManager.default.fileExists(atPath: userConfigURL.path),
               let data = try? Data(contentsOf: userConfigURL) else { return nil }
-        return decode(data)
+        return decode(data, validateBundled: false)
     }
 
-    private static func decode(_ data: Data) -> [DetectorConfig]? {
+    private static func decode(_ data: Data, validateBundled: Bool) -> [DetectorConfig]? {
         let decoder = JSONDecoder()
         guard let file = try? decoder.decode(DetectorConfigFile.self, from: data) else { return nil }
+        if validateBundled {
+            return validateBundledConfigs(file.items)
+        }
         return file.items
+    }
+
+    private static func validateBundledConfigs(_ items: [DetectorConfig]) -> [DetectorConfig]? {
+        for item in items {
+            let source = item.source ?? .bundled
+            if item.hasTypedEngineFields && source != .bundled {
+                return nil
+            }
+            if item.hasTypedEngineFields {
+                guard item.schemaVersion == 2 else { return nil }
+            }
+            if item.schemaVersion == 2 {
+                guard source == .bundled else { return nil }
+                guard let command = item.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
+                    return nil
+                }
+            }
+        }
+        return items
     }
 }
 

@@ -9,6 +9,7 @@ struct DetectorConfig: Codable, Identifiable {
     let name: String
     let category: ItemCategory
     let description: String?
+    var schemaVersion: Int? = nil
     var source: ItemSource?
     var command: String? = nil
     var packages: PackageIdentifiers? = nil
@@ -30,6 +31,38 @@ struct DetectorConfig: Codable, Identifiable {
 
     var isDiscovered: Bool {
         source == .discovered
+    }
+
+    var hasTypedEngineFields: Bool {
+        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil
+    }
+
+    var requiresReviewBeforeAutomation: Bool {
+        needsReview == true && source != .bundled
+    }
+
+    func droppingTypedEngineFields() -> DetectorConfig {
+        DetectorConfig(
+            id: id,
+            name: name,
+            category: category,
+            description: description,
+            schemaVersion: schemaVersion,
+            source: source,
+            command: nil,
+            packages: nil,
+            selfUpdater: nil,
+            appcastURL: nil,
+            autoUpdates: nil,
+            detect: detect,
+            versionCommand: versionCommand,
+            versionPattern: versionPattern,
+            checkCommand: checkCommand,
+            installCommand: installCommand,
+            updateCommand: updateCommand,
+            workingDirectory: workingDirectory,
+            needsReview: needsReview
+        )
     }
 }
 

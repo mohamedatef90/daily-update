@@ -32,9 +32,15 @@ final class OwnerResolverTests: XCTestCase {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let prefix = root.appendingPathComponent("toolchain/node-22", isDirectory: true)
+        let prefix = root.appendingPathComponent(".nvm/versions/node/v22.12.0", isDirectory: true)
+        try createExecutable(at: prefix.appendingPathComponent("bin/node"))
         let realCommand = prefix.appendingPathComponent("lib/node_modules/@openai/codex/bin/codex.js")
         try createExecutable(at: realCommand)
+        try writePackageJSON(
+            at: prefix.appendingPathComponent("lib/node_modules/@openai/codex/package.json"),
+            name: "@openai/codex",
+            version: "1.2.3"
+        )
 
         let symlinkDir = prefix.appendingPathComponent("bin", isDirectory: true)
         try FileManager.default.createDirectory(at: symlinkDir, withIntermediateDirectories: true)
@@ -47,10 +53,15 @@ final class OwnerResolverTests: XCTestCase {
             layout: .fixture(home: root.path)
         )
 
+        guard case .npm(let resolvedPrefix, let resolvedPackage) = resolution.active?.owner else {
+            XCTFail("Expected npm owner")
+            return
+        }
         XCTAssertEqual(
-            resolution.active?.owner,
-            .npm(prefix: prefix.path, package: "@openai/codex")
+            URL(fileURLWithPath: resolvedPrefix).standardizedFileURL.path,
+            URL(fileURLWithPath: prefix.path).standardizedFileURL.path
         )
+        XCTAssertEqual(resolvedPackage, "@openai/codex")
     }
 
     func testOwnerResolverTracksNodePrefixByActiveCandidateAndKeepsCompetingPaths() throws {
@@ -59,10 +70,22 @@ final class OwnerResolverTests: XCTestCase {
 
         let node24Prefix = root.appendingPathComponent(".nvm/versions/node/v24.13.0", isDirectory: true)
         let node22Prefix = root.appendingPathComponent(".nvm/versions/node/v22.12.0", isDirectory: true)
+        try createExecutable(at: node24Prefix.appendingPathComponent("bin/node"))
+        try createExecutable(at: node22Prefix.appendingPathComponent("bin/node"))
         let node24Command = node24Prefix.appendingPathComponent("lib/node_modules/@openai/codex/bin/codex.js")
         let node22Command = node22Prefix.appendingPathComponent("lib/node_modules/@openai/codex/bin/codex.js")
         try createExecutable(at: node24Command)
         try createExecutable(at: node22Command)
+        try writePackageJSON(
+            at: node24Prefix.appendingPathComponent("lib/node_modules/@openai/codex/package.json"),
+            name: "@openai/codex",
+            version: "2.0.0"
+        )
+        try writePackageJSON(
+            at: node22Prefix.appendingPathComponent("lib/node_modules/@openai/codex/package.json"),
+            name: "@openai/codex",
+            version: "1.0.0"
+        )
 
         let node24Bin = node24Prefix.appendingPathComponent("bin", isDirectory: true)
         let node22Bin = node22Prefix.appendingPathComponent("bin", isDirectory: true)
@@ -79,14 +102,25 @@ final class OwnerResolverTests: XCTestCase {
             layout: .fixture(home: root.path)
         )
 
+        guard case .npm(let activePrefix, let activePackage) = resolution.active?.owner else {
+            XCTFail("Expected npm owner for active candidate")
+            return
+        }
         XCTAssertEqual(
-            resolution.active?.owner,
-            .npm(prefix: node24Prefix.path, package: "@openai/codex")
+            URL(fileURLWithPath: activePrefix).standardizedFileURL.path,
+            URL(fileURLWithPath: node24Prefix.path).standardizedFileURL.path
         )
+        XCTAssertEqual(activePackage, "@openai/codex")
+
+        guard case .npm(let competingPrefix, let competingPackage) = resolution.competing.first?.owner else {
+            XCTFail("Expected npm owner for competing candidate")
+            return
+        }
         XCTAssertEqual(
-            resolution.competing.first?.owner,
-            .npm(prefix: node22Prefix.path, package: "@openai/codex")
+            URL(fileURLWithPath: competingPrefix).standardizedFileURL.path,
+            URL(fileURLWithPath: node22Prefix.path).standardizedFileURL.path
         )
+        XCTAssertEqual(competingPackage, "@openai/codex")
     }
 
     func testOwnerResolverDeduplicatesByResolvedPath() throws {
@@ -111,7 +145,10 @@ final class OwnerResolverTests: XCTestCase {
             layout: .fixture(home: root.path)
         )
 
-        XCTAssertEqual(resolution.active?.resolvedPath, target.path)
+        XCTAssertEqual(
+            URL(fileURLWithPath: resolution.active?.resolvedPath ?? "").standardizedFileURL.path,
+            URL(fileURLWithPath: target.path).standardizedFileURL.path
+        )
         XCTAssertTrue(resolution.competing.isEmpty)
     }
 
@@ -167,11 +204,16 @@ final class OwnerResolverTests: XCTestCase {
         XCTAssertEqual(pipxFirst.competing.first?.owner, .uvTool(name: "httpie"))
     }
 
-    func testStrategyPlannerPinsNpmCommandToTargetVersion() {
+    func testStrategyPlannerPinsNpmCommandToTargetVersion() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appendingPathComponent(".nvm/versions/node/v24.13.0", isDirectory: true)
+        try createExecutable(at: prefix.appendingPathComponent("bin/npm"))
+
         let owner = OwnerCandidate(
-            commandPath: "/tmp/node-22/bin/claude",
-            resolvedPath: "/tmp/node-22/lib/node_modules/@anthropic-ai/claude-code/bin/claude.js",
-            owner: .npm(prefix: "/tmp/node-22", package: "@anthropic-ai/claude-code")
+            commandPath: "\(prefix.path)/bin/claude",
+            resolvedPath: "\(prefix.path)/lib/node_modules/@anthropic-ai/claude-code/bin/claude.js",
+            owner: .npm(prefix: prefix.path, package: "@anthropic-ai/claude-code")
         )
         let resolution = OwnerResolution(commandName: "claude", active: owner, competing: [])
         let config = makeConfig(
@@ -197,8 +239,12 @@ final class OwnerResolverTests: XCTestCase {
             targetVersion: "2.1.281"
         )
 
-        XCTAssertEqual(spec?.executablePath, "/tmp/node-22/bin/npm")
-        XCTAssertEqual(spec?.arguments, ["install", "-g", "@anthropic-ai/claude-code@2.1.281"])
+        XCTAssertEqual(spec?.executablePath, "\(prefix.path)/bin/npm")
+        XCTAssertEqual(
+            spec?.arguments,
+            ["install", "-g", "--prefix", prefix.path, "@anthropic-ai/claude-code@2.1.281"]
+        )
+        XCTAssertEqual(spec?.environment["PATH"], "\(prefix.path)/bin:\(ShellRunner.defaultPath)")
     }
 
     func testStrategyPlannerReturnsBlockedForOwnerMismatch() async {
@@ -258,7 +304,7 @@ final class OwnerResolverTests: XCTestCase {
         XCTAssertEqual(noStrategyPlan.blockReason, .noStrategy)
     }
 
-    func testStrategyPlannerAddsGreedyFlagForAutoUpdatingCasks() {
+    func testStrategyPlannerUsesNamedCaskUpgradeWithoutGreedyFlag() {
         let owner = OwnerCandidate(
             commandPath: "/opt/homebrew/bin/cursor",
             resolvedPath: "/opt/homebrew/Caskroom/cursor/1.2.3/Cursor.app/Contents/MacOS/Cursor",
@@ -288,7 +334,7 @@ final class OwnerResolverTests: XCTestCase {
             targetVersion: "1.3.0"
         )
 
-        XCTAssertEqual(spec?.arguments, ["upgrade", "--cask", "--greedy", "cursor"])
+        XCTAssertEqual(spec?.arguments, ["upgrade", "--cask", "cursor"])
     }
 
     func testStrategyPlannerSkipsGreedyFlagForCasksWithoutAutoUpdates() {
@@ -389,5 +435,13 @@ final class OwnerResolverTests: XCTestCase {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private func writePackageJSON(at url: URL, name: String, version: String) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let payload = """
+        {"name":"\(name)","version":"\(version)"}
+        """
+        try payload.write(to: url, atomically: true, encoding: .utf8)
     }
 }

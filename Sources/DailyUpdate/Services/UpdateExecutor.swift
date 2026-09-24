@@ -1,25 +1,35 @@
 import Foundation
 
 enum UpdateExecutor {
-    typealias CommandRunner = @Sendable (String, String?, TimeInterval) async -> ShellRunner.Result
+    struct Runner {
+        let runCommand: @Sendable (String, String?, TimeInterval) async -> ShellRunner.Result
+        let runSpec: @Sendable (CommandSpec, TimeInterval) async -> ShellRunner.Result
+
+        static let live = Runner(
+            runCommand: { command, directory, timeout in
+                await ShellRunner.run(command, workingDirectory: directory, timeout: timeout)
+            },
+            runSpec: { spec, timeout in
+                await ShellRunner.run(spec, timeout: timeout)
+            }
+        )
+    }
 
     static func update(
         _ item: UpdateItem,
         installing: Bool = false,
-        stashRepos: Bool = true
+        stashRepos: Bool = true,
+        runner: Runner = .live
     ) async -> UpdateResult {
-        let runner: CommandRunner = { command, directory, timeout in
-            await ShellRunner.run(command, workingDirectory: directory, timeout: timeout)
-        }
         if installing || !item.isInstalled {
             return await performInstall(item, using: runner)
         }
         return await performUpdate(item, stashRepos: stashRepos, using: runner)
     }
 
-    private static func performInstall(_ item: UpdateItem, using runner: CommandRunner) async -> UpdateResult {
+    private static func performInstall(_ item: UpdateItem, using runner: Runner) async -> UpdateResult {
         let command = item.installCommand
-        let result = await runner(command, item.workingDirectory?.expandingTilde, 600)
+        let result = await runner.runCommand(command, item.workingDirectory?.expandingTilde, 600)
         guard result.succeeded else {
             let reason = failureReason(from: result, action: "Install")
             return .failed(reason: reason, current: item.currentVersion, latest: item.latestVersion)
@@ -32,7 +42,7 @@ enum UpdateExecutor {
     private static func performUpdate(
         _ item: UpdateItem,
         stashRepos: Bool,
-        using runner: CommandRunner
+        using runner: Runner
     ) async -> UpdateResult {
         var notes: [String] = []
 
@@ -55,13 +65,9 @@ enum UpdateExecutor {
         let command = item.updateCommand
         let result: ShellRunner.Result
         if let commandSpec = item.plannedUpdateCommandSpec {
-            result = await ShellRunner.run(
-                commandSpec,
-                workingDirectory: item.workingDirectory?.expandingTilde,
-                timeout: 600
-            )
+            result = await runner.runSpec(commandSpec, 600)
         } else {
-            result = await runner(command, item.workingDirectory?.expandingTilde, 600)
+            result = await runner.runCommand(command, item.workingDirectory?.expandingTilde, 600)
         }
 
         if !result.succeeded {

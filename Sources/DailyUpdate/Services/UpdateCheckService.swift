@@ -13,7 +13,12 @@ struct CheckResult {
 }
 
 enum UpdateCheckService {
-    static func check(_ config: DetectorConfig, installed: Bool, reviewedCommandHash: String? = nil) async -> CheckResult {
+    static func check(
+        _ config: DetectorConfig,
+        installed: Bool,
+        reviewedCommandHash: String? = nil,
+        pathLookup: CommandPathLookup? = nil
+    ) async -> CheckResult {
         guard installed else {
             return CheckResult(
                 status: .notInstalled,
@@ -42,6 +47,28 @@ enum UpdateCheckService {
             }
         }
 
+        if config.requiresReviewBeforeAutomation {
+            return CheckResult(
+                status: .gated,
+                currentVersion: nil,
+                currentVersionRaw: nil,
+                latestVersion: nil,
+                message: "Needs review before running commands",
+                gateReasons: [.needsReview],
+                blockReason: nil
+            )
+        }
+
+        if let strategyResult = await typedEngineCheck(
+            config: config,
+            current: nil,
+            currentRaw: nil,
+            reviewedCommandHash: reviewedCommandHash,
+            pathLookup: pathLookup
+        ) {
+            return strategyResult
+        }
+
         let cwd = config.workingDirectory?.expandingTilde
         let versionOutcome = await DetectionService.getVersionOutcome(config)
         if versionOutcome.blockReason == .unsafeCheckCommand {
@@ -68,15 +95,6 @@ enum UpdateCheckService {
                 gateReasons: [],
                 blockReason: nil
             )
-        }
-
-        if let strategyResult = await typedEngineCheck(
-            config: config,
-            current: current,
-            currentRaw: currentRaw,
-            reviewedCommandHash: reviewedCommandHash
-        ) {
-            return strategyResult
         }
 
         if let checkCommand = config.checkCommand {
@@ -313,7 +331,7 @@ enum UpdateCheckService {
                 if let token = VersionExtractor.extract(from: parsed, pattern: pattern) {
                     return token
                 }
-                return parsed.nilIfEmpty
+                return nil
             }
         }
         return nil
@@ -351,9 +369,18 @@ enum UpdateCheckService {
         currentRaw: String?,
         latest: String?,
         fallbackMessage: String? = nil,
-        reviewedCommandHash: String?
+        reviewedCommandHash: String?,
+        commandOverride: String? = nil,
+        additionalGateReasons: [GateReason] = []
     ) -> CheckResult {
-        let gateReasons = GatePolicy.updateGateReasons(for: config, reviewedHash: reviewedCommandHash)
+        var gateReasons = GatePolicy.updateGateReasons(
+            for: config,
+            reviewedHash: reviewedCommandHash,
+            commandOverride: commandOverride
+        )
+        for reason in additionalGateReasons where !gateReasons.contains(reason) {
+            gateReasons.append(reason)
+        }
 
         if !gateReasons.isEmpty {
             let labels = gateReasons.map(\.label).joined(separator: ", ")
@@ -384,25 +411,31 @@ enum UpdateCheckService {
         config: DetectorConfig,
         current: String?,
         currentRaw: String?,
-        reviewedCommandHash: String?
+        reviewedCommandHash: String?,
+        pathLookup: CommandPathLookup?
     ) async -> CheckResult? {
         guard let plan = await StrategyPlanner.checkPlan(
             config: config,
-            currentVersion: current
+            currentVersion: current,
+            pathLookup: pathLookup
         ) else {
             return nil
         }
 
         let fingerprint = StrategyPlanner.ownershipFingerprint(for: config, resolution: plan.ownerResolution)
+        let resolvedCurrent = plan.currentVersion ?? current
+        let competingMessage = plan.ownerResolution.competing.isEmpty
+            ? nil
+            : "Multiple installs detected; updating the active path only."
 
         if let blockReason = plan.blockReason {
             return CheckResult(
                 status: .blocked,
-                currentVersion: current,
+                currentVersion: resolvedCurrent,
                 currentVersionRaw: currentRaw,
                 latestVersion: plan.latestVersion,
                 message: plan.failureMessage ?? blockReason.label,
-                gateReasons: [],
+                gateReasons: plan.gateReasons,
                 blockReason: blockReason,
                 plannedUpdateCommandSpec: nil,
                 ownerFingerprint: fingerprint
@@ -412,11 +445,11 @@ enum UpdateCheckService {
         if let failureMessage = plan.failureMessage {
             return CheckResult(
                 status: .checkFailed,
-                currentVersion: current,
+                currentVersion: resolvedCurrent,
                 currentVersionRaw: currentRaw,
                 latestVersion: plan.latestVersion,
                 message: failureMessage,
-                gateReasons: [],
+                gateReasons: plan.gateReasons,
                 blockReason: nil,
                 plannedUpdateCommandSpec: nil,
                 ownerFingerprint: fingerprint
@@ -426,27 +459,27 @@ enum UpdateCheckService {
         guard let latest = plan.latestVersion else {
             return CheckResult(
                 status: .checkFailed,
-                currentVersion: current,
+                currentVersion: resolvedCurrent,
                 currentVersionRaw: currentRaw,
                 latestVersion: nil,
                 message: "Could not determine latest version",
-                gateReasons: [],
+                gateReasons: plan.gateReasons,
                 blockReason: nil,
                 plannedUpdateCommandSpec: nil,
                 ownerFingerprint: fingerprint
             )
         }
 
-        if let current {
-            switch VersionComparator.compare(current: current, latest: latest) {
+        if let resolvedCurrent {
+            switch VersionComparator.compare(current: resolvedCurrent, latest: latest) {
             case .same, .newer:
                 return CheckResult(
                     status: .upToDate,
-                    currentVersion: current,
+                    currentVersion: resolvedCurrent,
                     currentVersionRaw: currentRaw,
                     latestVersion: latest,
-                    message: nil,
-                    gateReasons: [],
+                    message: competingMessage,
+                    gateReasons: plan.gateReasons,
                     blockReason: nil,
                     plannedUpdateCommandSpec: plan.updateCommandSpec,
                     ownerFingerprint: fingerprint
@@ -454,22 +487,27 @@ enum UpdateCheckService {
             case .older:
                 var result = gatedOrUpdatableResult(
                     config: config,
-                    current: current,
+                    current: resolvedCurrent,
                     currentRaw: currentRaw,
                     latest: latest,
-                    reviewedCommandHash: reviewedCommandHash
+                    reviewedCommandHash: reviewedCommandHash,
+                    commandOverride: plan.updateCommandSpec?.displayString,
+                    additionalGateReasons: plan.gateReasons
                 )
+                if result.message == nil {
+                    result.message = competingMessage
+                }
                 result.plannedUpdateCommandSpec = plan.updateCommandSpec
                 result.ownerFingerprint = fingerprint
                 return result
             case .incomparable:
                 return CheckResult(
                     status: .checkFailed,
-                    currentVersion: current,
+                    currentVersion: resolvedCurrent,
                     currentVersionRaw: currentRaw,
                     latestVersion: latest,
-                    message: "Could not compare \(current) with \(latest)",
-                    gateReasons: [],
+                    message: "Could not compare \(resolvedCurrent) with \(latest)",
+                    gateReasons: plan.gateReasons,
                     blockReason: nil,
                     plannedUpdateCommandSpec: nil,
                     ownerFingerprint: fingerprint
@@ -479,11 +517,16 @@ enum UpdateCheckService {
 
         var result = gatedOrUpdatableResult(
             config: config,
-            current: current,
+            current: resolvedCurrent,
             currentRaw: currentRaw,
             latest: latest,
-            reviewedCommandHash: reviewedCommandHash
+            reviewedCommandHash: reviewedCommandHash,
+            commandOverride: plan.updateCommandSpec?.displayString,
+            additionalGateReasons: plan.gateReasons
         )
+        if result.message == nil {
+            result.message = competingMessage
+        }
         result.plannedUpdateCommandSpec = plan.updateCommandSpec
         result.ownerFingerprint = fingerprint
         return result

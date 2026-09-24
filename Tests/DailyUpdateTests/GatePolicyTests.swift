@@ -24,8 +24,6 @@ final class GatePolicyTests: XCTestCase {
         try await withTemporaryAppSupportDirectory { root in
             let updateMarker = root.appendingPathComponent("available")
             let runMarker = root.appendingPathComponent("ran")
-            let checkCommand = "[ -f \(ShellEscaping.quote(updateMarker.path)) ] && echo UPDATE || echo OK"
-            let updateCommand = "touch \(ShellEscaping.quote(runMarker.path))"
 
             let store = UserSettingsStore()
             store.settings.confirmBeforeUpdate = true
@@ -38,16 +36,15 @@ final class GatePolicyTests: XCTestCase {
                     source: .user,
                     detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
                     versionCommand: "echo 1.0.0",
-                    checkCommand: checkCommand,
+                    checkCommand: "[ -f \(ShellEscaping.quote(updateMarker.path)) ] && echo UPDATE || echo OK",
                     installCommand: nil,
-                    updateCommand: updateCommand,
+                    updateCommand: "touch \(ShellEscaping.quote(runMarker.path))",
                     workingDirectory: nil
                 ),
             ]
 
             let state = AppState(settingsStore: store)
             state.notificationsEnabled = false
-
             guard let index = state.items.firstIndex(where: { $0.id == "retry-custom" }) else {
                 XCTFail("Missing retry item")
                 return
@@ -312,7 +309,7 @@ final class GatePolicyTests: XCTestCase {
 
         XCTAssertEqual(
             gated,
-            Set(["agent-skills", "brew", "corepack", "gem", "global-npm", "global-pnpm", "global-yarn", "impeccable", "node", "pip-packages"])
+            Set(["agent-skills", "brew", "claude-code", "corepack", "gem", "global-npm", "global-pnpm", "global-yarn", "hermes-agent", "impeccable", "node", "openclaw", "opencode", "pip-packages"])
         )
         XCTAssertTrue(blocked.isEmpty)
 
