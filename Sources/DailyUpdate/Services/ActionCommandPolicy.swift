@@ -83,10 +83,24 @@ enum ActionCommandPolicy {
         return !checkManagers.isDisjoint(with: updateManagers)
     }
 
+    static func checkCommandContainsOwnUpdateCommand(checkCommand: String, updateCommand: String) -> Bool {
+        let normalizedCheck = normalizeCommandForComparison(checkCommand)
+        let normalizedUpdate = normalizeCommandForComparison(updateCommand)
+        guard !normalizedUpdate.isEmpty else { return false }
+        return normalizedCheck.contains(normalizedUpdate)
+    }
+
     static func matchesBulkPattern(_ command: String) -> Bool {
         bulkPatterns.contains { pattern in
             matches(pattern: pattern, in: command)
         }
+    }
+
+    private static func normalizeCommandForComparison(_ command: String) -> String {
+        command
+            .lowercased()
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func matches(pattern: String, in command: String) -> Bool {

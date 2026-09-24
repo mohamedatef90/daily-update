@@ -233,6 +233,13 @@ final class CoreServiceTests: XCTestCase {
                     ),
                     "\(config.id) check/update commands do not share a package manager.\ncheck: \(checkCommand)\nupdate: \(config.updateCommand)"
                 )
+                XCTAssertFalse(
+                    ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
+                        checkCommand: checkCommand,
+                        updateCommand: config.updateCommand
+                    ),
+                    "\(config.id) check command contains its update command: \(checkCommand)"
+                )
             }
 
             let commands = [
@@ -627,11 +634,30 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testCLIUpdateAllReturnsNonZeroWhenNoItemsMatch() async {
+    func testCLIUpdateAllReturnsZeroWhenNoItemsMatchAndChecksPass() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
             items: [
                 makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIUpdateAllReturnsNonZeroWhenNoItemsMatchAndCheckFailedExists() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade"),
+                makeItem(id: "failed-check", installed: true, status: .checkFailed)
             ]
         )
 
@@ -667,6 +693,7 @@ final class CoreServiceTests: XCTestCase {
         let store = UserSettingsStore()
         store.settings.confirmBeforeUpdate = true
         let state = AppState(settingsStore: store)
+        state.notificationsEnabled = false
         state.items = [
             makeItem(id: "menu-bar-update", installed: true, status: .updateAvailable, isSelected: true)
         ]
@@ -725,6 +752,79 @@ final class CoreServiceTests: XCTestCase {
 
         XCTAssertTrue(state.showDryRun)
         XCTAssertEqual(state.dryRunEntries.map(\.id), ["brew"])
+    }
+
+    @MainActor
+    func testRetryUpdateOnErrorRunsConfirmedDryRunTargetsOnly() async throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let retryMarker = tempRoot.appendingPathComponent("retry-marker")
+        let otherMarker = tempRoot.appendingPathComponent("other-marker")
+
+        let store = UserSettingsStore()
+        store.settings.confirmBeforeUpdate = true
+        let state = AppState(settingsStore: store)
+        state.notificationsEnabled = false
+        state.items = [
+            UpdateItem(
+                id: "retry-item",
+                name: "Retry Item",
+                category: .runtime,
+                description: nil,
+                currentVersion: "1.0.0",
+                latestVersion: "1.1.0",
+                status: .error,
+                statusMessage: "Update failed",
+                isInstalled: true,
+                isSelected: false,
+                isUserDefined: false,
+                source: .bundled,
+                iconPath: nil,
+                detectCommand: nil,
+                versionCommand: nil,
+                checkCommand: nil,
+                installCommand: "",
+                updateCommand: "touch \(ShellEscaping.quote(retryMarker.path))",
+                workingDirectory: nil
+            ),
+            UpdateItem(
+                id: "other-item",
+                name: "Other Item",
+                category: .runtime,
+                description: nil,
+                currentVersion: "1.0.0",
+                latestVersion: "1.1.0",
+                status: .updateAvailable,
+                statusMessage: nil,
+                isInstalled: true,
+                isSelected: false,
+                isUserDefined: false,
+                source: .bundled,
+                iconPath: nil,
+                detectCommand: nil,
+                versionCommand: nil,
+                checkCommand: nil,
+                installCommand: "",
+                updateCommand: "touch \(ShellEscaping.quote(otherMarker.path))",
+                workingDirectory: nil
+            )
+        ]
+
+        await state.retryUpdate(for: "retry-item")
+        XCTAssertTrue(state.showDryRun)
+        XCTAssertEqual(state.dryRunEntries.map(\.id), ["retry-item"])
+
+        if let index = state.items.firstIndex(where: { $0.id == "other-item" }) {
+            state.items[index].isSelected = true
+        }
+
+        await state.confirmDryRun()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retryMarker.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: otherMarker.path))
     }
 
     private func makeItem(

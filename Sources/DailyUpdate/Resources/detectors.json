@@ -325,7 +325,7 @@
         "command": "command -v flutter >/dev/null 2>&1"
       },
       "versionCommand": "flutter --version 2>/dev/null | grep '^Flutter' | head -1",
-      "checkCommand": "(flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK",
+      "checkCommand": "current=$(flutter --version --machine 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"frameworkVersion\", \"\"))' 2>/dev/null); latest=$(curl -fsSL --connect-timeout 5 https://storage.googleapis.com/flutter_infra_release/releases/releases_macos.json 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); stable_hash=data.get(\"current_release\", {}).get(\"stable\", \"\"); release=next((r for r in data.get(\"releases\", []) if r.get(\"hash\") == stable_hash), {}); print(release.get(\"version\", \"\"))' 2>/dev/null); if [ -n \"$current\" ] && [ -n \"$latest\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; else echo OK; fi",
       "updateCommand": "flutter upgrade"
     },
     {
@@ -338,7 +338,7 @@
         "command": "command -v dart >/dev/null 2>&1"
       },
       "versionCommand": "dart --version 2>/dev/null | head -1",
-      "checkCommand": "brew outdated dart 2>/dev/null | grep -q '^dart$' && echo UPDATE || echo OK",
+      "checkCommand": "brew outdated dart 2>/dev/null | grep -qE '(^|/)dart$' && echo UPDATE || echo OK",
       "updateCommand": "brew upgrade dart"
     },
     {
@@ -533,7 +533,7 @@
         "command": "command -v mise >/dev/null 2>&1"
       },
       "versionCommand": "mise --version 2>/dev/null",
-      "checkCommand": "mise self-update --dry-run 2>&1 | grep -qiE 'already up.?to.?date|up to date' && echo OK || echo UPDATE",
+      "checkCommand": "json=$(mise version --json 2>/dev/null || true); if [ -n \"$json\" ]; then version=$(printf '%s' \"$json\" | sed -nE 's/.*\"version\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p' | head -1); latest=$(printf '%s' \"$json\" | sed -nE 's/.*\"latest\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p' | head -1); if [ -n \"$version\" ] && [ -n \"$latest\" ]; then [ \"$version\" != \"$latest\" ] && echo UPDATE || echo OK; exit 0; fi; fi; mise version 2>&1 | grep -qiE 'version .* available' && echo UPDATE || echo OK",
       "updateCommand": "mise self-update"
     },
     {
@@ -559,7 +559,7 @@
         "command": "command -v rustup >/dev/null 2>&1"
       },
       "versionCommand": "rustc --version 2>/dev/null",
-      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "checkCommand": "rustup check 2>/dev/null | grep -qiE 'update available|out of date' && echo UPDATE || echo OK",
       "updateCommand": "rustup update"
     },
     {
@@ -572,7 +572,7 @@
         "command": "command -v cargo >/dev/null 2>&1"
       },
       "versionCommand": "cargo --version 2>/dev/null",
-      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "checkCommand": "rustup check 2>/dev/null | grep -qiE 'update available|out of date' && echo UPDATE || echo OK",
       "updateCommand": "rustup update"
     },
     {
@@ -598,7 +598,7 @@
         "command": "command -v composer >/dev/null 2>&1"
       },
       "versionCommand": "composer --version 2>/dev/null | head -1",
-      "checkCommand": "composer self-update --dry-run 2>&1 | grep -q 'new version' && echo UPDATE || echo OK",
+      "checkCommand": "current=$(composer --version 2>/dev/null | sed -nE 's/.*version ([0-9]+(\\.[0-9]+)+).*/\\1/p' | head -1); latest=$(curl -fsSL --connect-timeout 5 https://api.github.com/repos/composer/composer/releases/latest 2>/dev/null | sed -nE 's/.*\"tag_name\": \"v?([^\"]+)\".*/\\1/p' | head -1); if [ -n \"$current\" ] && [ -n \"$latest\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; else echo OK; fi",
       "updateCommand": "composer self-update"
     },
     {

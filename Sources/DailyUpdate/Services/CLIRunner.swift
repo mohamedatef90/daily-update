@@ -154,7 +154,6 @@ enum CLIRunner {
                 state: state,
                 requireExplicitConfirmation: state.confirmBeforeUpdate,
                 confirmed: parsed.yes,
-                emptySelectionExitCode: 1,
                 failOnAnyCheckFailure: true,
                 output: output
             )
@@ -275,6 +274,9 @@ enum CLIRunner {
         }
         if entries.isEmpty {
             output("No matching items found.")
+            if failOnAnyCheckFailure && state.items.contains(where: { $0.status == .checkFailed }) {
+                return 1
+            }
             return emptySelectionExitCode
         }
 

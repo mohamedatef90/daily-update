@@ -255,7 +255,7 @@ struct DryRunSheet: View {
                 Spacer()
                 Button(runButtonTitle) {
                     dismiss()
-                    Task { await appState.updateSelected(skipDryRun: true) }
+                    Task { await appState.confirmDryRun() }
                 }
                 .keyboardShortcut(.defaultAction)
             }
