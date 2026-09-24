@@ -10,6 +10,11 @@ struct DetectorConfig: Codable, Identifiable {
     let category: ItemCategory
     let description: String?
     var source: ItemSource?
+    var command: String? = nil
+    var packages: PackageIdentifiers? = nil
+    var selfUpdater: String? = nil
+    var appcastURL: String? = nil
+    var autoUpdates: Bool? = nil
     let detect: DetectRule?
     let versionCommand: String?
     var versionPattern: String? = nil
@@ -26,6 +31,17 @@ struct DetectorConfig: Codable, Identifiable {
     var isDiscovered: Bool {
         source == .discovered
     }
+}
+
+struct PackageIdentifiers: Codable, Hashable {
+    var brew: String?
+    var brewCask: String?
+    var npm: String?
+    var pipx: String?
+    var uv: String?
+    var cargo: String?
+    var gem: String?
+    var masAdamID: String?
 }
 
 struct DetectRule: Codable {
@@ -60,6 +76,11 @@ extension DetectorConfig {
             autoUpdate: false,
             iconPath: category == .app ? detect?.paths?.first : nil,
             detectCommand: detect?.command,
+            command: command,
+            packages: packages,
+            selfUpdater: selfUpdater,
+            appcastURL: appcastURL,
+            autoUpdates: autoUpdates,
             versionCommand: versionCommand,
             versionPattern: versionPattern,
             checkCommand: checkCommand,

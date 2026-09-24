@@ -25,6 +25,21 @@ enum ShellRunner {
         )
     }
 
+    static func run(
+        _ commandSpec: CommandSpec,
+        workingDirectory: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 120
+    ) async -> Result {
+        await runProcess(
+            executablePath: commandSpec.executablePath,
+            arguments: commandSpec.arguments,
+            workingDirectory: workingDirectory,
+            environment: environment,
+            timeout: timeout
+        )
+    }
+
     static func runProcess(
         executablePath: String,
         arguments: [String],

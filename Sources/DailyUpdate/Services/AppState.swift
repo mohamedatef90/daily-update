@@ -552,6 +552,8 @@ final class AppState: ObservableObject {
                     if !detection.installed {
                         item.status = .notInstalled
                         item.statusMessage = detection.message
+                        item.plannedUpdateCommandSpec = nil
+                        item.ownerFingerprint = nil
                         return (index, item)
                     }
                     let check = await UpdateCheckService.check(
@@ -567,6 +569,8 @@ final class AppState: ObservableObject {
                     item.gateReasons = check.gateReasons
                     item.blockReason = check.blockReason
                     item.needsReview = check.gateReasons.contains(.needsReview)
+                    item.plannedUpdateCommandSpec = check.plannedUpdateCommandSpec
+                    item.ownerFingerprint = check.ownerFingerprint
                     applyPinnedGateIfNeeded(to: &item)
                     item.isSelected = item.status == .updateAvailable && !item.isSnoozed
                     return (index, item)
@@ -692,6 +696,23 @@ final class AppState: ObservableObject {
                 items[index].isSelected = false
                 appendLog("\(items[index].name): changed since you confirmed, not run")
                 continue
+            }
+
+            if let config = configs.first(where: { $0.id == target.id }),
+               let replanned = await StrategyPlanner.plannedCommand(
+                config: config,
+                targetVersion: items[index].latestVersion
+               ) {
+                let replannedCommand = replanned.commandSpec.displayString
+                let fingerprintChanged = items[index].ownerFingerprint != nil && items[index].ownerFingerprint != replanned.fingerprint
+                if replannedCommand != plannedCommand || fingerprintChanged {
+                    skippedDueToChanges += 1
+                    items[index].isSelected = false
+                    appendLog("\(items[index].name): changed since you confirmed, not run")
+                    continue
+                }
+                items[index].plannedUpdateCommandSpec = replanned.commandSpec
+                items[index].ownerFingerprint = replanned.fingerprint
             }
             let installing = items[index].canInstall
             let verb = installing ? "Installing" : "Updating"
@@ -829,6 +850,8 @@ final class AppState: ObservableObject {
             if !detection.installed {
                 items[index].status = .notInstalled
                 items[index].statusMessage = detection.message
+                items[index].plannedUpdateCommandSpec = nil
+                items[index].ownerFingerprint = nil
                 continue
             }
 
@@ -850,6 +873,8 @@ final class AppState: ObservableObject {
             items[index].gateReasons = check.gateReasons
             items[index].blockReason = check.blockReason
             items[index].needsReview = check.gateReasons.contains(.needsReview)
+            items[index].plannedUpdateCommandSpec = check.plannedUpdateCommandSpec
+            items[index].ownerFingerprint = check.ownerFingerprint
             applyPinnedGateIfNeeded(to: &items[index])
             if items[index].status == .gated,
                items[index].statusMessage == nil {
@@ -890,7 +915,13 @@ final class AppState: ObservableObject {
     }
 
     private func actionCommand(for item: UpdateItem) -> String {
-        item.canInstall ? item.installCommand : item.updateCommand
+        if item.canInstall {
+            return item.installCommand
+        }
+        if let commandSpec = item.plannedUpdateCommandSpec {
+            return commandSpec.displayString
+        }
+        return item.updateCommand
     }
 
     private func queueAdministratorPermission(for item: UpdateItem) {
