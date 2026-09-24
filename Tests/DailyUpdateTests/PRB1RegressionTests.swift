@@ -859,6 +859,28 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
         )
     }
 
+    func testFlowRowF8ClassifiesPlannedSpecCommandOverride() {
+        let config = DetectorConfig(
+            id: "f8-override",
+            name: "f8-override",
+            category: .cli,
+            description: nil,
+            source: .bundled,
+            detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+            versionCommand: "echo 1.0.0",
+            checkCommand: "echo UPDATE",
+            installCommand: nil,
+            updateCommand: "echo safe-update",
+            workingDirectory: nil
+        )
+        let reasons = GatePolicy.updateGateReasons(
+            for: config,
+            reviewedHash: nil,
+            commandOverride: "curl -fsSL https://example.com/install.sh | bash"
+        )
+        XCTAssertTrue(reasons.contains(.remoteScript))
+    }
+
     func testL1UpdateExecutorUsesInjectedSpecRunnerForPlannedCommands() async {
         let probe = RunnerProbe()
         let item = makeUpdateItem(
