@@ -2,6 +2,16 @@ import AppKit
 import Combine
 import Foundation
 
+enum AppStateRuntime {
+    case application
+    case commandLine
+
+    var performsDiscovery: Bool { self == .application }
+    var startsBackgroundServices: Bool { self == .application }
+    /// UNUserNotificationCenter aborts the process when there is no app bundle (plain CLI run).
+    var postsNotifications: Bool { self == .application }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var items: [UpdateItem] = []
@@ -35,6 +45,7 @@ final class AppState: ObservableObject {
     @Published var duplicateGroups: [DuplicateGroup] = []
 
     let settingsStore: UserSettingsStore
+    let runtimeMode: AppStateRuntime
     private let scheduler = SchedulerService()
 
     weak var appDelegate: AppDelegate?
@@ -52,15 +63,21 @@ final class AppState: ObservableObject {
         set { pendingSkipDryRun = newValue }
     }
 
-    init(settingsStore: UserSettingsStore = UserSettingsStore()) {
+    init(
+        settingsStore: UserSettingsStore = UserSettingsStore(),
+        runtimeMode: AppStateRuntime = .application
+    ) {
         self.settingsStore = settingsStore
+        self.runtimeMode = runtimeMode
         loadSettings()
         history = UpdateHistoryStore.load()
         showOnboarding = !settingsStore.settings.hasCompletedSetup
         reloadConfigs()
-        setupWakeObserver()
-        syncLaunchAtLogin()
-        scheduler.start(appState: self)
+        if runtimeMode.startsBackgroundServices {
+            setupWakeObserver()
+            syncLaunchAtLogin()
+            scheduler.start(appState: self)
+        }
     }
 
     deinit {
@@ -295,32 +312,73 @@ final class AppState: ObservableObject {
 
     // MARK: - Config
 
+    struct DiscoveryResult {
+        var repos: [DetectorConfig] = []
+        var apps: [DetectorConfig] = []
+        var skills: [DetectorConfig] = []
+    }
+
+    private var lastDiscovery = DiscoveryResult()
+    private var discoveryTask: Task<DiscoveryResult, Never>?
+
+    /// Rebuilds the item list immediately from bundled/custom configs plus the last known
+    /// discovery, then refreshes discovery in the background. Discovery walks the scan folders
+    /// (Downloads and Documents by default) and used to run synchronously here, on the main
+    /// thread, inside `AppState.init`; that kept the first window from appearing for minutes.
     func reloadConfigs() {
         ConfigLoader.ensureUserConfigExists()
-        let settings = settingsStore.settings
-        var discoveredRepos: [DetectorConfig] = []
-        var discoveredApps: [DetectorConfig] = []
-        var discoveredSkills: [DetectorConfig] = []
+        applyConfigs(discovery: lastDiscovery, preserveItemState: false)
+        Task { await refreshDiscovery() }
+    }
 
-        if settings.hasCompletedSetup && rescanReposOnLaunch {
-            let options = settings.repoScan.scanOptions
-            discoveredRepos = RepoScanner.discoverRepos(
+    /// Runs repo/app/skill discovery off the main thread and merges the result. Concurrent
+    /// callers share one in-flight scan.
+    func refreshDiscovery() async {
+        let settings = settingsStore.settings
+        guard runtimeMode.performsDiscovery, settings.hasCompletedSetup else {
+            lastDiscovery = DiscoveryResult()
+            return
+        }
+        if let inFlight = discoveryTask {
+            _ = await inFlight.value
+            return
+        }
+        let wantsRepos = rescanReposOnLaunch
+        let wantsApps = settings.appDiscovery.enabled && rescanAppsOnLaunch
+        let wantsSkills = settings.skillDiscovery.enabled && rescanSkillsOnLaunch
+        // A detached Task was observed (via `sample`) still executing this scan on the main
+        // thread; an explicit global queue guarantees it runs off the UI thread.
+        let task = Task<DiscoveryResult, Never> {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(returning: Self.discover(settings: settings, repos: wantsRepos, apps: wantsApps, skills: wantsSkills))
+                }
+            }
+        }
+        discoveryTask = task
+        let result = await task.value
+        discoveryTask = nil
+        lastDiscovery = result
+        let knownIDs = Set(items.map(\.id))
+        applyConfigs(discovery: result, preserveItemState: true)
+        let newIDs = Set(items.map(\.id)).subtracting(knownIDs)
+        if !newIDs.isEmpty, !isChecking, !isUpdating, lastCheckDate != nil {
+            await refreshUpdatedItems(newIDs, progressMessage: "Checking…")
+        }
+    }
+
+    nonisolated private static func discover(settings: UserSettings, repos: Bool, apps: Bool, skills: Bool) -> DiscoveryResult {
+        var result = DiscoveryResult()
+        if repos {
+            result.repos = RepoScanner.discoverRepos(
                 in: settings.allScanFolders,
                 rootFolder: settings.rootFolder,
-                options: options
+                options: settings.repoScan.scanOptions
             )
-            discoveredRepoCount = discoveredRepos.count
-        } else {
-            discoveredRepoCount = 0
         }
-
-        let preliminary = ConfigLoader.loadConfigs(
-            settings: settings,
-            discoveredRepos: discoveredRepos
-        )
-
-        if settings.hasCompletedSetup && settings.appDiscovery.enabled && rescanAppsOnLaunch {
-            discoveredApps = AppScanner.discoverApps(
+        let preliminary = ConfigLoader.loadConfigs(settings: settings, discoveredRepos: result.repos)
+        if apps {
+            result.apps = AppScanner.discoverApps(
                 in: settings.applicationFolders,
                 excludingPaths: ConfigLoader.knownAppPaths(from: preliminary),
                 excludingBundleIDs: ConfigLoader.knownBundleIDs(from: preliminary),
@@ -329,34 +387,48 @@ final class AppState: ObservableObject {
                     scanUtilitiesFolder: settings.appDiscovery.scanUtilitiesFolder
                 )
             )
-            discoveredAppCount = discoveredApps.count
-        } else {
-            discoveredAppCount = 0
         }
-
-        if settings.hasCompletedSetup && settings.skillDiscovery.enabled && rescanSkillsOnLaunch {
-            discoveredSkills = SkillsScanner.discoverSkillItems(
+        if skills {
+            result.skills = SkillsScanner.discoverSkillItems(
                 excludingPaths: ConfigLoader.knownItemPaths(from: preliminary),
                 options: SkillScanOptions(
                     scanPluginCaches: settings.skillDiscovery.scanPluginCaches,
                     skillRoots: settings.skillDiscovery.skillRoots
                 )
             )
-            discoveredSkillCount = discoveredSkills.count
-        } else {
-            discoveredSkillCount = 0
         }
+        return result
+    }
 
+    /// `preserveItemState` keeps check results for items that already exist, so a background
+    /// discovery finishing after a check does not wipe every row back to "Unknown".
+    private func applyConfigs(discovery: DiscoveryResult, preserveItemState: Bool) {
+        let settings = settingsStore.settings
         configs = ConfigLoader.loadConfigs(
             settings: settings,
-            discoveredRepos: discoveredRepos,
-            discoveredApps: discoveredApps,
-            discoveredSkills: discoveredSkills
+            discoveredRepos: discovery.repos,
+            discoveredApps: discovery.apps,
+            discoveredSkills: discovery.skills
         )
-        items = configs.map { applyPreferences(to: $0.toUpdateItem()) }
+        let previous = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        items = configs.map { config in
+            var item = applyPreferences(to: config.toUpdateItem())
+            if preserveItemState, let old = previous[config.id] {
+                item.status = old.status
+                item.statusMessage = old.statusMessage
+                item.currentVersion = old.currentVersion
+                item.latestVersion = old.latestVersion
+                item.isInstalled = old.isInstalled
+                item.isSelected = old.isSelected
+            }
+            return item
+        }
+        discoveredRepoCount = discovery.repos.count
+        discoveredAppCount = discovery.apps.count
+        discoveredSkillCount = discovery.skills.count
         duplicateGroups = DuplicateDetector.find(in: installedItems)
         markDuplicates()
-        appendLog("Loaded \(configs.count) items (\(discoveredRepos.count) repos, \(discoveredApps.count) apps, \(discoveredSkills.count) skills discovered)")
+        appendLog("Loaded \(configs.count) items (\(discovery.repos.count) repos, \(discovery.apps.count) apps, \(discovery.skills.count) skills discovered)")
         publishWidgetSnapshot()
     }
 
@@ -508,54 +580,65 @@ final class AppState: ObservableObject {
         if !(await FreshnessService.refreshPackageMetadata()) {
             appendLog("Package metadata refresh skipped or unavailable; continuing with live checks")
         }
-        if rescanReposOnLaunch { reloadConfigs() }
+        if runtimeMode.performsDiscovery && rescanReposOnLaunch {
+            // Not awaited: the check must never wait on a folder walk. Newly discovered items
+            // are checked by refreshDiscovery() when the scan completes.
+            appendLog("Scanning folders for repos, apps, and skills in the background…")
+            Task { await self.refreshDiscovery() }
+        }
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
         totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
-        await withTaskGroup(of: (Int, UpdateItem).self) { group in
-            for (index, config) in configs.enumerated() {
-                group.addTask {
-                    var item = config.toUpdateItem()
-                    if let pref = prefs[config.id] {
-                        item.autoUpdate = pref.autoUpdate
-                        item.snoozedUntil = pref.snoozedUntil
-                        item.pinnedVersion = pref.pinnedVersion
-                        item.permanentlyIgnored = pref.permanentlyIgnored
-                    }
-                    if item.permanentlyIgnored || item.isSnoozed {
-                        item.status = .upToDate
-                        item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
-                        return (index, item)
-                    }
-                    let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
-                    item.isInstalled = installed
-                    if !installed {
-                        item.status = .notInstalled
-                        item.statusMessage = detectMsg
-                        return (index, item)
-                    }
-                    let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
-                    item.status = status
-                    item.currentVersion = current
-                    item.latestVersion = latest
-                    item.statusMessage = message
-                    if item.isPinnedMismatch {
-                        item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
-                    }
-                    // Update checks must not silently select every available update.
-                    // Preserve only an explicit user selection from before this scan.
-                    item.isSelected = selectedItemIDs.contains(item.id) && item.isActionable
-                    return (index, item)
+        let checkInputs = Array(configs.enumerated())
+        _ = await BoundedAsyncMap.run(
+            checkInputs,
+            maxConcurrent: 6,
+            operation: { indexedConfig in
+            let (index, config) = indexedConfig
+            var item = config.toUpdateItem()
+            if let pref = prefs[config.id] {
+                item.autoUpdate = pref.autoUpdate
+                item.snoozedUntil = pref.snoozedUntil
+                item.pinnedVersion = pref.pinnedVersion
+                item.permanentlyIgnored = pref.permanentlyIgnored
+            }
+            if item.permanentlyIgnored || item.isSnoozed {
+                item.status = .upToDate
+                item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
+                return (index, item)
+            }
+            let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
+            item.isInstalled = installed
+            if !installed {
+                item.status = .notInstalled
+                item.statusMessage = detectMsg
+                return (index, item)
+            }
+            let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
+            item.status = status
+            item.currentVersion = current
+            item.latestVersion = latest
+            item.statusMessage = message
+            if item.isPinnedMismatch {
+                item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
+            }
+            // Update checks must not silently select every available update.
+            // Preserve only an explicit user selection from before this scan.
+            item.isSelected = selectedItemIDs.contains(item.id) && item.isActionable
+            return (index, item)
+            },
+            onResult: { [weak self] _, checkedItem in
+                let (index, updated) = checkedItem
+                await MainActor.run {
+                    guard let self else { return }
+                    self.items[index] = updated
+                    self.checkedItemCount += 1
                 }
             }
-            for await (index, updated) in group {
-                items[index] = updated
-                checkedItemCount += 1
-            }
-        }
+        )
 
         lastCheckDate = Date()
         isChecking = false
@@ -565,7 +648,7 @@ final class AppState: ObservableObject {
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
 
-        if notificationsEnabled, updateAvailableCount > 0 {
+        if notificationsEnabled, runtimeMode.postsNotifications, updateAvailableCount > 0 {
             await NotificationService.notifyUpdatesAvailable(count: updateAvailableCount)
         }
     }
@@ -623,11 +706,13 @@ final class AppState: ObservableObject {
 
             let fromVersion = items[index].currentVersion
             let command = actionCommand(for: items[index])
-            let (status, version, message) = await UpdateExecutor.update(
+            let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
                 stashRepos: stashReposBeforeUpdate
             )
+            let (status, version, message) = (result.status, result.version, result.message)
+            let recordedCommand = UpdateExecutor.reportedCommand(executed: result.command, fallback: command)
             items[index].status = status
             if status == .updated {
                 items[index].isInstalled = true
@@ -643,7 +728,7 @@ final class AppState: ObservableObject {
                 toVersion: version,
                 success: status == .updated,
                 message: message,
-                command: command
+                command: recordedCommand
             )
             UpdateHistoryStore.append(entry)
             history.insert(entry, at: 0)
@@ -679,7 +764,7 @@ final class AppState: ObservableObject {
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
 
-        if notificationsEnabled {
+        if notificationsEnabled, runtimeMode.postsNotifications {
             await NotificationService.notifyUpdateComplete(success: successCount, failed: failCount)
         }
         // Re-check only the items that actually changed. A full scan here used to
@@ -689,7 +774,7 @@ final class AppState: ObservableObject {
         showUpdateReport = true
     }
 
-    private func refreshUpdatedItems(_ ids: Set<String>) async {
+    private func refreshUpdatedItems(_ ids: Set<String>, progressMessage: String = "Verifying update…") async {
         guard !ids.isEmpty else { return }
 
         let appFolders = settingsStore.settings.applicationFolders
@@ -700,7 +785,7 @@ final class AppState: ObservableObject {
 
             var item = items[index]
             item.status = .checking
-            item.statusMessage = "Verifying update…"
+            item.statusMessage = progressMessage
             items[index] = item
 
             if let preference = preferences[config.id] {
@@ -738,8 +823,14 @@ final class AppState: ObservableObject {
         appDelegate?.refreshStatusBar()
     }
 
+    /// Preview/fallback text for an action. Typed items never run their detector command, so
+    /// showing it would misreport what happens; the real command is recorded after the run.
     private func actionCommand(for item: UpdateItem) -> String {
-        UpdateExecutor.commandToRun(for: item, installing: item.canInstall) ?? "No safe automatic update command"
+        guard let strategy = DeveloperCLIStrategy.strategy(for: item.id) else {
+            return "No safe automatic update command"
+        }
+        let action = item.canInstall ? "install" : "update"
+        return "\(strategy.displayName) \(action): owner-aware command is built from the live audit when it runs"
     }
 
     private func orderedActionTargets(_ targets: [UpdateItem]) -> [UpdateItem] {

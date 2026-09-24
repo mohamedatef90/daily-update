@@ -72,15 +72,7 @@ struct ItemListView: View {
                     TableColumn("Status") { item in
                         HStack(alignment: .center) {
                             StatusBadge(status: item.status, message: item.statusMessage)
-                            if item.status == .error, item.isInstalled, !item.updateCommand.isEmpty {
-                                Button("Retry") {
-                                    Task { await appState.retryUpdate(id: item.id) }
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(appState.isUpdating || appState.isChecking)
-                                .help("Retry this item's update")
-                            }
+
                             if item.isUserDefined {
                                 Button(role: .destructive) {
                                     appState.removeCustomItem(id: item.id)
@@ -192,8 +184,8 @@ struct StatusBadge: View {
                     .progressViewStyle(.linear)
                     .frame(width: 86)
             }
-            if let message, status == .error || status == .notInstalled {
-                Text(status == .error ? "Reason: \(message)" : message)
+            if let message, [.error, .gated, .blocked, .failedVerification, .notInstalled].contains(status) {
+                Text(status == .notInstalled ? message : "Reason: \(message)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -207,7 +199,8 @@ struct StatusBadge: View {
         case .upToDate, .updated: return .green
         case .updateAvailable: return .orange
         case .notInstalled: return .secondary
-        case .error: return .red
+        case .error, .blocked, .failedVerification: return .red
+        case .gated: return .orange
         case .updating: return .blue
         }
     }

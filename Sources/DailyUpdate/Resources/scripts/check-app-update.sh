@@ -33,9 +33,19 @@ find_app() {
   return 1
 }
 
+normalize_version() {
+  # Casks encode channels in the version string ("0.2026.09.16.08.27.stable_02") while the
+  # app reports the bare build ("0.2026.09.16.08.27.02"); compare them on equal footing.
+  local v="$1"
+  v="${v//stable_/}"
+  v="${v//,/.}"
+  echo "$v"
+}
+
 compare_versions() {
-  local current="$1"
-  local latest="$2"
+  local current latest
+  current="$(normalize_version "$1")"
+  latest="$(normalize_version "$2")"
   if [[ -z "$current" || -z "$latest" ]]; then
     echo OK
     return

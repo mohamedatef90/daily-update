@@ -21,9 +21,11 @@ struct RepoScanSettings: Codable, Equatable {
     var subfolders: [String] = RepoScanSettings.defaultSubfolders
     var skipDirectories: [String] = RepoScanSettings.defaultSkipDirectories
 
+    // Downloads/Documents/Desktop are deliberately absent: they are privacy-protected and
+    // scanning them stalls on the consent prompt (see RepoScanner.privacyProtectedHomeFolders).
     static let defaultSubfolders = [
         "Projects", "dev", "Development", "code", "Code", "repos", "workspace",
-        "Downloads", "Documents", "04_App_Coding", "app", "apps", "src", "git"
+        "04_App_Coding", "app", "apps", "src", "git"
     ]
 
     static let defaultSkipDirectories = [

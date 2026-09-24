@@ -37,6 +37,9 @@ enum ItemStatus: String, Codable {
     case updateAvailable
     case notInstalled
     case error
+    case gated
+    case blocked
+    case failedVerification
     case updating
     case updated
 
@@ -48,6 +51,9 @@ enum ItemStatus: String, Codable {
         case .updateAvailable: return "Update available"
         case .notInstalled: return "Not installed"
         case .error: return "Error"
+        case .gated: return "Gated"
+        case .blocked: return "Blocked"
+        case .failedVerification: return "Failed verification"
         case .updating: return "Updating…"
         case .updated: return "Updated"
         }
@@ -104,14 +110,20 @@ struct UpdateItem: Identifiable, Hashable {
         return ItemSource.bundled.label
     }
 
+    private var hasTypedStrategy: Bool {
+        DeveloperCLIStrategy.strategy(for: id) != nil
+    }
+
     var canInstall: Bool {
-        !isInstalled && !installCommand.isEmpty && status == .notInstalled
+        guard !isInstalled, status == .notInstalled else { return false }
+        // Typed first installs go through an owner-aware package manager path. A typed CLI
+        // without a supported first-install strategy (Hermes, for example) remains gated.
+        guard let strategy = DeveloperCLIStrategy.strategy(for: id) else { return false }
+        return strategy.npmPackage != nil
     }
 
     var canUpdate: Bool {
-        isInstalled
-            && (status == .updateAvailable || status == .error)
-            && UpdateExecutor.commandToRun(for: self) != nil
+        isInstalled && status == .updateAvailable && hasTypedStrategy
     }
 
     var isActionable: Bool {

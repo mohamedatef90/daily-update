@@ -236,7 +236,7 @@ enum RepoScanner {
             guard FileManager.default.fileExists(atPath: expanded) else { continue }
 
             if options.limitRootToSubfolders && expanded == expandedRoot {
-                for subfolder in options.subfolders {
+                for subfolder in rootSubfoldersToScan(options.subfolders) {
                     let subpath = (expanded as NSString).appendingPathComponent(subfolder)
                     guard FileManager.default.fileExists(atPath: subpath) else { continue }
                     scanDirectory(subpath, depth: 0, maxDepth: options.maxDepth, options: options, results: &results, seen: &seenPaths)
@@ -247,6 +247,16 @@ enum RepoScanner {
         }
 
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// macOS gates these home folders behind a per-app consent prompt (TCC). Reading them from
+    /// an app that has not been granted access blocks inside `open()` until the user answers,
+    /// which stalled discovery for minutes on every launch. Users who really want them scanned
+    /// can add them as explicit additional scan folders.
+    static let privacyProtectedHomeFolders: Set<String> = ["Downloads", "Documents", "Desktop"]
+
+    static func rootSubfoldersToScan(_ subfolders: [String]) -> [String] {
+        subfolders.filter { !privacyProtectedHomeFolders.contains($0) }
     }
 
     private static func scanDirectory(

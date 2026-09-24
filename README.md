@@ -11,7 +11,7 @@ A native macOS app that detects your apps, CLIs, runtimes, libraries, and git re
 - **Apps detection** — via Applications folder **or** a custom terminal script
 - **Custom update list** — add/remove apps, CLIs, and repos from the UI
 - **Auto-check on launch** — scans for updates every time the app opens
-- **Auto-update on launch** — optional: update everything that's available
+- **Verified updates** — runs one item at a time and only reports success after independent post-checks
 - **Wake check** — re-checks when your Mac wakes from sleep
 - **Selective updates** — checkbox each item, then click **Update Selected** or **Install Selected**
 - **Install missing tools** — install commands derived automatically for apps, CLIs, and runtimes
@@ -89,11 +89,40 @@ You only see items relevant to your machine — no need to copy paths or config 
 ### CLI (optional)
 
 ```bash
+DailyUpdate.app/Contents/MacOS/DailyUpdate --audit --json
 DailyUpdate.app/Contents/MacOS/DailyUpdate --check
+DailyUpdate.app/Contents/MacOS/DailyUpdate --health --json
+DailyUpdate.app/Contents/MacOS/DailyUpdate --update opencode     # one item by id (ids: --check --json)
 DailyUpdate.app/Contents/MacOS/DailyUpdate --update-all
-DailyUpdate.app/Contents/MacOS/DailyUpdate --install-all
 DailyUpdate.app/Contents/MacOS/DailyUpdate --help
 ```
+
+`--audit` is the preferred read-only workflow for developer/AI CLIs. It inventories the active
+binary and competing PATH entries, identifies the installation owner, checks the current and
+latest versions from an owner-appropriate source, reports shadowed copies, and classifies risk.
+Typed strategies are included for Claude Code, Codex CLI, Cursor Agent, OpenCode, Gemini CLI,
+Pi Coding Agent, and Hermes Agent.
+
+### Update safety policy
+
+Daily Update never treats an updater's exit code alone as success. Automatic actions run one
+tool at a time and must pass post-verification for the canonical path, exact version,
+help/equivalent invocation, fresh-shell resolution, and latest/outdated re-check. Results are
+reported as **Updated**, **Gated**, **Blocked**, **Failed Verification**, or a read-only check
+state where applicable.
+
+The app gates or blocks major upgrades, large pre-1.0 jumps, bulk package-manager upgrades,
+administrator/root cleanup, OAuth or login flows, service activation, and local/workspace
+package operations. Network and registry errors remain check failures and never become blindly
+actionable updates. Bundled bulk `brew upgrade` and `npm update -g` actions are disabled.
+Install/update commands for supported AI CLIs preserve the active installation owner and do not
+silently switch release channels.
+
+Apps, runtimes, libraries, and repos use their detector command, which is only auto-run when every
+step is a single-target action: one named Homebrew formula or cask, one pinned global npm/pnpm/bun
+package, one `gem update <name>`, a fast-forward `git pull`, or a tool's own `update`/`upgrade`.
+Pipelines, bare bulk upgrades, and anything that opens an app or the App Store stay Gated with the
+reason shown in the status column.
 
 ## First-Time Setup
 
@@ -124,7 +153,7 @@ Manage custom items in **Settings → Update List**.
 | Option | Default | Description |
 |--------|---------|-------------|
 | Check on app launch | On | Auto-scan when app opens |
-| Auto-update on launch | Off | Update all available items automatically |
+| Auto-update on launch | Off | Run only actions that pass the safety gate; each item is verified afterward |
 | Check when Mac wakes | On | Re-scan after sleep |
 | Rescan repos on launch | On | Find new git repos in your folders |
 | Show menu bar icon | On | Icon in top menu bar with update count |
@@ -157,7 +186,7 @@ Additional scan folders (Settings → Folders) are always scanned fully. Use **R
 ## Pre-configured Items
 
 - **Apps:** Cursor, Codex, Claude, ChatGPT, Zcode, Antigravity, Warp, Xcode
-- **AI agent CLIs:** Cursor Agent, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline, Gemini CLI, Qwen Code, OpenCode
+- **AI agent CLIs:** Cursor Agent, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline, Gemini CLI, Pi Coding Agent, Qwen Code, OpenCode
 - **Other CLIs:** GitHub CLI
 - **Runtimes:** Node.js, npm, pnpm, yarn, Bun, Python, pip, Go, Java, .NET, Flutter, Dart, Rust, Homebrew, mise, asdf
 - **Libraries:** Agent skills, global npm/pnpm/yarn/pip packages, Impeccable (uses your root folder)
@@ -173,6 +202,16 @@ Sources/DailyUpdate/
 ├── Services/        # Detection, scanning, config, shell runner
 ├── Views/           # Onboarding, Add Item, Settings, main UI
 └── Resources/       # Bundled detectors.json
+Tests/DailyUpdateTests/ # SwiftPM regression and safety tests
+```
+
+Run the verification suite with:
+
+```bash
+swift test
+swift build
+swift build -c release
+./scripts/build-app.sh
 ```
 
 Settings are stored in `~/Library/Application Support/DailyUpdate/settings.json`.

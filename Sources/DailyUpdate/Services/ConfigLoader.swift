@@ -100,6 +100,9 @@ enum ConfigLoader {
     static var checkAppUpdateScriptPath: String {
         let candidates: [URL] = [
             Bundle.module.url(forResource: "check-app-update", withExtension: "sh", subdirectory: "scripts"),
+            // `.process("Resources")` flattens subdirectories, so SwiftPM builds (swift run,
+            // .build/debug) expose the script at the bundle root.
+            Bundle.module.url(forResource: "check-app-update", withExtension: "sh"),
             Bundle.main.resourceURL?.appendingPathComponent("scripts/check-app-update.sh"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/scripts/check-app-update.sh")
         ].compactMap { $0 }

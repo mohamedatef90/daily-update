@@ -107,8 +107,8 @@
       "description": "Cursor agent command-line tool",
       "detect": { "type": "command", "command": "command -v agent >/dev/null 2>&1 || command -v cursor-agent >/dev/null 2>&1" },
       "versionCommand": "agent --version 2>/dev/null || cursor-agent --version 2>/dev/null",
-      "checkCommand": "npm outdated -g @cursor/agent 2>/dev/null | grep -q @cursor/agent && echo UPDATE || echo OK",
-      "updateCommand": "npm update -g @cursor/agent 2>/dev/null || brew upgrade cursor-agent 2>/dev/null || echo 'Update agent via Cursor settings'"
+      "checkCommand": "p=$(command -v agent 2>/dev/null || command -v cursor-agent 2>/dev/null); [ -z \"$p\" ] && { echo CHECK_FAILED; exit 1; }; out=$($p about 2>&1); rc=$?; [ $rc -ne 0 ] && { echo CHECK_FAILED: \"$out\"; exit 1; }; c=$($p --version 2>/dev/null | grep -Eo '[0-9]+(\\.[0-9]+)+' | head -1); l=$(printf '%s\\n' \"$out\" | awk '/^[[:space:]]*Latest[[:space:]]/{print $2; exit}'); [ -z \"$l\" ] && echo CHECK_FAILED: about output missing Latest || { [ \"$c\" = \"$l\" ] && echo OK || { echo UPDATE; echo \"latest: $l\"; }; }",
+      "updateCommand": "p=$(command -v agent 2>/dev/null || command -v cursor-agent 2>/dev/null); case \"$p\" in *homebrew*|/usr/local/bin/*) brew upgrade cursor-agent;; *node_modules*|*.npm*|*.nvm*) npm install -g @cursor/agent@latest;; *) exit 64;; esac"
     },
     {
       "id": "codex-cli",
@@ -118,7 +118,7 @@
       "detect": { "type": "command", "command": "command -v codex >/dev/null 2>&1" },
       "versionCommand": "for pkg in \"$HOME/.local/lib/node_modules/@openai/codex/package.json\" \"$(npm root -g 2>/dev/null)/@openai/codex/package.json\"; do if [ -f \"$pkg\" ]; then node -p \"require('$pkg').version\" 2>/dev/null && exit 0; fi; done; codex --version 2>/dev/null | head -1",
       "checkCommand": "installed=''; for pkg in \"$HOME/.local/lib/node_modules/@openai/codex/package.json\" \"$(npm root -g 2>/dev/null)/@openai/codex/package.json\"; do if [ -f \"$pkg\" ]; then installed=$(node -p \"require('$pkg').version\" 2>/dev/null); break; fi; done; latest=$(npm view --prefer-online @openai/codex version 2>/dev/null); if command -v codex >/dev/null 2>&1 && ! codex --version >/dev/null 2>&1; then echo BROKEN; [ -n \"$latest\" ] && echo \"latest: $latest\"; exit 0; fi; if [ -n \"$installed\" ] && [ -n \"$latest\" ] && [ \"$installed\" != \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; elif [ -n \"$installed\" ]; then echo OK; else (npm outdated -g @openai/codex 2>/dev/null | grep -q codex && echo UPDATE) || echo OK; fi",
-      "updateCommand": "npm install -g @openai/codex@latest 2>/dev/null || npm install -g @openai/codex@latest --prefix \"$HOME/.local\" 2>/dev/null || brew upgrade codex 2>/dev/null || echo 'Reinstall: npm install -g @openai/codex@latest'"
+      "updateCommand": "p=$(command -v codex); case \"$p\" in *homebrew*|/usr/local/bin/*) brew upgrade codex;; *node_modules*|*.npm*|*.nvm*) npm install -g @openai/codex@latest;; $HOME/.local/bin/*) npm install -g @openai/codex@latest --prefix \"$HOME/.local\";; *) exit 64;; esac"
     },
     {
       "id": "claude-code",
@@ -127,8 +127,8 @@
       "description": "Anthropic Claude Code CLI",
       "detect": { "type": "command", "command": "command -v claude >/dev/null 2>&1" },
       "versionCommand": "claude --version 2>/dev/null",
-      "checkCommand": "npm outdated -g @anthropic-ai/claude-code 2>/dev/null | grep -q claude && echo UPDATE || echo OK",
-      "updateCommand": "npm update -g @anthropic-ai/claude-code 2>/dev/null || curl -fsSL https://claude.ai/install.sh | bash"
+      "checkCommand": "out=$(claude doctor 2>&1); rc=$?; [ $rc -ne 0 ] && { echo CHECK_FAILED: \"$out\"; exit 1; }; latest=$(printf '%s\\n' \"$out\" | grep -Ei 'latest|update available|new version' | grep -Eo '[0-9]+(\\.[0-9]+){1,3}([-+][0-9A-Za-z.-]+)?' | head -1); [ -z \"$latest\" ] && { echo CHECK_FAILED: doctor did not provide an authoritative remote latest version; printf '%s\\n' \"$out\" | grep -Ei 'multiple install|duplicate|orphan' || true; exit 1; }; current=$(claude --version 2>/dev/null | grep -Eo '[0-9]+(\\.[0-9]+){1,3}([-+][0-9A-Za-z.-]+)?' | head -1); [ \"$current\" = \"$latest\" ] && echo OK || { echo UPDATE; echo \"latest: $latest\"; }",
+      "updateCommand": "p=$(command -v claude); case \"$p\" in *node_modules*|*.npm*|*.nvm*) npm install -g @anthropic-ai/claude-code@latest;; *) claude update;; esac"
     },
     {
       "id": "hermes-agent",
@@ -175,6 +175,17 @@
       "updateCommand": "gemini update 2>/dev/null || npm install -g @google/gemini-cli@latest"
     },
     {
+      "id": "pi-coding-agent",
+      "name": "Pi Coding Agent",
+      "category": "cli",
+      "description": "Pi terminal coding agent",
+      "detect": { "type": "command", "command": "command -v pi >/dev/null 2>&1" },
+      "versionCommand": "pi --version 2>/dev/null",
+      "checkCommand": "p=$(command -v pi); case \"$p\" in *node_modules*|*.npm*|*.nvm*) c=$(pi --version 2>/dev/null | grep -Eo '[0-9]+(\\.[0-9]+)+' | head -1); l=$(npm view --prefer-online @earendil-works/pi-coding-agent version 2>/dev/null); [ -z \"$l\" ] && echo CHECK_FAILED || { [ \"$c\" = \"$l\" ] && echo OK || { echo UPDATE; echo \"latest: $l\"; }; };; *) echo CHECK_FAILED: unsupported installation owner;; esac",
+      "installCommand": "npm install -g @earendil-works/pi-coding-agent@latest",
+      "updateCommand": "npm install -g @earendil-works/pi-coding-agent@latest"
+    },
+    {
       "id": "qwen-code",
       "name": "Qwen Code",
       "category": "cli",
@@ -194,7 +205,7 @@
       "versionCommand": "opencode --version 2>/dev/null",
       "checkCommand": "current=$(opencode --version 2>/dev/null | sed 's/^v//'); latest=$( (command -v gh >/dev/null 2>&1 && gh api repos/anomalyco/opencode/releases/latest --jq .tag_name 2>/dev/null) || curl -fsSL --connect-timeout 5 -A 'DailyUpdate/1.0' -H 'Accept: application/vnd.github+json' -H 'Cache-Control: no-cache' https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null | sed -nE 's/.*\"tag_name\": \"([^\"]+)\".*/\\1/p' | head -1 ); latest=${latest#v}; if [ -z \"$latest\" ]; then echo CHECK_FAILED: unable to fetch OpenCode latest release; elif [ -n \"$current\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; echo \"latest: $latest\"; else echo OK; fi",
       "installCommand": "curl -fsSL https://opencode.ai/install | bash",
-      "updateCommand": "opencode upgrade 2>/dev/null || npm install -g opencode-ai@latest 2>/dev/null || brew upgrade opencode"
+      "updateCommand": "p=$(command -v opencode); case \"$p\" in *homebrew*|/usr/local/bin/*) brew upgrade opencode;; *node_modules*|*.npm*|*.nvm*) npm install -g opencode-ai@latest;; *) opencode upgrade;; esac"
     },
     {
       "id": "gh-cli",
@@ -374,7 +385,7 @@
       "detect": { "type": "command", "command": "command -v brew >/dev/null 2>&1" },
       "versionCommand": "brew --version 2>/dev/null | head -1",
       "checkCommand": "brew update >/dev/null 2>&1; brew outdated --quiet 2>/dev/null | head -1 | grep -q . && echo UPDATE || echo OK",
-      "updateCommand": "brew update && brew upgrade"
+      "updateCommand": "echo 'Gated: bulk Homebrew upgrades are audit-only'"
     },
     {
       "id": "mise",
@@ -464,7 +475,7 @@
       "detect": { "type": "command", "command": "command -v npm >/dev/null 2>&1" },
       "versionCommand": "npm outdated -g --depth=0 2>/dev/null | tail -n +2 | wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'",
       "checkCommand": "npm outdated -g --depth=0 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || echo OK",
-      "updateCommand": "npm update -g"
+      "updateCommand": "echo 'Gated: bulk npm upgrades are audit-only'"
     },
     {
       "id": "global-pnpm",

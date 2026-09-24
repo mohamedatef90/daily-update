@@ -22,6 +22,15 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+RESOURCE_BUNDLE="$BUILD_DIR/${APP_NAME}_${APP_NAME}.bundle"
+if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+    echo "Missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2
+    exit 1
+fi
+cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/"
+chmod +x "$APP_BUNDLE/${APP_NAME}_${APP_NAME}.bundle/Contents/Resources/check-app-update.sh"
+
 cp "$ROOT/Sources/DailyUpdate/Resources/detectors.json" "$APP_BUNDLE/Contents/Resources/"
 mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
 cp "$ROOT/Sources/DailyUpdate/Resources/scripts/check-app-update.sh" "$APP_BUNDLE/Contents/Resources/scripts/"

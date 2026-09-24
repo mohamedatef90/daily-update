@@ -12,6 +12,11 @@ let package = Package(
             name: "DailyUpdate",
             path: "Sources/DailyUpdate",
             resources: [.process("Resources")]
+        ),
+        .testTarget(
+            name: "DailyUpdateTests",
+            dependencies: ["DailyUpdate"],
+            path: "Tests/DailyUpdateTests"
         )
     ]
 )

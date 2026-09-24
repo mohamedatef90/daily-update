@@ -27,8 +27,9 @@ avoid mixing UI work with shell or persistence logic.
 - `DailyUpdate.app/Contents/MacOS/DailyUpdate --check` runs an update check from
   the command line.
 
-There is currently no test target. Run `swift build` before submitting changes,
-and manually exercise the affected UI or CLI flow.
+Run `swift test` for unit and regression coverage, then run `swift build` before
+submitting changes. Manually exercise affected macOS-only UI or CLI integration
+flows that cannot be covered reliably by unit tests.
 
 ## Coding Style & Naming Conventions
 
