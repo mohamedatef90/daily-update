@@ -311,7 +311,7 @@ final class GatePolicyTests: XCTestCase {
 
         XCTAssertEqual(
             gated,
-            Set(["agent-skills", "brew", "claude-code", "corepack", "gem", "global-npm", "global-pnpm", "global-yarn", "hermes-agent", "impeccable", "node", "openclaw", "opencode", "pip-packages"])
+            Set(["agent-skills", "brew", "corepack", "gem", "global-npm", "global-pnpm", "global-yarn", "impeccable", "node", "pip-packages"])
         )
         XCTAssertTrue(blocked.isEmpty)
 
