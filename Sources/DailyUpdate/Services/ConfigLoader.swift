@@ -225,6 +225,7 @@ enum ConfigLoader {
             source: config.source ?? .bundled,
             detect: detect,
             versionCommand: expandVariables(config.versionCommand, home: home),
+            versionPattern: config.versionPattern,
             checkCommand: expandVariables(config.checkCommand, home: home),
             installCommand: resolvedInstall,
             updateCommand: expandedUpdate,

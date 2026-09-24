@@ -19,9 +19,9 @@ final class CoreServiceTests: XCTestCase {
 
         let result = await UpdateCheckService.check(config, installed: true)
 
-        XCTAssertEqual(result.0, .updateAvailable)
-        XCTAssertEqual(result.1, "1.0.0")
-        XCTAssertNil(result.2)
+        XCTAssertEqual(result.status, .updateAvailable)
+        XCTAssertEqual(result.currentVersion, "1.0.0")
+        XCTAssertNil(result.latestVersion)
     }
 
     func testManualCheckShowsGuidanceInsteadOfFailure() async {
@@ -41,9 +41,9 @@ final class CoreServiceTests: XCTestCase {
 
         let result = await UpdateCheckService.check(config, installed: true)
 
-        XCTAssertEqual(result.0, .unknown)
-        XCTAssertEqual(result.1, "1.0")
-        XCTAssertEqual(result.3, "Check the App Store")
+        XCTAssertEqual(result.status, .unknown)
+        XCTAssertEqual(result.currentVersion, "1.0")
+        XCTAssertEqual(result.message, "Check the App Store")
     }
 
     func testFailedCheckIsNotAnAvailableUpdate() {
@@ -90,8 +90,8 @@ final class CoreServiceTests: XCTestCase {
 
         let result = await UpdateCheckService.check(config, installed: true)
 
-        XCTAssertEqual(result.0, .checkFailed)
-        XCTAssertEqual(result.1, "1.0.0")
+        XCTAssertEqual(result.status, .checkFailed)
+        XCTAssertEqual(result.currentVersion, "1.0.0")
     }
 
     func testVersionCommandWithoutVersionTokenIsCheckFailed() async {
@@ -111,9 +111,9 @@ final class CoreServiceTests: XCTestCase {
 
         let result = await UpdateCheckService.check(config, installed: true)
 
-        XCTAssertEqual(result.0, .checkFailed)
-        XCTAssertEqual(result.1, "The operation couldn't be completed. Unable to locate a Java Runtime.")
-        XCTAssertEqual(result.3, "Version command returned no version token")
+        XCTAssertEqual(result.status, .checkFailed)
+        XCTAssertEqual(result.currentVersionRaw, "The operation couldn't be completed. Unable to locate a Java Runtime.")
+        XCTAssertEqual(result.message, "Version command returned no version token")
     }
 
     func testInAppUpdateHandoffIsNotRecordedAsFailure() {

@@ -83,12 +83,12 @@ enum UpdateExecutor {
         }
 
         let afterVersion = await DetectionService.getVersion(config)
-        let (checkStatus, _, refreshedLatest, _) = await UpdateCheckService.check(config, installed: true)
+        let check = await UpdateCheckService.check(config, installed: true)
         let latest = resolvedLatest(
             afterVersion: afterVersion,
-            checkLatest: refreshedLatest,
+            checkLatest: check.latestVersion,
             targetLatest: targetLatest,
-            checkStatus: checkStatus
+            checkStatus: check.status
         )
 
         if UpdateCommandSemantics.usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
@@ -102,7 +102,7 @@ enum UpdateExecutor {
 
         if versionChanged(from: beforeVersion, to: afterVersion) {
             let latestLabel = latest ?? "latest"
-            return .stillBehind(
+            return .failedVerification(
                 current: afterVersion,
                 latest: latest,
                 reason: "Updated to \(afterVersion ?? "unknown") but latest is \(latestLabel)"
@@ -114,13 +114,13 @@ enum UpdateExecutor {
         }
 
         if UpdateCommandSemantics.hasInAppFallback(command),
-           checkStatus == .updateAvailable || checkStatus == .updatePending {
+           check.status == .updateAvailable || check.status == .updatePending {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
         let latestLabel = latest ?? "unknown"
         let currentLabel = afterVersion ?? beforeVersion ?? "unknown"
-        return .stillBehind(
+        return .failedVerification(
             current: afterVersion ?? beforeVersion,
             latest: latest,
             reason: "Version still \(currentLabel) — latest is \(latestLabel). The update command may need to run outside Daily Update."
@@ -136,6 +136,7 @@ enum UpdateExecutor {
             source: item.source,
             detect: nil,
             versionCommand: item.versionCommand,
+            versionPattern: item.versionPattern,
             checkCommand: item.checkCommand,
             installCommand: item.installCommand,
             updateCommand: item.updateCommand,

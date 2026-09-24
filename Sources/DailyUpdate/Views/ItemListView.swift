@@ -180,7 +180,9 @@ private struct VersionCell: View {
     var body: some View {
         Text(item.displayVersion)
             .font(.system(.body, design: .monospaced))
-            .foregroundStyle(item.status == .updateAvailable ? Color.primary : Color.secondary)
+            .foregroundStyle(
+                item.status == .updateAvailable || item.status == .gated ? Color.primary : Color.secondary
+            )
     }
 }
 
@@ -229,7 +231,7 @@ struct StatusBadge: View {
 
     private func shouldShowMessage(for status: ItemStatus) -> Bool {
         switch status {
-        case .unknown, .checkFailed, .error, .notInstalled, .updatePending, .updateAvailable:
+        case .unknown, .checkFailed, .error, .notInstalled, .updatePending, .updateAvailable, .gated, .blocked, .failedVerification:
             return message != nil
         default:
             return false
@@ -241,6 +243,9 @@ struct StatusBadge: View {
         case .unknown, .checking: return .gray
         case .upToDate, .updated: return .green
         case .updateAvailable: return .orange
+        case .gated: return .orange
+        case .blocked: return .red
+        case .failedVerification: return .red
         case .updatePending: return .yellow
         case .notInstalled: return .secondary
         case .checkFailed: return .red

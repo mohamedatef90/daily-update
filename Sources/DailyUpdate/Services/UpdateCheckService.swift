@@ -1,21 +1,74 @@
 import Foundation
 
+struct CheckResult {
+    var status: ItemStatus
+    var currentVersion: String?
+    var currentVersionRaw: String?
+    var latestVersion: String?
+    var message: String?
+    var gateReasons: [GateReason]
+    var blockReason: BlockReason?
+}
+
 enum UpdateCheckService {
-    /// Returns (status, currentVersion, latestVersion, message)
-    static func check(_ config: DetectorConfig, installed: Bool) async -> (ItemStatus, String?, String?, String?) {
+    static func check(_ config: DetectorConfig, installed: Bool) async -> CheckResult {
         guard installed else {
-            return (.notInstalled, nil, nil, "Not installed")
+            return CheckResult(
+                status: .notInstalled,
+                currentVersion: nil,
+                currentVersionRaw: nil,
+                latestVersion: nil,
+                message: "Not installed",
+                gateReasons: [],
+                blockReason: nil
+            )
+        }
+
+        if let versionPattern = config.versionPattern {
+            do {
+                try VersionTokenExtractor.validate(pattern: versionPattern)
+            } catch {
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: nil,
+                    currentVersionRaw: nil,
+                    latestVersion: nil,
+                    message: "Invalid version pattern for \(config.id)",
+                    gateReasons: [],
+                    blockReason: nil
+                )
+            }
         }
 
         let cwd = config.workingDirectory?.expandingTilde
         let currentRaw = await DetectionService.getVersion(config)
-        let current = currentRaw.flatMap(VersionTokenExtractor.extract)
+        let current = currentRaw.flatMap { VersionTokenExtractor.extract(from: $0, pattern: config.versionPattern) }
 
         if current == nil, config.versionCommand != nil {
-            return (.checkFailed, currentRaw, nil, "Version command returned no version token")
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: nil,
+                currentVersionRaw: currentRaw,
+                latestVersion: nil,
+                message: "Version command returned no version token",
+                gateReasons: [],
+                blockReason: nil
+            )
         }
 
         if let checkCommand = config.checkCommand {
+            if shouldBlockCheckCommand(checkCommand: checkCommand, updateCommand: config.updateCommand) {
+                return CheckResult(
+                    status: .blocked,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: nil,
+                    message: "Blocked unsafe check command",
+                    gateReasons: [],
+                    blockReason: .unsafeCheckCommand
+                )
+            }
+
             let result = await ShellRunner.run(checkCommand, workingDirectory: cwd)
             let output = result.stdout
             let combined = [result.stdout, result.stderr]
@@ -25,88 +78,189 @@ enum UpdateCheckService {
 
             if !result.succeeded {
                 let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
-                return (.checkFailed, current, nil, detail ?? "Check command failed")
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: nil,
+                    message: detail ?? "Check command failed",
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
             if lower.hasPrefix("manual:") {
                 let message = output
                     .dropFirst("manual:".count)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                return (.unknown, current, nil, message.nilIfEmpty ?? "Check manually")
+                return CheckResult(
+                    status: .unknown,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: nil,
+                    message: message.nilIfEmpty ?? "Check manually",
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
             if let explicitCheckFailure = checkFailureMarker(in: output) {
-                return (.checkFailed, current, nil, explicitCheckFailure)
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: nil,
+                    message: explicitCheckFailure,
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
+            let parsedCurrent = parseCurrent(from: output, pattern: config.versionPattern) ?? current
+            let parsedLatest = parseLatest(from: output, pattern: config.versionPattern)
+
             if combined.lowercased().contains("broken") {
-                let latest = parseLatest(from: combined)
-                return (.checkFailed, current, latest, "Install appears broken")
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: parsedCurrent,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: parsedLatest,
+                    message: "Install appears broken",
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
-                let latest = parseLatest(from: output)
                 return reconcileUpdateSignal(
-                    current: current,
-                    latest: latest,
+                    config: config,
+                    current: parsedCurrent,
+                    currentRaw: currentRaw,
+                    latest: parsedLatest,
                     rawIndicatesUpdate: true
                 )
             }
 
             if output.contains("OK") || lower.contains("up to date") || lower.contains("uptodate") {
-                let latest = parseLatest(from: output) ?? current
-                return (.upToDate, current, latest ?? current, nil)
+                let latest = parsedLatest ?? parsedCurrent
+                return CheckResult(
+                    status: .upToDate,
+                    currentVersion: parsedCurrent,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest ?? parsedCurrent,
+                    message: nil,
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
-            if let parsed = parseLatest(from: output), !parsed.isEmpty {
+            if let parsedLatest, !parsedLatest.isEmpty {
                 return reconcileUpdateSignal(
-                    current: current,
-                    latest: parsed,
+                    config: config,
+                    current: parsedCurrent,
+                    currentRaw: currentRaw,
+                    latest: parsedLatest,
                     rawIndicatesUpdate: true
                 )
             }
 
             if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return (.checkFailed, current, nil, "Check returned no status")
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: parsedCurrent,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: nil,
+                    message: "Check returned no status",
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
 
-            return (.checkFailed, current, nil, "Unrecognized check output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: parsedCurrent,
+                currentVersionRaw: currentRaw,
+                latestVersion: parsedLatest,
+                message: "Unrecognized check output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))",
+                gateReasons: [],
+                blockReason: nil
+            )
         }
 
         if let current {
-            return (.upToDate, current, current, nil)
+            return CheckResult(
+                status: .upToDate,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: current,
+                message: nil,
+                gateReasons: [],
+                blockReason: nil
+            )
         }
-        return (.unknown, nil, nil, "No check configured")
+        return CheckResult(
+            status: .unknown,
+            currentVersion: nil,
+            currentVersionRaw: currentRaw,
+            latestVersion: nil,
+            message: "No check configured",
+            gateReasons: [],
+            blockReason: nil
+        )
     }
 
-    /// When both versions are known, trust numeric comparison over raw script output.
     private static func reconcileUpdateSignal(
+        config: DetectorConfig,
         current: String?,
+        currentRaw: String?,
         latest: String?,
         rawIndicatesUpdate: Bool
-    ) -> (ItemStatus, String?, String?, String?) {
+    ) -> CheckResult {
         guard rawIndicatesUpdate else {
-            return (.upToDate, current, latest ?? current, nil)
+            return CheckResult(
+                status: .upToDate,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: latest ?? current,
+                message: nil,
+                gateReasons: [],
+                blockReason: nil
+            )
         }
 
         if let current, let latest, isConcreteVersion(latest) {
             switch VersionComparator.compare(current: current, latest: latest) {
             case .same, .newer:
-                return (.upToDate, current, latest, nil)
+                return CheckResult(
+                    status: .upToDate,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: nil,
+                    gateReasons: [],
+                    blockReason: nil
+                )
             case .older:
-                return (.updateAvailable, current, latest, nil)
+                return gatedOrUpdatableResult(config: config, current: current, currentRaw: currentRaw, latest: latest)
             case .incomparable:
-                return (.checkFailed, current, latest, "Could not compare \(current) with \(latest)")
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: "Could not compare \(current) with \(latest)",
+                    gateReasons: [],
+                    blockReason: nil
+                )
             }
         }
 
-        // A detector explicitly reporting UPDATE is authoritative even when its
-        // upstream source does not expose a concrete version number.
-        return (
-            .updateAvailable,
-            current,
-            latest,
-            latest == nil ? "Update available (latest version not reported)" : nil
+        return gatedOrUpdatableResult(
+            config: config,
+            current: current,
+            currentRaw: currentRaw,
+            latest: latest,
+            fallbackMessage: latest == nil ? "Update available (latest version not reported)" : nil
         )
     }
 
@@ -114,7 +268,7 @@ enum UpdateCheckService {
         VersionTokenExtractor.extract(from: value) != nil
     }
 
-    private static func parseLatest(from output: String) -> String? {
+    private static func parseLatest(from output: String, pattern: String?) -> String? {
         let lines = output.components(separatedBy: .newlines)
         for line in lines {
             let lower = line.lowercased()
@@ -123,11 +277,25 @@ enum UpdateCheckService {
                     .replacingOccurrences(of: "latest:", with: "", options: .caseInsensitive)
                     .replacingOccurrences(of: "remote:", with: "", options: .caseInsensitive)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                if let token = VersionTokenExtractor.extract(from: parsed) {
+                if let token = VersionTokenExtractor.extract(from: parsed, pattern: pattern) {
                     return token
                 }
                 return parsed.nilIfEmpty
             }
+        }
+        return nil
+    }
+
+    private static func parseCurrent(from output: String, pattern: String?) -> String? {
+        for line in output.components(separatedBy: .newlines) {
+            guard line.lowercased().contains("current:") else { continue }
+            let value = line
+                .replacingOccurrences(of: "current:", with: "", options: .caseInsensitive)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let token = VersionTokenExtractor.extract(from: value, pattern: pattern) {
+                return token
+            }
+            return value.nilIfEmpty
         }
         return nil
     }
@@ -142,6 +310,64 @@ enum UpdateCheckService {
             return message.nilIfEmpty ?? "Check failed"
         }
         return nil
+    }
+
+    private static func shouldBlockCheckCommand(checkCommand: String, updateCommand: String) -> Bool {
+        let risks = CommandShapeClassifier.classify(checkCommand).risks
+        if risks.contains(.bulk) || risks.contains(.remoteScript) || risks.contains(.privileged) || risks.contains(.destructive) {
+            return true
+        }
+        return ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
+            checkCommand: checkCommand,
+            updateCommand: updateCommand
+        )
+    }
+
+    private static func gatedOrUpdatableResult(
+        config: DetectorConfig,
+        current: String?,
+        currentRaw: String?,
+        latest: String?,
+        fallbackMessage: String? = nil
+    ) -> CheckResult {
+        var gateReasons = commandGateReasons(for: config)
+        if config.needsReview == true, !gateReasons.contains(.needsReview) {
+            gateReasons.append(.needsReview)
+        }
+
+        if !gateReasons.isEmpty {
+            let labels = gateReasons.map(\.label).joined(separator: ", ")
+            return CheckResult(
+                status: .gated,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: latest,
+                message: "Gated: \(labels)",
+                gateReasons: gateReasons,
+                blockReason: nil
+            )
+        }
+
+        return CheckResult(
+            status: .updateAvailable,
+            currentVersion: current,
+            currentVersionRaw: currentRaw,
+            latestVersion: latest,
+            message: fallbackMessage,
+            gateReasons: [],
+            blockReason: nil
+        )
+    }
+
+    private static func commandGateReasons(for config: DetectorConfig) -> [GateReason] {
+        let classification = CommandShapeClassifier.classify(config.updateCommand)
+        var reasons: [GateReason] = []
+        if classification.risks.contains(.bulk) { reasons.append(.bulk) }
+        if classification.risks.contains(.remoteScript) { reasons.append(.remoteScript) }
+        if classification.risks.contains(.privileged) { reasons.append(.privileged) }
+        if classification.risks.contains(.destructive) { reasons.append(.destructive) }
+        if classification.needsReview { reasons.append(.needsReview) }
+        return reasons
     }
 }
 

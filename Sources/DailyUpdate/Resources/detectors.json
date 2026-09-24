@@ -377,6 +377,7 @@
         "command": "command -v java >/dev/null 2>&1"
       },
       "versionCommand": "java -version 2>&1 | head -1",
+      "versionPattern": "version \\\"([^\\\"]+)\\\"",
       "checkCommand": "(brew outdated openjdk 2>/dev/null | grep -q openjdk && echo UPDATE) || (brew outdated java 2>/dev/null | grep -q java && echo UPDATE) || echo OK",
       "updateCommand": "brew upgrade openjdk"
     },
@@ -520,6 +521,7 @@
         "command": "command -v brew >/dev/null 2>&1"
       },
       "versionCommand": "brew --version 2>/dev/null | head -1",
+      "versionPattern": "Homebrew (\\d+\\.\\d+\\.\\d+)",
       "checkCommand": "brew outdated --quiet 2>/dev/null | head -1 | grep -q . && echo UPDATE || echo OK",
       "updateCommand": "brew update && brew upgrade"
     },

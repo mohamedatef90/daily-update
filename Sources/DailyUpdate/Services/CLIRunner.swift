@@ -456,7 +456,9 @@ enum CLIRunner {
         _ state: any CLIRunnerState,
         output: (String) -> Void = { print($0) }
     ) {
-        let updateCount = state.items.filter { $0.status == .updateAvailable || $0.status == .updatePending }.count
+        let updateCount = state.items.filter {
+            $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending
+        }.count
         output("Daily Update — \(updateCount) update(s) available\n")
         for item in state.items {
             let status = item.status.label
@@ -476,8 +478,11 @@ enum CLIRunner {
                 "name": item.name,
                 "category": item.category.rawValue,
                 "status": item.status.rawValue,
+                "currentVersionRaw": item.currentVersionRaw ?? "",
                 "currentVersion": item.currentVersion ?? "",
-                "latestVersion": item.latestVersion ?? ""
+                "latestVersion": item.latestVersion ?? "",
+                "gateReasons": item.gateReasons.map(\.rawValue),
+                "blockReason": item.blockReason?.rawValue ?? ""
             ]
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),

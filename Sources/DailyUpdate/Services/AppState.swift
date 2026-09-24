@@ -163,7 +163,11 @@ final class AppState: ObservableObject {
     var filteredItems: [UpdateItem] {
         var result = activeItems
         if let selectedCategory { result = result.filter { $0.category == selectedCategory } }
-        if showUpdatesOnly { result = result.filter { $0.status == .updateAvailable || $0.status == .updatePending } }
+        if showUpdatesOnly {
+            result = result.filter {
+                $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending
+            }
+        }
         if !searchText.isEmpty {
             let q = searchText.lowercased()
             result = result.filter {
@@ -194,7 +198,7 @@ final class AppState: ObservableObject {
     }
 
     var updateAvailableCount: Int {
-        activeItems.filter { $0.status == .updateAvailable || $0.status == .updatePending }.count
+        activeItems.filter { $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending }.count
     }
 
     var selectedActionableItems: [UpdateItem] {
@@ -535,15 +539,22 @@ final class AppState: ObservableObject {
                         item.statusMessage = detectMsg
                         return (index, item)
                     }
-                    let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
-                    item.status = status
-                    item.currentVersion = current
-                    item.latestVersion = latest
-                    item.statusMessage = message
+                    let check = await UpdateCheckService.check(config, installed: installed)
+                    item.status = check.status
+                    item.currentVersionRaw = check.currentVersionRaw
+                    item.currentVersion = check.currentVersion
+                    item.latestVersion = check.latestVersion
+                    item.statusMessage = check.message
+                    item.gateReasons = check.gateReasons
+                    item.blockReason = check.blockReason
                     if item.isPinnedMismatch {
+                        item.status = .gated
+                        if !item.gateReasons.contains(.pinned) {
+                            item.gateReasons.append(.pinned)
+                        }
                         item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
                     }
-                    item.isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
+                    item.isSelected = item.status == .updateAvailable && !item.isSnoozed
                     return (index, item)
                 }
             }
@@ -672,6 +683,8 @@ final class AppState: ObservableObject {
                 stashRepos: stashReposBeforeUpdate
             )
             items[index].status = result.status
+            items[index].gateReasons = []
+            items[index].blockReason = nil
             if result.status == .updated {
                 items[index].isInstalled = true
             }
@@ -705,9 +718,9 @@ final class AppState: ObservableObject {
             case .updatePending:
                 successCount += 1
                 appendLog("↪ \(target.name): \(result.message ?? "Finish update in app")")
-            case .updateAvailable:
+            case .failedVerification:
                 failCount += 1
-                appendLog("↪ \(target.name): \(result.message ?? "Still behind latest")")
+                appendLog("↪ \(target.name): \(result.message ?? "Verification failed after update")")
             default:
                 failCount += 1
                 appendLog("✗ \(target.name): \(result.message ?? "failed")")
@@ -788,17 +801,26 @@ final class AppState: ObservableObject {
                 continue
             }
 
-            let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
+            let check = await UpdateCheckService.check(config, installed: installed)
             let reconciled = reconcileAfterUpdate(
                 wasSuccessfulUpdate: successfulIDs.contains(items[index].id),
-                checkStatus: status,
-                current: current,
-                latest: latest
+                checkStatus: check.status,
+                current: check.currentVersion,
+                latest: check.latestVersion
             )
             items[index].status = reconciled
-            items[index].currentVersion = current
-            items[index].latestVersion = latest
-            if let message {
+            items[index].currentVersion = check.currentVersion
+            items[index].currentVersionRaw = check.currentVersionRaw
+            items[index].latestVersion = check.latestVersion
+            items[index].gateReasons = check.gateReasons
+            items[index].blockReason = check.blockReason
+            if items[index].isPinnedMismatch {
+                items[index].status = .gated
+                if !items[index].gateReasons.contains(.pinned) {
+                    items[index].gateReasons.append(.pinned)
+                }
+                items[index].statusMessage = "Pinned to \(items[index].pinnedVersion ?? "")"
+            } else if let message = check.message {
                 items[index].statusMessage = message
             } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
@@ -825,7 +847,7 @@ final class AppState: ObservableObject {
            VersionComparator.isAtLeast(current: current, latest: latest) {
             return .upToDate
         }
-        if checkStatus == .updateAvailable,
+        if checkStatus == .updateAvailable || checkStatus == .gated,
            let current,
            let latest,
            VersionComparator.isAtLeast(current: current, latest: latest) {
@@ -866,7 +888,7 @@ final class AppState: ObservableObject {
                 !items[index].isSnoozed &&
                 !items[index].permanentlyIgnored &&
                 !items[index].isBulkOperation &&
-                (items[index].status == .updateAvailable || items[index].status == .updatePending)
+                items[index].status == .updateAvailable
         }
         await requestUpdateSelected()
     }

@@ -1,16 +1,20 @@
 import Foundation
 
 enum VersionTokenExtractor {
-    private static let semverPattern =
-        #"(?<![0-9A-Za-z])v?(\d+(?:\.\d+)+(?:[-_][0-9A-Za-z.-]+)?)"#
+    static let defaultPattern =
+        #"(?<![0-9.])v?(\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]*[0-9A-Za-z]|[a-z]+[0-9]*|_\d+)?)"#
     private static let shaPattern = #"(?i)(?<![0-9a-f])([0-9a-f]{7,40})(?![0-9a-f])"#
 
-    static func extract(from output: String) -> String? {
+    static func extract(from output: String, pattern: String? = nil) -> String? {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
 
-        if let semantic = firstMatch(pattern: semverPattern, in: firstLine) {
+        if let pattern, let custom = firstMatch(pattern: pattern, in: firstLine) {
+            return custom
+        }
+
+        if let semantic = firstMatch(pattern: defaultPattern, in: firstLine) {
             return semantic
         }
 
@@ -19,6 +23,13 @@ enum VersionTokenExtractor {
         }
 
         return nil
+    }
+
+    static func validate(pattern: String) throws {
+        let regex = try NSRegularExpression(pattern: pattern)
+        guard regex.numberOfCaptureGroups == 1 else {
+            throw PatternValidationError.singleCaptureGroupRequired
+        }
     }
 
     private static func firstMatch(pattern: String, in value: String) -> String? {
@@ -30,5 +41,13 @@ enum VersionTokenExtractor {
             return nil
         }
         return String(value[tokenRange])
+    }
+
+    enum PatternValidationError: LocalizedError {
+        case singleCaptureGroupRequired
+
+        var errorDescription: String? {
+            "Version pattern must include exactly one capture group."
+        }
     }
 }
