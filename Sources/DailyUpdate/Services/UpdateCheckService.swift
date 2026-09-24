@@ -19,6 +19,11 @@ enum UpdateCheckService {
             let lower = output.lowercased()
             let combinedLower = combined.lowercased()
 
+            if !result.succeeded {
+                let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
+                return (.checkFailed, current, nil, detail ?? "Check command failed")
+            }
+
             if lower.hasPrefix("manual:") {
                 let message = output
                     .dropFirst("manual:".count)
@@ -26,9 +31,14 @@ enum UpdateCheckService {
                 return (.unknown, current, nil, message.nilIfEmpty ?? "Check manually")
             }
 
+            if combinedLower.contains("check_failed") || combinedLower.contains("check failed") {
+                let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
+                return (.checkFailed, current, nil, detail ?? "Check failed")
+            }
+
             if combinedLower.contains("broken") {
                 let latest = parseLatest(from: combined)
-                return (.error, current, latest, "Install broken — select Update to reinstall")
+                return (.checkFailed, current, latest, "Install appears broken")
             }
 
             if output.contains("UPDATE") || lower.contains("outdated") || lower.contains("behind") {
@@ -45,10 +55,6 @@ enum UpdateCheckService {
                 return (.upToDate, current, latest ?? current, nil)
             }
 
-            if result.succeeded, !output.isEmpty {
-                return (.upToDate, current ?? output, current ?? output, nil)
-            }
-
             if let parsed = parseLatest(from: output), !parsed.isEmpty {
                 return reconcileUpdateSignal(
                     current: current,
@@ -57,12 +63,11 @@ enum UpdateCheckService {
                 )
             }
 
-            let detail = result.stderr.nilIfEmpty ?? result.stdout.nilIfEmpty
-            if let detail, detail.lowercased().contains("parse error") {
-                return (.error, current, nil, "Check script misconfigured — rebuild the app")
+            if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return (.checkFailed, current, nil, "Check returned no status")
             }
 
-            return (.error, current, nil, detail ?? "Check failed")
+            return (.checkFailed, current, nil, "Unrecognized check output: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
         }
 
         if let current {

@@ -35,4 +35,23 @@ enum UpdateCommandSemantics {
         }
         return false
     }
+
+    static func hasFallbackChain(_ command: String) -> Bool {
+        command.contains("||")
+    }
+
+    static func sanitizingActionCommand(_ command: String) -> String {
+        let withoutFallback = primarySegment(command)
+        let withoutSuppressedStderr = removeStderrSuppression(from: withoutFallback)
+        return withoutSuppressedStderr
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func removeStderrSuppression(from command: String) -> String {
+        command
+            .replacingOccurrences(of: "2>/dev/null", with: "")
+            .replacingOccurrences(of: "2> /dev/null", with: "")
+            .replacingOccurrences(of: "2>/dev/null ", with: "")
+            .replacingOccurrences(of: "  ", with: " ")
+    }
 }

@@ -54,7 +54,7 @@ final class CoreServiceTests: XCTestCase {
             description: nil,
             currentVersion: nil,
             latestVersion: nil,
-            status: .error,
+            status: .checkFailed,
             statusMessage: "Check failed",
             isInstalled: true,
             isSelected: false,
@@ -71,6 +71,27 @@ final class CoreServiceTests: XCTestCase {
 
         XCTAssertFalse(item.canUpdate)
         XCTAssertFalse(item.isActionable)
+    }
+
+    func testCheckFailureProducesCheckFailedStatus() async {
+        let config = DetectorConfig(
+            id: "failing-check",
+            name: "Failing Check",
+            category: .cli,
+            description: nil,
+            source: .user,
+            detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+            versionCommand: "echo 1.0.0",
+            checkCommand: "echo CHECK_FAILED: boom >&2; exit 1",
+            installCommand: "true",
+            updateCommand: "true",
+            workingDirectory: nil
+        )
+
+        let result = await UpdateCheckService.check(config, installed: true)
+
+        XCTAssertEqual(result.0, .checkFailed)
+        XCTAssertEqual(result.1, "1.0.0")
     }
 
     func testInAppUpdateHandoffIsNotRecordedAsFailure() {
@@ -150,14 +171,96 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertTrue(item.needsAdministratorPermission)
     }
 
-    func testAdministratorCommandUsesNativeAuthorizationPrompt() {
-        let source = AdminCommandRunner.appleScriptSource(
-            for: "npm install -g corepack@latest",
+    func testFallbackChainsAreRemovedFromActionCommands() {
+        var settings = UserSettings.defaults
+        settings.customItems = [
+            DetectorConfig(
+                id: "fallback-test",
+                name: "Fallback Test",
+                category: .cli,
+                description: nil,
+                source: .user,
+                detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0",
+                checkCommand: "echo OK",
+                installCommand: nil,
+                updateCommand: "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'",
+                workingDirectory: nil
+            )
+        ]
+
+        let configs = ConfigLoader.loadConfigs(settings: settings)
+        let config = try? XCTUnwrap(configs.first(where: { $0.id == "fallback-test" }))
+
+        XCTAssertNotNil(config)
+        XCTAssertEqual(config?.updateCommand, "npm update -g test-tool")
+        XCTAssertFalse(UpdateCommandSemantics.hasFallbackChain(config?.updateCommand ?? ""))
+        XCTAssertFalse((config?.updateCommand ?? "").contains("2>/dev/null"))
+    }
+
+    func testBulkItemsAreNotAutoSelectedForUpdateAll() {
+        let bulk = UpdateItem(
+            id: "brew",
+            name: "Homebrew",
+            category: .runtime,
+            description: nil,
+            currentVersion: "1.0",
+            latestVersion: "1.1",
+            status: .updateAvailable,
+            statusMessage: nil,
+            isInstalled: true,
+            isSelected: false,
+            isUserDefined: false,
+            source: .bundled,
+            iconPath: nil,
+            detectCommand: nil,
+            versionCommand: nil,
+            checkCommand: nil,
+            installCommand: "",
+            updateCommand: "brew upgrade",
+            workingDirectory: nil
+        )
+        let singleItem = UpdateItem(
+            id: "npm",
+            name: "npm",
+            category: .runtime,
+            description: nil,
+            currentVersion: "10.0.0",
+            latestVersion: "10.1.0",
+            status: .updateAvailable,
+            statusMessage: nil,
+            isInstalled: true,
+            isSelected: false,
+            isUserDefined: false,
+            source: .bundled,
+            iconPath: nil,
+            detectCommand: nil,
+            versionCommand: nil,
+            checkCommand: nil,
+            installCommand: "",
+            updateCommand: "npm install -g npm@latest",
             workingDirectory: nil
         )
 
-        XCTAssertTrue(source.contains("with administrator privileges"))
-        XCTAssertTrue(source.contains("/bin/zsh -lc"))
+        XCTAssertFalse(BulkUpdatePolicy.shouldAutoSelectForUpdate(bulk))
+        XCTAssertTrue(BulkUpdatePolicy.shouldAutoSelectForUpdate(singleItem))
+    }
+
+    func testSparkleDirectInstallIsDisabled() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let appPath = temporaryRoot.appendingPathComponent("FakeApp.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: appPath, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let scriptPath = ConfigLoader.updateAppScriptPath
+        XCTAssertFalse(scriptPath.isEmpty)
+
+        let command = "DAILY_UPDATE_TEST_MODE=1 \(ShellEscaping.quote(scriptPath)) sparkle-feed https://example.com/feed.xml \(ShellEscaping.quote(appPath.path))"
+        let result = await ShellRunner.run(command)
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertTrue(result.stdout.contains("Sparkle direct install is disabled"))
     }
 
     func testDiscoveredObsidianUsesItsManagedPackageVersion() {

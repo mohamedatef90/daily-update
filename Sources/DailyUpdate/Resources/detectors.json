@@ -373,7 +373,7 @@
       "description": "macOS package manager",
       "detect": { "type": "command", "command": "command -v brew >/dev/null 2>&1" },
       "versionCommand": "brew --version 2>/dev/null | head -1",
-      "checkCommand": "brew update >/dev/null 2>&1; brew outdated --quiet 2>/dev/null | head -1 | grep -q . && echo UPDATE || echo OK",
+      "checkCommand": "brew outdated --quiet 2>/dev/null | head -1 | grep -q . && echo UPDATE || echo OK",
       "updateCommand": "brew update && brew upgrade"
     },
     {

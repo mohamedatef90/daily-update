@@ -182,6 +182,14 @@ enum ConfigLoader {
             detect = rule
         }
 
+        let expandedUpdate = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+        let sanitizedUpdate = UpdateCommandSemantics.sanitizingActionCommand(expandedUpdate)
+        let sanitizedInstall = resolvedInstallCommand(
+            config,
+            home: home,
+            expandedUpdateCommand: sanitizedUpdate
+        )
+
         return DetectorConfig(
             id: config.id,
             name: config.name,
@@ -191,16 +199,21 @@ enum ConfigLoader {
             detect: detect,
             versionCommand: expandVariables(config.versionCommand, home: home),
             checkCommand: expandVariables(config.checkCommand, home: home),
-            installCommand: resolvedInstallCommand(config, home: home),
-            updateCommand: expandVariables(config.updateCommand, home: home) ?? config.updateCommand,
+            installCommand: sanitizedInstall,
+            updateCommand: sanitizedUpdate,
             workingDirectory: expandVariables(config.workingDirectory, home: home)
         )
     }
 
-    private static func resolvedInstallCommand(_ config: DetectorConfig, home: String) -> String {
-        let update = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+    private static func resolvedInstallCommand(
+        _ config: DetectorConfig,
+        home: String,
+        expandedUpdateCommand: String
+    ) -> String {
+        let update = expandedUpdateCommand
         let install = expandVariables(config.installCommand, home: home)
-        return InstallCommandResolver.resolve(id: config.id, installCommand: install, updateCommand: update)
+        let resolved = InstallCommandResolver.resolve(id: config.id, installCommand: install, updateCommand: update)
+        return UpdateCommandSemantics.sanitizingActionCommand(resolved)
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {

@@ -81,7 +81,7 @@ final class StatusBarController {
         menu.addItem(makeItem("Update All Available") { [weak appState] in
             Task {
                 appState?.selectAllUpdates()
-                await appState?.updateSelected(skipDryRun: true)
+                await appState?.requestUpdateSelected()
             }
         })
 

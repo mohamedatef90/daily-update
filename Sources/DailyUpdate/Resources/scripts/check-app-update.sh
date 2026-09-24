@@ -25,6 +25,11 @@ find_app() {
   return 1
 }
 
+emit_check_failed() {
+  local message="$1"
+  echo "CHECK_FAILED: $message"
+}
+
 compare_versions() {
   local current="$1"
   local latest="$2"
@@ -81,7 +86,7 @@ report_update_if_behind() {
 
 cmd_auto() {
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
 
   local feed bundle_id name current latest
   feed="$(plist_value "$app" SUFeedURL)"
@@ -92,6 +97,8 @@ cmd_auto() {
       report_update_if_behind "$current" "$latest"
       return 0
     fi
+    emit_check_failed "Sparkle feed did not return a version"
+    return 1
   fi
 
   bundle_id="$(plist_value "$app" CFBundleIdentifier)"
@@ -127,14 +134,15 @@ cmd_auto() {
     return 0
   fi
 
-  echo OK
+  emit_check_failed "No update source available for app"
+  return 1
 }
 
 cmd_smart() {
   local cask="$1"
   shift
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
 
   local current latest feed
   current="$(get_app_version "$app")"
@@ -159,6 +167,8 @@ cmd_smart() {
       report_update_if_behind "$current" "$latest"
       return 0
     fi
+    emit_check_failed "Sparkle feed did not return a version"
+    return 1
   fi
 
   if brew_cask_exists "$cask"; then
@@ -167,17 +177,19 @@ cmd_smart() {
     return 0
   fi
 
-  echo OK
+  emit_check_failed "No update source available for app"
+  return 1
 }
 
 cmd_brew_cask() {
   local cask="$1"
   shift
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
   local current latest
   current="$(get_app_version "$app")"
   latest="$(brew_cask_latest "$cask")"
+  [[ -n "$latest" ]] || { emit_check_failed "Could not determine Homebrew cask version"; return 1; }
   report_update_if_behind "$current" "$latest"
 }
 
@@ -185,25 +197,25 @@ cmd_sparkle_feed() {
   local feed="$1"
   shift
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
   local current latest
   current="$(get_app_version "$app")"
   latest="$(fetch_sparkle_latest "$feed")"
   if [[ -z "$latest" ]]; then
-    echo OK
-    return 0
+    emit_check_failed "Sparkle feed did not return a version"
+    return 1
   fi
   report_update_if_behind "$current" "$latest"
 }
 
 cmd_sparkle_plist() {
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
   local feed
   feed="$(plist_value "$app" SUFeedURL)"
   if [[ -z "$feed" ]]; then
-    echo OK
-    return 0
+    emit_check_failed "No Sparkle feed URL in app plist"
+    return 1
   fi
   cmd_sparkle_feed "$feed" "$app"
 }
@@ -213,7 +225,7 @@ cmd_brew_or_sparkle() {
   local feed="$2"
   shift 2
   local app
-  app="$(find_app "$@")" || { echo OK; return 0; }
+  app="$(find_app "$@")" || { emit_check_failed "App not found"; return 1; }
 
   local current latest
   current="$(get_app_version "$app")"
@@ -234,7 +246,8 @@ cmd_brew_or_sparkle() {
     return 0
   fi
 
-  cmd_brew_cask "$cask" "$app"
+  emit_check_failed "Sparkle feed did not return a version"
+  return 1
 }
 
 usage() {

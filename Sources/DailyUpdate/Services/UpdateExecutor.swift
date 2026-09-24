@@ -6,18 +6,10 @@ enum UpdateExecutor {
     static func update(
         _ item: UpdateItem,
         installing: Bool = false,
-        stashRepos: Bool = true,
-        withAdministratorPrivileges: Bool = false
+        stashRepos: Bool = true
     ) async -> UpdateResult {
-        let runner: CommandRunner
-        if withAdministratorPrivileges {
-            runner = { command, directory, timeout in
-                await AdminCommandRunner.run(command, workingDirectory: directory, timeout: timeout)
-            }
-        } else {
-            runner = { command, directory, timeout in
-                await ShellRunner.run(command, workingDirectory: directory, timeout: timeout)
-            }
+        let runner: CommandRunner = { command, directory, timeout in
+            await ShellRunner.run(command, workingDirectory: directory, timeout: timeout)
         }
         if installing || !item.isInstalled {
             return await performInstall(item, using: runner)

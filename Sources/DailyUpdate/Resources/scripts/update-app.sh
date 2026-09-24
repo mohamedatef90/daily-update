@@ -39,8 +39,10 @@ upgrade_or_install_cask() {
 
 handoff_to_app_updater() {
   local app="$1"
-  open "$app"
-  echo "IN_APP_UPDATE: Opened ${app:t}. Its built-in updater will download and apply the update."
+  if [[ "${DAILY_UPDATE_TEST_MODE:-0}" != "1" ]]; then
+    open "$app"
+  fi
+  echo "IN_APP_UPDATE: Sparkle direct install is disabled. Opened ${app:t} so its built-in updater can apply the update safely."
 }
 
 fetch_latest_sparkle_url() {
@@ -115,17 +117,9 @@ install_downloaded_app() {
 download_and_install_sparkle() {
   local feed="$1"
   local target_app="$2"
-  local url tmp archive
-
-  url="$(fetch_latest_sparkle_url "$feed")"
-  [[ -n "$url" ]] || { echo "Could not resolve Sparkle download URL" >&2; return 1; }
-
-  tmp="$(mktemp -d)"
-  archive="$tmp/${url:t}"
-  echo "Downloading ${url:t}..."
-  curl -fL --progress-bar -o "$archive" "$url"
-  install_downloaded_app "$archive" "$target_app"
-  rm -rf "$tmp"
+  [[ -n "$feed" && -n "$target_app" ]] || true
+  echo "Sparkle direct install is disabled until signature verification is implemented." >&2
+  return 1
 }
 
 cmd_brew_cask() {
@@ -143,7 +137,7 @@ cmd_sparkle_feed() {
   shift
   local app
   app="$(find_app "$@")" || { echo "App not found" >&2; return 1; }
-  download_and_install_sparkle "$feed" "$app"
+  handoff_to_app_updater "$app"
 }
 
 cmd_sparkle_plist() {
@@ -151,7 +145,7 @@ cmd_sparkle_plist() {
   app="$(find_app "$@")" || { echo "App not found" >&2; return 1; }
   feed="$(plist_value "$app" SUFeedURL)"
   [[ -n "$feed" ]] || { echo "No Sparkle feed in app plist" >&2; return 1; }
-  download_and_install_sparkle "$feed" "$app"
+  handoff_to_app_updater "$app"
 }
 
 cmd_brew_or_sparkle() {
@@ -166,7 +160,7 @@ cmd_brew_or_sparkle() {
     return 0
   fi
 
-  download_and_install_sparkle "$feed" "$app"
+  handoff_to_app_updater "$app"
 }
 
 slugify() {
@@ -214,7 +208,7 @@ cmd_auto() {
 
   feed="$(plist_value "$app" SUFeedURL)"
   if [[ -n "$feed" ]]; then
-    download_and_install_sparkle "$feed" "$app"
+    handoff_to_app_updater "$app"
     return 0
   fi
 
@@ -234,7 +228,7 @@ cmd_smart() {
 
   feed="$(plist_value "$app" SUFeedURL)"
   if [[ -n "$feed" ]]; then
-    download_and_install_sparkle "$feed" "$app"
+    handoff_to_app_updater "$app"
     return 0
   fi
 
