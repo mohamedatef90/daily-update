@@ -222,7 +222,10 @@ struct DryRunSheet: View {
                 Text(confirmTitle)
                     .font(.headline)
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button("Cancel") {
+                    appState.dismissDryRun()
+                    dismiss()
+                }
             }
             .padding()
 
@@ -254,13 +257,13 @@ struct DryRunSheet: View {
             HStack {
                 Spacer()
                 Button(runButtonTitle) {
-                    dismiss()
-                    Task { await appState.updateSelected(skipDryRun: true) }
+                    Task { await appState.confirmDryRun() }
                 }
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
         }
         .frame(width: 560, height: 420)
+        .onDisappear { appState.dismissDryRun() }
     }
 }

@@ -38,6 +38,7 @@ final class AppState: ObservableObject {
     private var hasRunStartupCheck = false
     private var cancellables = Set<AnyCancellable>()
     private var administratorPermissionQueue: [UpdateItem] = []
+    private var pendingDryRunItemIDs: [String] = []
 
     init(settingsStore: UserSettingsStore = UserSettingsStore()) {
         self.settingsStore = settingsStore
@@ -449,9 +450,7 @@ final class AppState: ObservableObject {
 
     func selectAllInstallable() {
         for index in items.indices {
-            let command = items[index].installCommand
-            let isRemoteScriptInstall = ActionCommandPolicy.isRemoteScriptInstaller(command)
-            items[index].isSelected = items[index].canInstall && !items[index].isSnoozed && !isRemoteScriptInstall
+            items[index].isSelected = ActionCommandPolicy.shouldAutoSelectForInstall(items[index])
         }
     }
 
@@ -558,16 +557,7 @@ final class AppState: ObservableObject {
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         if confirmBeforeUpdate || requiresForcedConfirmation(for: targets) {
-            dryRunEntries = targets.map { item in
-                DryRunEntry(
-                    id: item.id,
-                    name: item.name,
-                    command: actionCommand(for: item),
-                    action: item.actionLabel,
-                    category: item.category
-                )
-            }
-            showDryRun = true
+            presentDryRun(for: targets)
             return
         }
         await updateSelected(skipDryRun: true)
@@ -579,16 +569,50 @@ final class AppState: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: true, retryItemID: item.id)
+        await updateSelected(skipDryRun: false, retryItemID: item.id)
+    }
+
+    func dismissDryRun() {
+        showDryRun = false
+        dryRunEntries = []
+        pendingDryRunItemIDs = []
+    }
+
+    func confirmDryRun() async {
+        let targetIDs = pendingDryRunItemIDs
+        let plannedEntries = dryRunEntries
+        guard !targetIDs.isEmpty else {
+            appendLog("No items selected")
+            return
+        }
+        dismissDryRun()
+
+        let plannedByID = Dictionary(uniqueKeysWithValues: plannedEntries.map { ($0.id, $0) })
+        let confirmedTargetIDs = actionTargets(for: targetIDs).compactMap { target -> String? in
+            guard let planned = plannedByID[target.id] else { return nil }
+            if planned.action != target.actionLabel || planned.command != actionCommand(for: target) {
+                appendLog("\(target.name): changed since you confirmed, not run")
+                return nil
+            }
+            return target.id
+        }
+        guard !confirmedTargetIDs.isEmpty else {
+            appendLog("No items selected")
+            return
+        }
+        await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
     }
 
     func updateSelected(
         skipDryRun: Bool = false,
-        retryItemID: String? = nil
+        retryItemID: String? = nil,
+        explicitTargetIDs: [String]? = nil
     ) async {
         guard !isUpdating else { return }
         let targets: [UpdateItem]
-        if let retryItemID,
+        if let explicitTargetIDs, !explicitTargetIDs.isEmpty {
+            targets = actionTargets(for: explicitTargetIDs)
+        } else if let retryItemID,
            let retryItem = activeItems.first(where: { $0.id == retryItemID }) {
             targets = [retryItem]
         } else {
@@ -597,7 +621,7 @@ final class AppState: ObservableObject {
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
         if !skipDryRun && (confirmBeforeUpdate || requiresForcedConfirmation(for: targets)) {
-            await requestUpdateSelected()
+            presentDryRun(for: targets)
             return
         }
 
@@ -821,6 +845,25 @@ final class AppState: ObservableObject {
 
     private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
         targets.contains(where: \.isBulkOperation)
+    }
+
+    private func presentDryRun(for targets: [UpdateItem]) {
+        pendingDryRunItemIDs = targets.map(\.id)
+        dryRunEntries = targets.map { item in
+            DryRunEntry(
+                id: item.id,
+                name: item.name,
+                command: actionCommand(for: item),
+                action: item.actionLabel,
+                category: item.category
+            )
+        }
+        showDryRun = true
+    }
+
+    private func actionTargets(for ids: [String]) -> [UpdateItem] {
+        let activeByID = Dictionary(uniqueKeysWithValues: activeItems.map { ($0.id, $0) })
+        return ids.compactMap { activeByID[$0] }
     }
 
     private func orderedUpdateTargets(_ targets: [UpdateItem]) -> [UpdateItem] {

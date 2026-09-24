@@ -1,12 +1,27 @@
 import Foundation
 
 enum ConfigLoader {
-    static let appSupportDirectory: URL = {
+    private static let defaultAppSupportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("DailyUpdate", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
+
+    private static var appSupportDirectoryOverride: URL?
+
+    static var appSupportDirectory: URL {
+        let directory = appSupportDirectoryOverride ?? defaultAppSupportDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    static func setAppSupportDirectoryForTesting(_ directory: URL?) {
+        appSupportDirectoryOverride = directory
+        if let directory {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+    }
 
     static var userConfigURL: URL {
         appSupportDirectory.appendingPathComponent("detectors.json")

@@ -325,7 +325,7 @@
         "command": "command -v flutter >/dev/null 2>&1"
       },
       "versionCommand": "flutter --version 2>/dev/null | grep '^Flutter' | head -1",
-      "checkCommand": "(flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK",
+      "checkCommand": "current=$(flutter --version --machine 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"frameworkVersion\", \"\"))' 2>/dev/null); latest=$(curl -fsSL --connect-timeout 5 https://storage.googleapis.com/flutter_infra_release/releases/releases_macos.json 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); stable_hash=data.get(\"current_release\", {}).get(\"stable\", \"\"); release=next((r for r in data.get(\"releases\", []) if r.get(\"hash\") == stable_hash), {}); print(release.get(\"version\", \"\"))' 2>/dev/null); if [ -z \"$latest\" ]; then echo 'CHECK_FAILED: could not fetch latest version'; elif [ -n \"$current\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; else echo OK; fi",
       "updateCommand": "flutter upgrade"
     },
     {
@@ -338,7 +338,7 @@
         "command": "command -v dart >/dev/null 2>&1"
       },
       "versionCommand": "dart --version 2>/dev/null | head -1",
-      "checkCommand": "if command -v flutter >/dev/null 2>&1; then (flutter upgrade --verify-only 2>&1 | grep -qi 'new version of Flutter is available' && echo UPDATE) || echo OK; else (brew outdated dart 2>/dev/null | grep -q dart && echo UPDATE) || echo OK; fi",
+      "checkCommand": "brew outdated dart 2>/dev/null | grep -qE '(^|/)dart$' && echo UPDATE || echo OK",
       "updateCommand": "brew upgrade dart"
     },
     {
@@ -429,7 +429,7 @@
         "command": "command -v pnpm >/dev/null 2>&1"
       },
       "versionCommand": "pnpm --version 2>/dev/null",
-      "checkCommand": "pnpm outdated -g 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated pnpm 2>/dev/null | grep -q pnpm && echo UPDATE || echo OK)",
+      "checkCommand": "npm outdated -g pnpm 2>/dev/null | grep -q pnpm && echo UPDATE || echo OK",
       "updateCommand": "npm install -g pnpm@latest"
     },
     {
@@ -442,7 +442,7 @@
         "command": "command -v yarn >/dev/null 2>&1"
       },
       "versionCommand": "yarn --version 2>/dev/null",
-      "checkCommand": "yarn global outdated 2>/dev/null | tail -n +2 | grep -q . && echo UPDATE || (brew outdated yarn 2>/dev/null | grep -q yarn && echo UPDATE || echo OK)",
+      "checkCommand": "npm outdated -g yarn 2>/dev/null | grep -q yarn && echo UPDATE || echo OK",
       "updateCommand": "npm install -g yarn@latest"
     },
     {
@@ -533,7 +533,7 @@
         "command": "command -v mise >/dev/null 2>&1"
       },
       "versionCommand": "mise --version 2>/dev/null",
-      "checkCommand": "mise outdated 2>/dev/null | grep -q . && echo UPDATE || echo OK",
+      "checkCommand": "json=$(mise version --json 2>/dev/null) || { echo 'CHECK_FAILED: mise version --json failed'; exit 0; }; current=$(printf '%s' \"$json\" | sed -nE 's/.*\"version\"[[:space:]]*:[[:space:]]*\"([^\" ]+).*/\\1/p' | head -1); latest=$(printf '%s' \"$json\" | sed -nE 's/.*\"latest\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p' | head -1); if [ -z \"$current\" ] || [ -z \"$latest\" ]; then echo 'CHECK_FAILED: mise could not determine the latest version'; elif [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; else echo OK; fi",
       "updateCommand": "mise self-update"
     },
     {
@@ -559,7 +559,7 @@
         "command": "command -v rustup >/dev/null 2>&1"
       },
       "versionCommand": "rustc --version 2>/dev/null",
-      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "checkCommand": "rustup check 2>/dev/null | grep -qiE 'update available|out of date' && echo UPDATE || echo OK",
       "updateCommand": "rustup update"
     },
     {
@@ -572,7 +572,7 @@
         "command": "command -v cargo >/dev/null 2>&1"
       },
       "versionCommand": "cargo --version 2>/dev/null",
-      "checkCommand": "rustup update --dry-run 2>&1 | grep -q 'updated' && echo UPDATE || echo OK",
+      "checkCommand": "rustup check 2>/dev/null | grep -qiE 'update available|out of date' && echo UPDATE || echo OK",
       "updateCommand": "rustup update"
     },
     {
@@ -598,7 +598,7 @@
         "command": "command -v composer >/dev/null 2>&1"
       },
       "versionCommand": "composer --version 2>/dev/null | head -1",
-      "checkCommand": "composer self-update --dry-run 2>&1 | grep -q 'new version' && echo UPDATE || echo OK",
+      "checkCommand": "current=$(composer --version 2>/dev/null | sed -nE 's/.*version ([0-9]+(\\.[0-9]+)+).*/\\1/p' | head -1); latest=$(curl -fsSL --connect-timeout 5 https://api.github.com/repos/composer/composer/releases/latest 2>/dev/null | sed -nE 's/.*\"tag_name\": \"v?([^\"]+)\".*/\\1/p' | head -1); if [ -z \"$latest\" ]; then echo 'CHECK_FAILED: could not fetch latest version'; elif [ -n \"$current\" ] && [ \"$current\" != \"$latest\" ] && [ \"$(printf '%s\\n' \"$current\" \"$latest\" | sort -V | tail -1)\" = \"$latest\" ]; then echo UPDATE; else echo OK; fi",
       "updateCommand": "composer self-update"
     },
     {

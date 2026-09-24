@@ -45,14 +45,6 @@ handoff_to_app_updater() {
   echo "IN_APP_UPDATE: Sparkle direct install is disabled. Opened ${app:t} so its built-in updater can apply the update safely."
 }
 
-download_and_install_sparkle() {
-  local feed="$1"
-  local target_app="$2"
-  [[ -n "$feed" && -n "$target_app" ]] || true
-  echo "Sparkle direct install is disabled until signature verification is implemented." >&2
-  return 1
-}
-
 cmd_brew_cask() {
   local cask="$1"
   [[ -n "$cask" ]] || { echo "Missing cask name" >&2; return 1; }
