@@ -9,10 +9,48 @@ enum GatePolicy {
         return lhs == rhs
     }
 
-    static func reviewedCommandHash(updateCommand: String, installCommand: String) -> String {
-        let payload = "\(updateCommand)\n--\n\(installCommand)"
+    static func reviewedCommandHash(
+        detectCommand: String?,
+        versionCommand: String?,
+        checkCommand: String?,
+        updateCommand: String,
+        installCommand: String
+    ) -> String {
+        let payload = [
+            "detect:\(detectCommand ?? "")",
+            "version:\(versionCommand ?? "")",
+            "check:\(checkCommand ?? "")",
+            "update:\(updateCommand)",
+            "install:\(installCommand)",
+        ].joined(separator: "\n--\n")
         let digest = SHA256.hash(data: Data(payload.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func reviewedCommandHash(updateCommand: String, installCommand: String) -> String {
+        reviewedCommandHash(
+            detectCommand: nil,
+            versionCommand: nil,
+            checkCommand: nil,
+            updateCommand: updateCommand,
+            installCommand: installCommand
+        )
+    }
+
+    static func reviewedCommandHash(for config: DetectorConfig) -> String {
+        reviewedCommandHash(
+            detectCommand: config.detect?.command,
+            versionCommand: config.versionCommand,
+            checkCommand: config.checkCommand,
+            updateCommand: config.updateCommand,
+            installCommand: config.installCommand ?? ""
+        )
+    }
+
+    static func isReviewSatisfied(for config: DetectorConfig, reviewedHash: String?) -> Bool {
+        guard config.requiresReviewBeforeAutomation else { return true }
+        guard let reviewedHash else { return false }
+        return reviewedHash == reviewedCommandHash(for: config)
     }
 
     static func updateGateReasons(
@@ -31,7 +69,7 @@ enum GatePolicy {
 
         let requiresReview = classification.needsReview || config.needsReview == true
         if requiresReview {
-            let expected = reviewedCommandHash(updateCommand: config.updateCommand, installCommand: config.installCommand ?? "")
+            let expected = reviewedCommandHash(for: config)
             if reviewedHash != expected {
                 reasons.append(.needsReview)
             }

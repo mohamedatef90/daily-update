@@ -270,27 +270,14 @@ enum ConfigLoader {
     }
 
     private static func commandNeedsReview(
-        updateCommand: String,
-        installCommand: String,
+        updateCommand _: String,
+        installCommand _: String,
         flagNeedsReview: Bool
     ) -> Bool {
-        if flagNeedsReview {
-            return true
+        guard flagNeedsReview else {
+            return false
         }
-
-        let risky = [
-            ActionCommandPolicy.hasFallbackChain(updateCommand),
-            ActionCommandPolicy.hasSuppressedStderr(updateCommand),
-            ActionCommandPolicy.hasCommandSeparator(updateCommand),
-            ActionCommandPolicy.isRemoteScriptInstaller(updateCommand),
-            ActionCommandPolicy.matchesBulkPattern(updateCommand),
-            ActionCommandPolicy.hasFallbackChain(installCommand),
-            ActionCommandPolicy.hasSuppressedStderr(installCommand),
-            ActionCommandPolicy.hasCommandSeparator(installCommand),
-            ActionCommandPolicy.isRemoteScriptInstaller(installCommand),
-            ActionCommandPolicy.matchesBulkPattern(installCommand)
-        ].contains(true)
-        return risky
+        return true
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {

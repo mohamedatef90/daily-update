@@ -223,7 +223,13 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var commandReviewHash: String {
-        GatePolicy.reviewedCommandHash(updateCommand: updateCommand, installCommand: installCommand)
+        GatePolicy.reviewedCommandHash(
+            detectCommand: detectCommand,
+            versionCommand: versionCommand,
+            checkCommand: checkCommand,
+            updateCommand: updateCommand,
+            installCommand: installCommand
+        )
     }
 
     var requiresCommandReview: Bool {

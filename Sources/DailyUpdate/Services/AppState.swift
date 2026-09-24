@@ -398,7 +398,10 @@ final class AppState: ObservableObject {
 
     func markCommandReviewed(id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        let hash = items[index].commandReviewHash
+        let hash = configs
+            .first(where: { $0.id == id })
+            .map(GatePolicy.reviewedCommandHash(for:))
+            ?? items[index].commandReviewHash
         settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
         items[index].needsReview = false
         items[index].gateReasons.removeAll { $0 == .needsReview }
@@ -552,6 +555,7 @@ final class AppState: ObservableObject {
                 group.addTask {
                     var item = config.toUpdateItem()
                     let pref = prefs[config.id]
+                    let reviewedHash = pref?.reviewedCommandHash
                     if let pref {
                         item.autoUpdate = pref.autoUpdate
                         item.snoozedUntil = pref.snoozedUntil
@@ -563,7 +567,8 @@ final class AppState: ObservableObject {
                         item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
                         return (index, item)
                     }
-                    if config.requiresReviewBeforeAutomation {
+                    if config.requiresReviewBeforeAutomation &&
+                        !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedHash) {
                         item.status = .gated
                         item.statusMessage = "Needs review before running commands"
                         item.gateReasons = [.needsReview]
@@ -592,7 +597,7 @@ final class AppState: ObservableObject {
                     let check = await UpdateCheckService.check(
                         config,
                         installed: detection.installed,
-                        reviewedCommandHash: pref?.reviewedCommandHash,
+                        reviewedCommandHash: reviewedHash,
                         pathLookup: pathLookup
                     )
                     item.status = check.status
@@ -961,7 +966,9 @@ final class AppState: ObservableObject {
         for index in items.indices where idSet.contains(items[index].id) {
             guard let config = configs.first(where: { $0.id == items[index].id }) else { continue }
             if items[index].permanentlyIgnored || items[index].isSnoozed { continue }
-            if config.requiresReviewBeforeAutomation {
+            let reviewedHash = prefs[config.id]?.reviewedCommandHash
+            if config.requiresReviewBeforeAutomation &&
+                !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedHash) {
                 items[index].status = .gated
                 items[index].statusMessage = "Needs review before running commands"
                 items[index].gateReasons = [.needsReview]
@@ -992,7 +999,7 @@ final class AppState: ObservableObject {
             let check = await UpdateCheckService.check(
                 config,
                 installed: detection.installed,
-                reviewedCommandHash: prefs[config.id]?.reviewedCommandHash,
+                reviewedCommandHash: reviewedHash,
                 pathLookup: pathLookup
             )
             let reconciled = reconcileAfterUpdate(

@@ -47,7 +47,8 @@ enum UpdateCheckService {
             }
         }
 
-        if config.requiresReviewBeforeAutomation {
+        if config.requiresReviewBeforeAutomation &&
+            !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedCommandHash) {
             return CheckResult(
                 status: .gated,
                 currentVersion: nil,
