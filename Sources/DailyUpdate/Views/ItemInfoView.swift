@@ -57,7 +57,7 @@ struct ItemInfoView: View {
                 infoRow("Install Command", item.installCommand, monospaced: true)
             }
 
-            if item.autoUpdate || item.isSnoozed || item.pinnedVersion != nil || item.duplicateGroupID != nil {
+            if item.autoUpdate || item.isSnoozed || item.pinnedVersion != nil || item.duplicateGroupID != nil || item.needsReview {
                 Divider()
                 flagsSection
             }
@@ -80,6 +80,9 @@ struct ItemInfoView: View {
             }
             if item.duplicateGroupID != nil {
                 flagRow(icon: "doc.on.doc", text: "Possible duplicate", color: .orange)
+            }
+            if item.needsReview {
+                flagRow(icon: "exclamationmark.triangle.fill", text: "Needs review", color: .orange)
             }
         }
     }

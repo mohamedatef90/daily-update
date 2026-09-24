@@ -17,10 +17,14 @@ enum ConfigLoader {
     }
 
     static func setAppSupportDirectoryForTesting(_ directory: URL?) {
+#if DEBUG
         appSupportDirectoryOverride = directory
         if let directory {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
+#else
+        _ = directory
+#endif
     }
 
     static var userConfigURL: URL {
@@ -207,27 +211,25 @@ enum ConfigLoader {
             home: home,
             expandedUpdateCommand: expandedUpdate
         )
-        let description = mergedDescription(
-            base: config.description,
-            warning: commandReviewWarning(
-                updateCommand: expandedUpdate,
-                installCommand: resolvedInstall,
-                flagNeedsReview: flagNeedsReview
-            )
+        let needsReview = commandNeedsReview(
+            updateCommand: expandedUpdate,
+            installCommand: resolvedInstall,
+            flagNeedsReview: flagNeedsReview
         )
 
         return DetectorConfig(
             id: config.id,
             name: config.name,
             category: config.category,
-            description: description,
+            description: config.description,
             source: config.source ?? .bundled,
             detect: detect,
             versionCommand: expandVariables(config.versionCommand, home: home),
             checkCommand: expandVariables(config.checkCommand, home: home),
             installCommand: resolvedInstall,
             updateCommand: expandedUpdate,
-            workingDirectory: expandVariables(config.workingDirectory, home: home)
+            workingDirectory: expandVariables(config.workingDirectory, home: home),
+            needsReview: needsReview
         )
     }
 
@@ -242,33 +244,26 @@ enum ConfigLoader {
         return resolved
     }
 
-    private static func commandReviewWarning(
+    private static func commandNeedsReview(
         updateCommand: String,
         installCommand: String,
         flagNeedsReview: Bool
-    ) -> String? {
-        guard flagNeedsReview else { return nil }
+    ) -> Bool {
+        guard flagNeedsReview else { return false }
 
         let risky = [
             ActionCommandPolicy.hasFallbackChain(updateCommand),
             ActionCommandPolicy.hasSuppressedStderr(updateCommand),
             ActionCommandPolicy.hasCommandSeparator(updateCommand),
+            ActionCommandPolicy.isRemoteScriptInstaller(updateCommand),
+            ActionCommandPolicy.matchesBulkPattern(updateCommand),
             ActionCommandPolicy.hasFallbackChain(installCommand),
             ActionCommandPolicy.hasSuppressedStderr(installCommand),
-            ActionCommandPolicy.hasCommandSeparator(installCommand)
+            ActionCommandPolicy.hasCommandSeparator(installCommand),
+            ActionCommandPolicy.isRemoteScriptInstaller(installCommand),
+            ActionCommandPolicy.matchesBulkPattern(installCommand)
         ].contains(true)
-
-        guard risky else { return nil }
-        return "Needs review: custom command contains shell fallback/chaining patterns."
-    }
-
-    private static func mergedDescription(base: String?, warning: String?) -> String? {
-        guard let warning else { return base }
-        guard let base, !base.isEmpty else { return warning }
-        if base.contains(warning) {
-            return base
-        }
-        return "\(base)\n\(warning)"
+        return risky
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {

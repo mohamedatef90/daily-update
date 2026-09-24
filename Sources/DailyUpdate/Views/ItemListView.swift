@@ -304,6 +304,12 @@ struct ItemNameCell: View {
                             .foregroundStyle(.blue)
                             .help("Pinned version mismatch")
                     }
+                    if item.needsReview {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                            .help("Needs review")
+                    }
                     Spacer(minLength: 0)
                     Button {
                         onShowInfo?()
@@ -436,6 +442,12 @@ extension ItemListView {
         if item.needsAdministratorPermission {
             Button("Manual Update Instructions…") {
                 administratorItem = item
+            }
+            Divider()
+        }
+        if item.needsReview {
+            Button("Mark Command Reviewed") {
+                appState.markCommandReviewed(id: item.id)
             }
             Divider()
         }

@@ -338,6 +338,9 @@ final class AppState: ObservableObject {
         item.snoozedUntil = pref.snoozedUntil
         item.pinnedVersion = pref.pinnedVersion
         item.permanentlyIgnored = pref.permanentlyIgnored
+        if item.needsReview, pref.reviewedCommandHash == item.commandReviewHash {
+            item.needsReview = false
+        }
         return item
     }
 
@@ -368,6 +371,14 @@ final class AppState: ObservableObject {
         if let index = items.firstIndex(where: { $0.id == id }) {
             items[index].autoUpdate = enabled
         }
+    }
+
+    func markCommandReviewed(id: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let hash = items[index].commandReviewHash
+        settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
+        items[index].needsReview = false
+        appendLog("Marked \(items[index].name) command as reviewed")
     }
 
     func setPinnedVersion(id: String, version: String?) {
@@ -484,6 +495,10 @@ final class AppState: ObservableObject {
 
     func checkAll() async {
         guard !isChecking else { return }
+        guard !isUpdating else {
+            appendLog("Check skipped: an update is running")
+            return
+        }
         isChecking = true
         checkedItemCount = 0
         appendLog("Starting update check…")
@@ -597,7 +612,7 @@ final class AppState: ObservableObject {
             return target.id
         }
         guard !confirmedTargetIDs.isEmpty else {
-            appendLog("No items selected")
+            appendLog("Nothing run: all items changed since you confirmed")
             return
         }
         await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
@@ -629,11 +644,21 @@ final class AppState: ObservableObject {
         appendLog("Running \(targets.count) action(s)…")
         var successCount = 0
         var failCount = 0
+        var skippedDueToChanges = 0
         var updatedIDs: [String] = []
         var successfulIDs = Set<String>()
+        let plannedCommands = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, actionCommand(for: $0)) })
 
         for target in targets {
             guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
+            guard let plannedCommand = plannedCommands[target.id] else { continue }
+            let liveCommand = actionCommand(for: items[index])
+            if liveCommand != plannedCommand {
+                skippedDueToChanges += 1
+                items[index].isSelected = false
+                appendLog("\(items[index].name): changed since you confirmed, not run")
+                continue
+            }
             let installing = items[index].canInstall
             let verb = installing ? "Installing" : "Updating"
             items[index].status = .updating
@@ -691,6 +716,9 @@ final class AppState: ObservableObject {
 
         isUpdating = false
         appendLog("Action run finished")
+        if successCount == 0, failCount == 0, skippedDueToChanges == targets.count {
+            appendLog("Nothing run: all items changed since you confirmed")
+        }
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
 
@@ -844,7 +872,7 @@ final class AppState: ObservableObject {
     }
 
     private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
-        targets.contains(where: \.isBulkOperation)
+        targets.contains { $0.isBulkOperation || $0.isRemoteScriptOperation || $0.needsReview }
     }
 
     private func presentDryRun(for targets: [UpdateItem]) {

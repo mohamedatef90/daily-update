@@ -8,10 +8,11 @@ enum UpdateCheckService {
         }
 
         let cwd = config.workingDirectory?.expandingTilde
-        let current = await DetectionService.getVersion(config)
+        let currentRaw = await DetectionService.getVersion(config)
+        let current = currentRaw.flatMap(VersionTokenExtractor.extract)
 
-        if let current, config.versionCommand != nil, !containsVersionToken(current) {
-            return (.checkFailed, current, nil, "Version command returned no version token")
+        if current == nil, config.versionCommand != nil {
+            return (.checkFailed, currentRaw, nil, "Version command returned no version token")
         }
 
         if let checkCommand = config.checkCommand {
@@ -89,10 +90,14 @@ enum UpdateCheckService {
         }
 
         if let current, let latest, isConcreteVersion(latest) {
-            if VersionComparator.isAtLeast(current: current, latest: latest) {
+            switch VersionComparator.compare(current: current, latest: latest) {
+            case .same, .newer:
                 return (.upToDate, current, latest, nil)
+            case .older:
+                return (.updateAvailable, current, latest, nil)
+            case .incomparable:
+                return (.checkFailed, current, latest, "Could not compare \(current) with \(latest)")
             }
-            return (.updateAvailable, current, latest, nil)
         }
 
         // A detector explicitly reporting UPDATE is authoritative even when its
@@ -106,8 +111,7 @@ enum UpdateCheckService {
     }
 
     private static func isConcreteVersion(_ value: String) -> Bool {
-        let normalized = VersionComparator.normalize(value)
-        return normalized.contains(where: \.isNumber)
+        VersionTokenExtractor.extract(from: value) != nil
     }
 
     private static func parseLatest(from output: String) -> String? {
@@ -119,14 +123,13 @@ enum UpdateCheckService {
                     .replacingOccurrences(of: "latest:", with: "", options: .caseInsensitive)
                     .replacingOccurrences(of: "remote:", with: "", options: .caseInsensitive)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let token = VersionTokenExtractor.extract(from: parsed) {
+                    return token
+                }
                 return parsed.nilIfEmpty
             }
         }
         return nil
-    }
-
-    private static func containsVersionToken(_ value: String) -> Bool {
-        VersionComparator.normalize(value).contains(where: \.isNumber)
     }
 
     private static func checkFailureMarker(in output: String) -> String? {

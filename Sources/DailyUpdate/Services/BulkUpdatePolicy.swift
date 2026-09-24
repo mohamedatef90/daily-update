@@ -15,6 +15,6 @@ enum BulkUpdatePolicy {
     }
 
     static func shouldAutoSelectForUpdate(_ item: UpdateItem) -> Bool {
-        item.canUpdate && !isBulkOperation(itemID: item.id)
+        item.canUpdate && !item.isBulkOperation
     }
 }

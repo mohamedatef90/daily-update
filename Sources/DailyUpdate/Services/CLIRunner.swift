@@ -280,7 +280,12 @@ enum CLIRunner {
             return emptySelectionExitCode
         }
 
-        if requireExplicitConfirmation {
+        let requiresRiskConfirmation = entries.contains { entry in
+            guard let item = state.items.first(where: { $0.id == entry.id }) else { return false }
+            return item.isBulkOperation || item.isRemoteScriptOperation || item.needsReview
+        }
+
+        if requireExplicitConfirmation || requiresRiskConfirmation {
             printDryRunPlan(entries: entries, output: output)
             guard confirmed else {
                 output("Confirmation required. Re-run with --yes to execute these actions.")
@@ -342,6 +347,34 @@ enum CLIRunner {
                 )
             ], output: output)
             output("This install command runs a remote script. Re-run with --yes to allow it.")
+            return 2
+        }
+
+        if case .update = action, ActionCommandPolicy.isRemoteScriptInstaller(item.updateCommand), !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This update command runs a remote script. Re-run with --yes to allow it.")
+            return 2
+        }
+
+        if item.needsReview, !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: action == .install ? item.installCommand : item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This command needs review. Re-run with --yes to execute it.")
             return 2
         }
 

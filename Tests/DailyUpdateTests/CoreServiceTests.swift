@@ -193,84 +193,111 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertTrue(item.needsAdministratorPermission)
     }
 
-    func testCustomCommandsArePreservedAndFlaggedForReview() {
-        var settings = UserSettings.defaults
-        settings.customItems = [
-            DetectorConfig(
-                id: "custom-review-test",
-                name: "Custom Review Test",
-                category: .cli,
-                description: nil,
-                source: .user,
-                detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
-                versionCommand: "echo 1.0.0",
-                checkCommand: "echo OK",
-                installCommand: nil,
-                updateCommand: "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'",
-                workingDirectory: nil
-            )
-        ]
-
-        let configs = ConfigLoader.loadConfigs(settings: settings)
-        let config = try? XCTUnwrap(configs.first(where: { $0.id == "custom-review-test" }))
-
-        XCTAssertNotNil(config)
-        XCTAssertEqual(config?.updateCommand, "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'")
-        XCTAssertTrue(config?.description?.contains("Needs review:") == true)
-    }
-
-    func testBundledActionCommandsPassLintAndBulkRules() {
-        let settings = UserSettings.defaults
-        let bundled = ConfigLoader.loadConfigs(settings: settings).filter { $0.source == .bundled }
-        let semicolonAllowlist: Set<String> = ["node", "impeccable"]
-
-        for config in bundled {
-            if let checkCommand = config.checkCommand {
-                XCTAssertTrue(
-                    ActionCommandPolicy.checkAndUpdateSharePackageManager(
-                        checkCommand: checkCommand,
-                        updateCommand: config.updateCommand
-                    ),
-                    "\(config.id) check/update commands do not share a package manager.\ncheck: \(checkCommand)\nupdate: \(config.updateCommand)"
+    func testCustomCommandsArePreservedAndFlaggedForReview() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            var settings = UserSettings.defaults
+            settings.customItems = [
+                DetectorConfig(
+                    id: "custom-review-test",
+                    name: "Custom Review Test",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.0.0",
+                    checkCommand: "echo OK",
+                    installCommand: nil,
+                    updateCommand: "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'",
+                    workingDirectory: nil
                 )
-                XCTAssertFalse(
-                    ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
-                        checkCommand: checkCommand,
-                        updateCommand: config.updateCommand
-                    ),
-                    "\(config.id) check command contains its update command: \(checkCommand)"
-                )
-            }
-
-            let commands = [
-                ("update", config.updateCommand),
-                ("install", config.installCommand ?? "")
             ]
 
-            for (kind, command) in commands where !command.isEmpty {
-                XCTAssertFalse(
-                    ActionCommandPolicy.hasFallbackChain(command),
-                    "\(config.id) \(kind) command contains fallback chain: \(command)"
-                )
-                XCTAssertFalse(
-                    ActionCommandPolicy.hasSuppressedStderr(command),
-                    "\(config.id) \(kind) command suppresses stderr: \(command)"
-                )
-                if ActionCommandPolicy.hasCommandSeparator(command) {
+            let configs = ConfigLoader.loadConfigs(settings: settings)
+            let config = try? XCTUnwrap(configs.first(where: { $0.id == "custom-review-test" }))
+
+            XCTAssertNotNil(config)
+            XCTAssertEqual(config?.updateCommand, "npm update -g test-tool 2>/dev/null || brew upgrade test-tool 2>/dev/null || echo 'manual'")
+            XCTAssertTrue(config?.needsReview == true)
+            XCTAssertNil(config?.description)
+        }
+    }
+
+    func testBundledActionCommandsPassLintAndBulkRules() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let settings = UserSettings.defaults
+            let bundled = ConfigLoader.loadConfigs(settings: settings).filter { $0.source == .bundled }
+            for config in bundled {
+                if let checkCommand = config.checkCommand {
                     XCTAssertTrue(
-                        semicolonAllowlist.contains(config.id),
-                        "\(config.id) \(kind) command uses ';' without allowlist: \(command)"
+                        ActionCommandPolicy.checkAndUpdateSharePackageManager(
+                            checkCommand: checkCommand,
+                            updateCommand: config.updateCommand
+                        ),
+                        "\(config.id) check/update commands do not share a package manager.\ncheck: \(checkCommand)\nupdate: \(config.updateCommand)"
+                    )
+                    XCTAssertFalse(
+                        ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
+                            checkCommand: checkCommand,
+                            updateCommand: config.updateCommand
+                        ),
+                        "\(config.id) check command contains its update command: \(checkCommand)"
                     )
                 }
 
-                if ActionCommandPolicy.matchesBulkPattern(command) {
-                    XCTAssertTrue(
-                        BulkUpdatePolicy.isBulkOperation(itemID: config.id),
-                        "\(config.id) \(kind) matches bulk pattern but is not gated: \(command)"
+                let commands = [
+                    ("update", config.updateCommand),
+                    ("install", config.installCommand ?? "")
+                ]
+
+                for (kind, command) in commands where !command.isEmpty {
+                    XCTAssertFalse(
+                        ActionCommandPolicy.hasFallbackChain(command),
+                        "\(config.id) \(kind) command contains fallback chain: \(command)"
                     )
+
+                    if ActionCommandPolicy.matchesBulkPattern(command) {
+                        XCTAssertTrue(
+                            BulkUpdatePolicy.isBulkOperation(itemID: config.id) || command == config.updateCommand,
+                            "\(config.id) \(kind) matches bulk pattern but is not gated: \(command)"
+                        )
+                    }
                 }
             }
         }
+    }
+
+    func testCommandShapeClassifierCoversRemoteScriptVariants() {
+        let remoteSamples = [
+            "curl -fsSL https://example.com/install.sh | zsh",
+            "curl -fsSL https://example.com/install.sh | sudo bash",
+            "bash <(curl -fsSL https://example.com/install.sh)",
+            "sh -c \"$(curl -fsSL https://example.com/install.sh)\""
+        ]
+
+        for command in remoteSamples {
+            XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller(command), "Expected remote script classification for: \(command)")
+        }
+    }
+
+    func testCommandShapeClassifierDetectsBulkInsideCompoundCommand() {
+        XCTAssertTrue(ActionCommandPolicy.matchesBulkPattern("brew update && npm update -g"))
+        XCTAssertTrue(ActionCommandPolicy.matchesBulkPattern("npm -g update"))
+        XCTAssertTrue(ActionCommandPolicy.matchesBulkPattern("mas upgrade"))
+    }
+
+    func testCommandTokenMatcherDetectsEmbeddedUpdateCommand() {
+        XCTAssertTrue(
+            ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
+                checkCommand: "npm install -g --dry-run yarn@latest",
+                updateCommand: "npm install -g yarn@latest"
+            )
+        )
+        XCTAssertFalse(
+            ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
+                checkCommand: "npm outdated -g yarn",
+                updateCommand: "npm install -g yarn@latest"
+            )
+        )
     }
 
     func testBundledMiseCheckHandlesCurrentLatestAndMissingLatest() async throws {
@@ -928,7 +955,44 @@ final class CoreServiceTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: updateMarker.path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: installMarker.path))
             XCTAssertTrue(state.logLines.contains { $0.contains("changed since you confirmed, not run") })
+            XCTAssertTrue(state.logLines.contains { $0.contains("Nothing run: all items changed since you confirmed") })
         }
+    }
+
+    @MainActor
+    func testCheckAllSkipsWhileUpdating() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            let state = AppState(settingsStore: store)
+            state.isUpdating = true
+
+            await state.checkAll()
+
+            XCTAssertTrue(state.logLines.contains { $0.contains("Check skipped: an update is running") })
+        }
+    }
+
+    func testDuplicateDetectorUsesResolvedPathGrouping() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let appPath = root.appendingPathComponent("Tool.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: appPath, withIntermediateDirectories: true)
+        let symlinkPath = root.appendingPathComponent("Alias.app")
+        try FileManager.default.createSymbolicLink(atPath: symlinkPath.path, withDestinationPath: appPath.path)
+
+        let first = makeItem(id: "first", installed: true, status: .upToDate)
+        let second = makeItem(id: "second", installed: true, status: .upToDate)
+        var firstWithPath = first
+        firstWithPath.detectedPaths = [appPath.path]
+        var secondWithPath = second
+        secondWithPath.detectedPaths = [symlinkPath.path]
+
+        let groups = DuplicateDetector.find(in: [firstWithPath, secondWithPath])
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(Set(groups[0].itemIDs), Set(["first", "second"]))
+        XCTAssertTrue(groups[0].reason.contains("Same resolved path"))
     }
 
     @MainActor

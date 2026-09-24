@@ -3,13 +3,27 @@ import Foundation
 enum DuplicateDetector {
     static func find(in items: [UpdateItem]) -> [DuplicateGroup] {
         var groups: [DuplicateGroup] = []
-        var byName: [String: [UpdateItem]] = [:]
+        var groupedIDs = Set<String>()
 
-        for item in items {
-            let key = item.name.lowercased().trimmingCharacters(in: .whitespaces)
-            byName[key, default: []].append(item)
+        let byResolvedPath = Dictionary(grouping: items.compactMap { item -> (String, UpdateItem)? in
+            guard let path = resolvedPath(for: item) else { return nil }
+            return (path, item)
+        }) { $0.0 }
+        for (path, entries) in byResolvedPath where entries.count > 1 {
+            let group = entries.map(\.1)
+            let ids = group.map(\.id)
+            groupedIDs.formUnion(ids)
+            groups.append(DuplicateGroup(
+                id: ids.joined(separator: "-"),
+                itemIDs: ids,
+                reason: "Same resolved path: \(path)"
+            ))
         }
 
+        let unresolvedItems = items.filter { !groupedIDs.contains($0.id) && resolvedPath(for: $0) == nil }
+        let byName = Dictionary(grouping: unresolvedItems) {
+            $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         for (_, group) in byName where group.count > 1 {
             groups.append(DuplicateGroup(
                 id: group.map(\.id).joined(separator: "-"),
@@ -18,33 +32,17 @@ enum DuplicateDetector {
             ))
         }
 
-        let commandGroups = Dictionary(grouping: items.filter { !$0.updateCommand.isEmpty }) {
-            normalizeCommand($0.updateCommand)
-        }
-        for (_, group) in commandGroups where group.count > 1 {
-            let ids = group.map(\.id)
-            if !groups.contains(where: { Set($0.itemIDs) == Set(ids) }) {
-                groups.append(DuplicateGroup(
-                    id: ids.joined(separator: "-"),
-                    itemIDs: ids,
-                    reason: "Similar update command"
-                ))
-            }
-        }
-
         return groups
     }
 
-    private static func normalizeCommand(_ command: String) -> String {
-        command
-            .replacingOccurrences(of: "brew upgrade --cask", with: "brew")
-            .replacingOccurrences(of: "brew upgrade", with: "brew")
-            .replacingOccurrences(of: "npm update -g", with: "npm")
-            .replacingOccurrences(of: "npm install -g", with: "npm")
-            .components(separatedBy: .whitespaces)
-            .prefix(3)
-            .joined(separator: " ")
-            .lowercased()
+    private static func resolvedPath(for item: UpdateItem) -> String? {
+        let candidates = item.detectedPaths + [item.iconPath, item.workingDirectory].compactMap { $0 }
+        for candidate in candidates {
+            let expanded = (candidate as NSString).expandingTildeInPath
+            guard FileManager.default.fileExists(atPath: expanded) else { continue }
+            return URL(fileURLWithPath: expanded).resolvingSymlinksInPath().path
+        }
+        return nil
     }
 }
 
@@ -132,7 +130,14 @@ enum ConfigImportExport {
 
     static func importData(_ data: Data, into store: UserSettingsStore) throws {
         let bundle = try JSONDecoder().decode(ExportBundle.self, from: data)
-        store.settings = bundle.settings
+        var imported = bundle.settings
+        // Imported command definitions must be reviewed again in this workspace.
+        imported.itemPreferences = imported.itemPreferences.mapValues { pref in
+            var copy = pref
+            copy.reviewedCommandHash = nil
+            return copy
+        }
+        store.settings = imported
         store.save()
         if let encoded = try? JSONEncoder().encode(bundle.history) {
             let url = ConfigLoader.appSupportDirectory.appendingPathComponent("history.json")

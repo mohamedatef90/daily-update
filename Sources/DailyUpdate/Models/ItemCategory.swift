@@ -83,6 +83,8 @@ struct UpdateItem: Identifiable, Hashable {
     let installCommand: String
     let updateCommand: String
     let workingDirectory: String?
+    var detectedPaths: [String] = []
+    var needsReview: Bool = false
 
     var isSnoozed: Bool {
         guard let snoozedUntil else { return false }
@@ -130,7 +132,16 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var isBulkOperation: Bool {
-        BulkUpdatePolicy.isBulkOperation(itemID: id)
+        BulkUpdatePolicy.isBulkOperation(itemID: id) || ActionCommandPolicy.matchesBulkPattern(updateCommand)
+    }
+
+    var isRemoteScriptOperation: Bool {
+        ActionCommandPolicy.isRemoteScriptInstaller(updateCommand) ||
+            ActionCommandPolicy.isRemoteScriptInstaller(installCommand)
+    }
+
+    var commandReviewHash: String {
+        [updateCommand, installCommand].joined(separator: "\n")
     }
 
     var isActionable: Bool {
@@ -164,6 +175,7 @@ struct UpdateItem: Identifiable, Hashable {
             lhs.isSnoozed == rhs.isSnoozed &&
             lhs.permanentlyIgnored == rhs.permanentlyIgnored &&
             lhs.duplicateGroupID == rhs.duplicateGroupID &&
-            lhs.pinnedVersion == rhs.pinnedVersion
+            lhs.pinnedVersion == rhs.pinnedVersion &&
+            lhs.needsReview == rhs.needsReview
     }
 }
