@@ -4,6 +4,8 @@ import Foundation
 
 @MainActor
 final class AppState: ObservableObject {
+    typealias PlannedCommandResolver = @Sendable (DetectorConfig, String?, CommandPathLookup) async -> (commandSpec: CommandSpec, fingerprint: String)?
+
     @Published var items: [UpdateItem] = []
     @Published var selectedCategory: ItemCategory? = nil
     @Published var showUpdatesOnly = false
@@ -34,6 +36,7 @@ final class AppState: ObservableObject {
 
     weak var appDelegate: AppDelegate?
     private var configs: [DetectorConfig] = []
+    private let plannedCommandResolver: PlannedCommandResolver
     private var wakeObserver: NSObjectProtocol?
     private var hasRunStartupCheck = false
     private var cancellables = Set<AnyCancellable>()
@@ -49,8 +52,18 @@ final class AppState: ObservableObject {
         let ownerFingerprint: String?
     }
 
-    init(settingsStore: UserSettingsStore = UserSettingsStore()) {
+    init(
+        settingsStore: UserSettingsStore = UserSettingsStore(),
+        plannedCommandResolver: @escaping PlannedCommandResolver = { config, targetVersion, lookup in
+            await StrategyPlanner.plannedCommand(
+                config: config,
+                targetVersion: targetVersion,
+                pathLookup: lookup
+            )
+        }
+    ) {
         self.settingsStore = settingsStore
+        self.plannedCommandResolver = plannedCommandResolver
         settingsStore.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -785,10 +798,10 @@ final class AppState: ObservableObject {
             if let config = configs.first(where: { $0.id == target.id }),
                items[initialIndex].plannedUpdateCommandSpec != nil {
                 guard let expectedFingerprint = initialPlan.ownerFingerprint,
-                      let replanned = await StrategyPlanner.plannedCommand(
-                          config: config,
-                          targetVersion: items[initialIndex].latestVersion,
-                          pathLookup: pathLookup
+                      let replanned = await plannedCommandResolver(
+                          config,
+                          items[initialIndex].latestVersion,
+                          pathLookup
                       ),
                       replanned.commandSpec.displayString == plannedCommand,
                       replanned.fingerprint == expectedFingerprint else {

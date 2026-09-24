@@ -1,0 +1,19 @@
+{
+  "formulae": [
+    {
+      "name": "gh",
+      "versions": {
+        "stable": "2.102.0"
+      },
+      "revision": 1,
+      "pinned": false,
+      "installed": [
+        {
+          "version": "2.101.0",
+          "linked_keg": "2.101.0",
+          "path": "/opt/homebrew/Cellar/gh/2.101.0"
+        }
+      ]
+    }
+  ]
+}

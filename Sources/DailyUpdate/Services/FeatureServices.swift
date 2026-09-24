@@ -149,7 +149,7 @@ enum ConfigImportExport {
 
         imported.customItems = imported.customItems.map { item in
             var reviewed = item
-            reviewed.source = reviewed.source ?? .user
+            reviewed.source = .user
             reviewed.needsReview = true
             reviewed = reviewed.droppingTypedEngineFields()
             return reviewed

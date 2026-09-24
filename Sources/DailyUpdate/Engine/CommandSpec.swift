@@ -34,6 +34,8 @@ struct CommandSpec: Codable, Hashable {
             guard let value = environment[key] else { return nil }
             return "\(key)=\(ShellEscaping.quote(value))"
         }
-        return (envPrefix + [executablePath] + arguments).map(ShellEscaping.quote).joined(separator: " ")
+        let commandTokens = [executablePath] + arguments
+        let quotedCommand = commandTokens.map(ShellEscaping.quote)
+        return (envPrefix + quotedCommand).joined(separator: " ")
     }
 }

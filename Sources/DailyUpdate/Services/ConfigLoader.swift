@@ -42,31 +42,41 @@ enum ConfigLoader {
 
         if let bundled = loadBundledConfigs() {
             for var item in bundled {
-                item = expandConfig(item, settings: settings)
+                item = expandConfig(item, settings: settings, source: .bundled)
                 byID[item.id] = item
             }
         }
 
         if let legacyUser = loadLegacyUserConfigs() {
             for item in legacyUser where byID[item.id] == nil {
-                byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
+                byID[item.id] = expandConfig(
+                    item,
+                    settings: settings,
+                    source: .user,
+                    flagNeedsReview: true
+                )
             }
         }
 
         for item in settings.customItems {
-            byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
+            byID[item.id] = expandConfig(
+                item,
+                settings: settings,
+                source: .user,
+                flagNeedsReview: true
+            )
         }
 
         for item in discoveredRepos where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         for item in discoveredApps where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         for item in discoveredSkills where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         configs = Array(byID.values)
@@ -172,11 +182,12 @@ enum ConfigLoader {
     private static func expandConfig(
         _ config: DetectorConfig,
         settings: UserSettings,
+        source: ItemSource,
         flagNeedsReview: Bool = false
     ) -> DetectorConfig {
         let home = settings.rootFolder.isEmpty ? NSHomeDirectory() : settings.rootFolder
         let folders = settings.allScanFolders
-        let resolvedSource = config.source ?? (flagNeedsReview ? .user : .bundled)
+        let resolvedSource = source
         var sanitized = config
         sanitized.source = resolvedSource
         if resolvedSource != .bundled {
@@ -335,15 +346,10 @@ enum ConfigLoader {
 
     private static func validateBundledConfigs(_ items: [DetectorConfig]) -> [DetectorConfig]? {
         for item in items {
-            let source = item.source ?? .bundled
-            if item.hasTypedEngineFields && source != .bundled {
-                return nil
-            }
             if item.hasTypedEngineFields {
                 guard item.schemaVersion == 2 else { return nil }
             }
             if item.schemaVersion == 2 {
-                guard source == .bundled else { return nil }
                 guard let command = item.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
                     return nil
                 }

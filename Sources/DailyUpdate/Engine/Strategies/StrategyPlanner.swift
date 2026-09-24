@@ -627,7 +627,8 @@ private struct ClaudeNativeStrategy: Strategy {
     }
 
     private func claudeChannel() -> String? {
-        let settingsPath = URL(fileURLWithPath: NSHomeDirectory())
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        let settingsPath = URL(fileURLWithPath: home)
             .appendingPathComponent(".claude/settings.json").path
         guard let data = FileManager.default.contents(atPath: settingsPath),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {

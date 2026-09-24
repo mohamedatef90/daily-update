@@ -16,7 +16,8 @@ let package = Package(
         .testTarget(
             name: "DailyUpdateTests",
             dependencies: ["DailyUpdate"],
-            path: "Tests/DailyUpdateTests"
+            path: "Tests/DailyUpdateTests",
+            resources: [.process("Fixtures")]
         )
     ]
 )
