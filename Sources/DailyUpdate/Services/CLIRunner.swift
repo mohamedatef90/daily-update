@@ -512,13 +512,24 @@ enum CLIRunner {
                 "currentVersion": item.currentVersion ?? "",
                 "latestVersion": item.latestVersion ?? "",
                 "gateReasons": item.gateReasons.map(\.rawValue),
-                "blockReason": item.blockReason?.rawValue ?? ""
+                "blockReason": item.blockReason?.rawValue ?? "",
+                "plannedCommand": plannedCommand(for: item)
             ]
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
            let str = String(data: data, encoding: .utf8) {
             output(str)
         }
+    }
+
+    private static func plannedCommand(for item: UpdateItem) -> String {
+        if item.canInstall {
+            return item.installCommand
+        }
+        if let plannedSpec = item.plannedUpdateCommandSpec {
+            return plannedSpec.displayString
+        }
+        return item.updateCommand
     }
 }
 

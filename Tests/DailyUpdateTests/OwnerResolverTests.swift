@@ -53,6 +53,68 @@ final class OwnerResolverTests: XCTestCase {
         )
     }
 
+    func testOwnerResolverTracksNodePrefixByActiveCandidateAndKeepsCompetingPaths() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let node24Prefix = root.appendingPathComponent(".nvm/versions/node/v24.13.0", isDirectory: true)
+        let node22Prefix = root.appendingPathComponent(".nvm/versions/node/v22.12.0", isDirectory: true)
+        let node24Command = node24Prefix.appendingPathComponent("lib/node_modules/@openai/codex/bin/codex.js")
+        let node22Command = node22Prefix.appendingPathComponent("lib/node_modules/@openai/codex/bin/codex.js")
+        try createExecutable(at: node24Command)
+        try createExecutable(at: node22Command)
+
+        let node24Bin = node24Prefix.appendingPathComponent("bin", isDirectory: true)
+        let node22Bin = node22Prefix.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: node24Bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: node22Bin, withIntermediateDirectories: true)
+        let activeCandidate = node24Bin.appendingPathComponent("codex")
+        let competingCandidate = node22Bin.appendingPathComponent("codex")
+        try FileManager.default.createSymbolicLink(atPath: activeCandidate.path, withDestinationPath: node24Command.path)
+        try FileManager.default.createSymbolicLink(atPath: competingCandidate.path, withDestinationPath: node22Command.path)
+
+        let resolution = OwnerResolver.resolve(
+            commandName: "codex",
+            candidatePaths: [activeCandidate.path, competingCandidate.path],
+            layout: .fixture(home: root.path)
+        )
+
+        XCTAssertEqual(
+            resolution.active?.owner,
+            .npm(prefix: node24Prefix.path, package: "@openai/codex")
+        )
+        XCTAssertEqual(
+            resolution.competing.first?.owner,
+            .npm(prefix: node22Prefix.path, package: "@openai/codex")
+        )
+    }
+
+    func testOwnerResolverDeduplicatesByResolvedPath() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let target = root.appendingPathComponent(".local/share/uv/tools/browser-use/bin/browser-use")
+        try createExecutable(at: target)
+
+        let firstBin = root.appendingPathComponent("bin-a", isDirectory: true)
+        let secondBin = root.appendingPathComponent("bin-b", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondBin, withIntermediateDirectories: true)
+        let firstCandidate = firstBin.appendingPathComponent("browser-use")
+        let secondCandidate = secondBin.appendingPathComponent("browser-use")
+        try FileManager.default.createSymbolicLink(atPath: firstCandidate.path, withDestinationPath: target.path)
+        try FileManager.default.createSymbolicLink(atPath: secondCandidate.path, withDestinationPath: target.path)
+
+        let resolution = OwnerResolver.resolve(
+            commandName: "browser-use",
+            candidatePaths: [firstCandidate.path, secondCandidate.path, target.path],
+            layout: .fixture(home: root.path)
+        )
+
+        XCTAssertEqual(resolution.active?.resolvedPath, target.path)
+        XCTAssertTrue(resolution.competing.isEmpty)
+    }
+
     func testOwnerResolverClassifiesUvAndPipxTools() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -76,6 +138,33 @@ final class OwnerResolverTests: XCTestCase {
 
         XCTAssertEqual(uvResolution.active?.owner, .uvTool(name: "browser-use"))
         XCTAssertEqual(pipxResolution.active?.owner, .pipx(package: "httpie"))
+    }
+
+    func testOwnerResolverUsesFirstCandidateWhenUvAndPipxBothExist() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let layout = EcosystemLayout.fixture(home: root.path)
+        let uvCandidate = root.appendingPathComponent(".local/share/uv/tools/httpie/bin/http")
+        let pipxCandidate = root.appendingPathComponent(".local/pipx/venvs/httpie/bin/http")
+        try createExecutable(at: uvCandidate)
+        try createExecutable(at: pipxCandidate)
+
+        let uvFirst = OwnerResolver.resolve(
+            commandName: "http",
+            candidatePaths: [uvCandidate.path, pipxCandidate.path],
+            layout: layout
+        )
+        XCTAssertEqual(uvFirst.active?.owner, .uvTool(name: "httpie"))
+        XCTAssertEqual(uvFirst.competing.first?.owner, .pipx(package: "httpie"))
+
+        let pipxFirst = OwnerResolver.resolve(
+            commandName: "http",
+            candidatePaths: [pipxCandidate.path, uvCandidate.path],
+            layout: layout
+        )
+        XCTAssertEqual(pipxFirst.active?.owner, .pipx(package: "httpie"))
+        XCTAssertEqual(pipxFirst.competing.first?.owner, .uvTool(name: "httpie"))
     }
 
     func testStrategyPlannerPinsNpmCommandToTargetVersion() {
@@ -112,6 +201,63 @@ final class OwnerResolverTests: XCTestCase {
         XCTAssertEqual(spec?.arguments, ["install", "-g", "@anthropic-ai/claude-code@2.1.281"])
     }
 
+    func testStrategyPlannerReturnsBlockedForOwnerMismatch() async {
+        let owner = OwnerCandidate(
+            commandPath: "/tmp/node-24/bin/codex",
+            resolvedPath: "/tmp/node-24/lib/node_modules/@openai/codex/bin/codex.js",
+            owner: .npm(prefix: "/tmp/node-24", package: "@openai/codex")
+        )
+        let resolution = OwnerResolution(commandName: "codex", active: owner, competing: [])
+        let config = makeConfig(
+            id: "codex",
+            command: "codex",
+            packages: PackageIdentifiers(
+                brew: nil,
+                brewCask: nil,
+                npm: "@anthropic-ai/claude-code",
+                pipx: nil,
+                uv: nil,
+                cargo: nil,
+                gem: nil,
+                masAdamID: nil
+            ),
+            selfUpdater: nil,
+            autoUpdates: nil
+        )
+
+        let plan = await StrategyPlanner.checkPlan(
+            config: config,
+            currentVersion: "1.0.0",
+            resolution: resolution
+        )
+
+        XCTAssertEqual(plan.blockReason, .ownerMismatch)
+        XCTAssertNil(plan.updateCommandSpec)
+    }
+
+    func testStrategyPlannerReturnsBlockedForUnknownOwnerAndNoStrategy() async {
+        let missingResolution = OwnerResolution(commandName: "missing-tool", active: nil, competing: [])
+        let missingPlan = await StrategyPlanner.checkPlan(
+            config: makeConfig(id: "missing-tool", command: "missing-tool", packages: nil, selfUpdater: nil, autoUpdates: nil),
+            currentVersion: "1.0.0",
+            resolution: missingResolution
+        )
+        XCTAssertEqual(missingPlan.blockReason, .unknownOwner)
+
+        let unknownOwner = OwnerCandidate(
+            commandPath: "/tmp/custom/bin/custom-tool",
+            resolvedPath: "/tmp/custom/bin/custom-tool",
+            owner: .unknown
+        )
+        let unknownResolution = OwnerResolution(commandName: "custom-tool", active: unknownOwner, competing: [])
+        let noStrategyPlan = await StrategyPlanner.checkPlan(
+            config: makeConfig(id: "custom-tool", command: "custom-tool", packages: nil, selfUpdater: nil, autoUpdates: nil),
+            currentVersion: "1.0.0",
+            resolution: unknownResolution
+        )
+        XCTAssertEqual(noStrategyPlan.blockReason, .noStrategy)
+    }
+
     func testStrategyPlannerAddsGreedyFlagForAutoUpdatingCasks() {
         let owner = OwnerCandidate(
             commandPath: "/opt/homebrew/bin/cursor",
@@ -145,12 +291,70 @@ final class OwnerResolverTests: XCTestCase {
         XCTAssertEqual(spec?.arguments, ["upgrade", "--cask", "--greedy", "cursor"])
     }
 
+    func testStrategyPlannerSkipsGreedyFlagForCasksWithoutAutoUpdates() {
+        let owner = OwnerCandidate(
+            commandPath: "/opt/homebrew/bin/cursor",
+            resolvedPath: "/opt/homebrew/Caskroom/cursor/1.2.3/Cursor.app/Contents/MacOS/Cursor",
+            owner: .brewCask("cursor")
+        )
+        let resolution = OwnerResolution(commandName: "cursor", active: owner, competing: [])
+        let config = makeConfig(
+            id: "cursor",
+            command: "cursor",
+            packages: PackageIdentifiers(
+                brew: nil,
+                brewCask: "cursor",
+                npm: nil,
+                pipx: nil,
+                uv: nil,
+                cargo: nil,
+                gem: nil,
+                masAdamID: nil
+            ),
+            selfUpdater: nil,
+            autoUpdates: false
+        )
+
+        let spec = StrategyPlanner.commandForResolvedOwner(
+            config: config,
+            resolution: resolution,
+            targetVersion: "1.3.0"
+        )
+
+        XCTAssertEqual(spec?.arguments, ["upgrade", "--cask", "cursor"])
+    }
+
+    func testOwnershipFingerprintIncludesWorkingDirectory() {
+        let owner = OwnerCandidate(
+            commandPath: "/tmp/node-24/bin/codex",
+            resolvedPath: "/tmp/node-24/lib/node_modules/@openai/codex/bin/codex.js",
+            owner: .npm(prefix: "/tmp/node-24", package: "@openai/codex")
+        )
+        let resolution = OwnerResolution(commandName: "codex", active: owner, competing: [])
+
+        let config = makeConfig(
+            id: "codex",
+            command: "codex",
+            packages: nil,
+            selfUpdater: nil,
+            autoUpdates: nil,
+            workingDirectory: "/tmp/workspace/repo"
+        )
+
+        let fingerprint = StrategyPlanner.ownershipFingerprint(for: config, resolution: resolution)
+        XCTAssertEqual(
+            fingerprint,
+            "\(resolution.fingerprint!)|cwd:/tmp/workspace/repo"
+        )
+    }
+
     private func makeConfig(
         id: String,
         command: String,
         packages: PackageIdentifiers?,
         selfUpdater: String?,
-        autoUpdates: Bool?
+        autoUpdates: Bool?,
+        workingDirectory: String? = nil
     ) -> DetectorConfig {
         DetectorConfig(
             id: id,
@@ -169,7 +373,7 @@ final class OwnerResolverTests: XCTestCase {
             checkCommand: "echo UPDATE",
             installCommand: "true",
             updateCommand: "true",
-            workingDirectory: nil,
+            workingDirectory: workingDirectory,
             needsReview: false
         )
     }

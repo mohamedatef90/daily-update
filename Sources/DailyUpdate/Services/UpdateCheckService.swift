@@ -393,7 +393,7 @@ enum UpdateCheckService {
             return nil
         }
 
-        let fingerprint = plan.ownerResolution.fingerprint
+        let fingerprint = StrategyPlanner.ownershipFingerprint(for: config, resolution: plan.ownerResolution)
 
         if let blockReason = plan.blockReason {
             return CheckResult(

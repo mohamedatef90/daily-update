@@ -28,6 +28,18 @@ enum StrategyPlanner {
         }
 
         let resolution = await OwnerResolver.resolve(commandName: commandName, layout: layout)
+        return await checkPlan(
+            config: config,
+            currentVersion: currentVersion,
+            resolution: resolution
+        )
+    }
+
+    static func checkPlan(
+        config: DetectorConfig,
+        currentVersion: String?,
+        resolution: OwnerResolution
+    ) async -> StrategyPlan {
         guard let active = resolution.active else {
             return StrategyPlan(
                 ownerResolution: resolution,
@@ -79,6 +91,17 @@ enum StrategyPlanner {
         )
     }
 
+    static func ownershipFingerprint(for config: DetectorConfig, resolution: OwnerResolution) -> String? {
+        guard let baseFingerprint = resolution.fingerprint else { return nil }
+        guard let workingDirectory = config.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workingDirectory.isEmpty else {
+            return baseFingerprint
+        }
+        let expanded = (workingDirectory as NSString).expandingTildeInPath
+        let normalized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+        return "\(baseFingerprint)|cwd:\(normalized)"
+    }
+
     static func plannedCommand(
         config: DetectorConfig,
         targetVersion: String?,
@@ -94,7 +117,7 @@ enum StrategyPlanner {
             resolution: resolution,
             targetVersion: targetVersion
         ),
-              let fingerprint = resolution.fingerprint else {
+              let fingerprint = ownershipFingerprint(for: config, resolution: resolution) else {
             return nil
         }
         return (spec, fingerprint)
