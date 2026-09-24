@@ -309,4 +309,182 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertFalse(ConfigLoader.updateAppScriptPath.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: ConfigLoader.updateAppScriptPath))
     }
+
+    @MainActor
+    func testCLIUpdateAllRequiresYesWhenConfirmationIsEnabled() async {
+        let state = MockCLIRunnerState(
+            items: [makeItem(id: "cursor", installed: true, status: .updateAvailable)]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update-all"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("Dry-run plan:") }))
+        XCTAssertTrue(output.contains(where: { $0.contains("Re-run with --yes") }))
+    }
+
+    @MainActor
+    func testCLIInstallAllRequiresYesWhenConfirmationIsEnabled() async {
+        let state = MockCLIRunnerState(
+            items: [makeItem(id: "new-tool", installed: false, status: .notInstalled, installCommand: "echo install")]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--install-all"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("Dry-run plan:") }))
+    }
+
+    @MainActor
+    func testCLIUpdateByIDOnlyTouchesRequestedItem() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: true,
+            items: [
+                makeItem(id: "target-update", installed: true, status: .updateAvailable),
+                makeItem(id: "other-update", installed: true, status: .updateAvailable)
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "target-update"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.updateSelectedCallCount, 1)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["target-update"]])
+    }
+
+    @MainActor
+    func testCLIInstallByIDOnlyTouchesRequestedItem() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: true,
+            items: [
+                makeItem(id: "target-install", installed: false, status: .notInstalled, installCommand: "echo install"),
+                makeItem(id: "other-install", installed: false, status: .notInstalled, installCommand: "echo install")
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--install", "target-install"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.updateSelectedCallCount, 1)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["target-install"]])
+    }
+
+    @MainActor
+    func testRequestUpdateSelectedShowsDryRunWhenConfirmationEnabled() async {
+        let store = UserSettingsStore()
+        store.settings.confirmBeforeUpdate = true
+        let state = AppState(settingsStore: store)
+        state.items = [
+            makeItem(id: "menu-bar-update", installed: true, status: .updateAvailable, isSelected: true)
+        ]
+
+        await state.requestUpdateSelected()
+
+        XCTAssertTrue(state.showDryRun)
+        XCTAssertEqual(state.dryRunEntries.map(\.id), ["menu-bar-update"])
+    }
+
+    private func makeItem(
+        id: String,
+        installed: Bool,
+        status: ItemStatus,
+        installCommand: String = "",
+        updateCommand: String = "echo update",
+        isSelected: Bool = false
+    ) -> UpdateItem {
+        UpdateItem(
+            id: id,
+            name: id,
+            category: .cli,
+            description: nil,
+            currentVersion: installed ? "1.0.0" : nil,
+            latestVersion: installed ? "1.1.0" : nil,
+            status: status,
+            statusMessage: nil,
+            isInstalled: installed,
+            isSelected: isSelected,
+            isUserDefined: true,
+            source: .user,
+            iconPath: nil,
+            detectCommand: nil,
+            versionCommand: nil,
+            checkCommand: nil,
+            installCommand: installCommand,
+            updateCommand: updateCommand,
+            workingDirectory: nil
+        )
+    }
+}
+
+@MainActor
+private final class MockCLIRunnerState: CLIRunnerState {
+    var items: [UpdateItem]
+    var confirmBeforeUpdate: Bool
+    var updateSelectedCallCount = 0
+    var executedSelectionSnapshots: [[String]] = []
+
+    var selectedActionableItems: [UpdateItem] {
+        items.filter { $0.isSelected && $0.isActionable }
+    }
+
+    init(confirmBeforeUpdate: Bool = true, items: [UpdateItem]) {
+        self.confirmBeforeUpdate = confirmBeforeUpdate
+        self.items = items
+    }
+
+    func checkAll() async {}
+
+    func selectAllInstallable() {
+        for index in items.indices {
+            items[index].isSelected = items[index].canInstall
+        }
+    }
+
+    func selectAllUpdates(limitTo ids: [String]?) {
+        let allowed = ids.map(Set.init)
+        for index in items.indices {
+            if let allowed, !allowed.contains(items[index].id) { continue }
+            items[index].isSelected = items[index].canUpdate
+        }
+    }
+
+    func deselectAll(limitTo ids: [String]?) {
+        let allowed = ids.map(Set.init)
+        for index in items.indices {
+            if let allowed, !allowed.contains(items[index].id) { continue }
+            items[index].isSelected = false
+        }
+    }
+
+    func setSelection(for id: String, selected: Bool) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].isSelected = selected
+    }
+
+    func updateSelected(skipDryRun: Bool) async {
+        updateSelectedCallCount += 1
+        let selectedIDs = items.filter { $0.isSelected && $0.isActionable }.map(\.id).sorted()
+        executedSelectionSnapshots.append(selectedIDs)
+        for index in items.indices where selectedIDs.contains(items[index].id) {
+            items[index].status = .updated
+        }
+    }
 }

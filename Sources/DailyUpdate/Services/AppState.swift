@@ -409,7 +409,7 @@ final class AppState: ObservableObject {
         if autoCheckOnLaunch { await checkAll() }
         if autoUpdateOnLaunch, updateAvailableCount > 0 {
             selectAllUpdates()
-            await updateSelected(skipDryRun: true)
+            await requestUpdateSelected()
         }
         await runHealthCheck()
     }
@@ -816,7 +816,7 @@ final class AppState: ObservableObject {
                 !items[index].isBulkOperation &&
                 (items[index].status == .updateAvailable || items[index].status == .updatePending)
         }
-        await updateSelected(skipDryRun: true)
+        await requestUpdateSelected()
     }
 
     private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
