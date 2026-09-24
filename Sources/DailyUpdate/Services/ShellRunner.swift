@@ -49,6 +49,7 @@ enum ShellRunner {
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
+                process.standardInput = FileHandle.nullDevice
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 

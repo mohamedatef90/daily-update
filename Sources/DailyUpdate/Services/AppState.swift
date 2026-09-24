@@ -342,9 +342,6 @@ final class AppState: ObservableObject {
         item.snoozedUntil = pref.snoozedUntil
         item.pinnedVersion = pref.pinnedVersion
         item.permanentlyIgnored = pref.permanentlyIgnored
-        if item.needsReview, pref.reviewedCommandHash == item.commandReviewHash {
-            item.needsReview = false
-        }
         return item
     }
 
@@ -382,6 +379,16 @@ final class AppState: ObservableObject {
         let hash = items[index].commandReviewHash
         settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
         items[index].needsReview = false
+        items[index].gateReasons.removeAll { $0 == .needsReview }
+        if items[index].status == .gated {
+            if items[index].gateReasons.isEmpty {
+                items[index].status = .updateAvailable
+                items[index].statusMessage = nil
+            } else {
+                let labels = items[index].gateReasons.map(\.label).joined(separator: ", ")
+                items[index].statusMessage = "Gated: \(labels)"
+            }
+        }
         appendLog("Marked \(items[index].name) command as reviewed")
     }
 
@@ -459,7 +466,7 @@ final class AppState: ObservableObject {
         for index in items.indices {
             if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
             let item = items[index]
-            items[index].isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
+            items[index].isSelected = GatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
         }
     }
 
@@ -521,7 +528,8 @@ final class AppState: ObservableObject {
                 let config = configs[index]
                 group.addTask {
                     var item = config.toUpdateItem()
-                    if let pref = prefs[config.id] {
+                    let pref = prefs[config.id]
+                    if let pref {
                         item.autoUpdate = pref.autoUpdate
                         item.snoozedUntil = pref.snoozedUntil
                         item.pinnedVersion = pref.pinnedVersion
@@ -532,14 +540,25 @@ final class AppState: ObservableObject {
                         item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
                         return (index, item)
                     }
-                    let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
-                    item.isInstalled = installed
-                    if !installed {
-                        item.status = .notInstalled
-                        item.statusMessage = detectMsg
+                    let detection = await DetectionService.detect(config, applicationFolders: appFolders)
+                    if detection.blockReason == .unsafeCheckCommand {
+                        item.status = .blocked
+                        item.statusMessage = detection.message ?? "Blocked unsafe detect command"
+                        item.blockReason = .unsafeCheckCommand
+                        item.isSelected = false
                         return (index, item)
                     }
-                    let check = await UpdateCheckService.check(config, installed: installed)
+                    item.isInstalled = detection.installed
+                    if !detection.installed {
+                        item.status = .notInstalled
+                        item.statusMessage = detection.message
+                        return (index, item)
+                    }
+                    let check = await UpdateCheckService.check(
+                        config,
+                        installed: detection.installed,
+                        reviewedCommandHash: pref?.reviewedCommandHash
+                    )
                     item.status = check.status
                     item.currentVersionRaw = check.currentVersionRaw
                     item.currentVersion = check.currentVersion
@@ -591,11 +610,20 @@ final class AppState: ObservableObject {
 
     func retryUpdate(for id: String) async {
         guard let item = items.first(where: { $0.id == id }), item.canRetryUpdate else { return }
+        if configs.contains(where: { $0.id == id }) {
+            appendLog("Re-checking \(item.name) before retry…")
+            await recheckItems(ids: [id])
+        }
+        guard let refreshed = items.first(where: { $0.id == id }) else { return }
+        guard refreshed.status == .updateAvailable else {
+            appendLog("Retry skipped for \(refreshed.name): update is no longer available")
+            return
+        }
         deselectAll()
-        if let index = items.firstIndex(where: { $0.id == id }) {
+        if let index = items.firstIndex(where: { $0.id == refreshed.id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: false, retryItemID: item.id)
+        await requestUpdateSelected()
     }
 
     func dismissDryRun() {
@@ -783,6 +811,7 @@ final class AppState: ObservableObject {
     func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
         guard !ids.isEmpty else { return }
         let appFolders = settingsStore.settings.applicationFolders
+        let prefs = settingsStore.settings.itemPreferences
         let idSet = Set(ids)
 
         for index in items.indices where idSet.contains(items[index].id) {
@@ -793,15 +822,26 @@ final class AppState: ObservableObject {
             guard let config = configs.first(where: { $0.id == items[index].id }) else { continue }
             if items[index].permanentlyIgnored || items[index].isSnoozed { continue }
 
-            let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
-            items[index].isInstalled = installed
-            if !installed {
+            let detection = await DetectionService.detect(config, applicationFolders: appFolders)
+            if detection.blockReason == .unsafeCheckCommand {
+                items[index].status = .blocked
+                items[index].statusMessage = detection.message ?? "Blocked unsafe detect command"
+                items[index].blockReason = .unsafeCheckCommand
+                items[index].isSelected = false
+                continue
+            }
+            items[index].isInstalled = detection.installed
+            if !detection.installed {
                 items[index].status = .notInstalled
-                items[index].statusMessage = detectMsg
+                items[index].statusMessage = detection.message
                 continue
             }
 
-            let check = await UpdateCheckService.check(config, installed: installed)
+            let check = await UpdateCheckService.check(
+                config,
+                installed: detection.installed,
+                reviewedCommandHash: prefs[config.id]?.reviewedCommandHash
+            )
             let reconciled = reconcileAfterUpdate(
                 wasSuccessfulUpdate: successfulIDs.contains(items[index].id),
                 checkStatus: check.status,
@@ -825,9 +865,7 @@ final class AppState: ObservableObject {
             } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
             }
-            if items[index].canRetryUpdate && !items[index].isBulkOperation {
-                items[index].isSelected = true
-            }
+            items[index].isSelected = items[index].status == .updateAvailable && !items[index].isBulkOperation
         }
 
         refreshDuplicates()
@@ -894,7 +932,7 @@ final class AppState: ObservableObject {
     }
 
     private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
-        targets.contains { $0.isBulkOperation || $0.isRemoteScriptOperation || $0.needsReview }
+        targets.contains { $0.isBulkOperation || $0.isRemoteScriptOperation || $0.requiresCommandReview }
     }
 
     private func presentDryRun(for targets: [UpdateItem]) {

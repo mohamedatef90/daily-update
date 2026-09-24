@@ -202,7 +202,7 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var isBulkOperation: Bool {
-        BulkUpdatePolicy.isBulkOperation(itemID: id) || ActionCommandPolicy.matchesBulkPattern(updateCommand)
+        gateReasons.contains(.bulk) || ActionCommandPolicy.matchesBulkPattern(updateCommand)
     }
 
     var isRemoteScriptOperation: Bool {
@@ -211,7 +211,11 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var commandReviewHash: String {
-        [updateCommand, installCommand].joined(separator: "\n")
+        GatePolicy.reviewedCommandHash(updateCommand: updateCommand, installCommand: installCommand)
+    }
+
+    var requiresCommandReview: Bool {
+        needsReview || gateReasons.contains(.needsReview)
     }
 
     var isActionable: Bool {

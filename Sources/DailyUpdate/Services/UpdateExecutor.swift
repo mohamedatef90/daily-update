@@ -76,7 +76,7 @@ enum UpdateExecutor {
             )
         }
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
+        if usesInAppUpdateFlow(command) {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         } else {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -91,7 +91,7 @@ enum UpdateExecutor {
             checkStatus: check.status
         )
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
+        if usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
@@ -109,11 +109,11 @@ enum UpdateExecutor {
             )
         }
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
+        if usesInAppUpdateFlow(command) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
-        if UpdateCommandSemantics.hasInAppFallback(command),
+        if hasInAppFallback(command),
            check.status == .updateAvailable || check.status == .updatePending {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
@@ -194,6 +194,28 @@ enum UpdateExecutor {
         guard let after, !after.isEmpty else { return false }
         guard let before, !before.isEmpty else { return true }
         return VersionComparator.normalize(before) != VersionComparator.normalize(after)
+    }
+
+    private static func usesInAppUpdateFlow(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        if lower.contains("if brew"), hasInAppFallback(command) {
+            return false
+        }
+        let primary = command.components(separatedBy: "||").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? lower
+        if primary.contains("open -a") || primary.contains("open \"-a") || primary.hasPrefix("open ") {
+            return true
+        }
+        return primary.contains("macappstore://") || primary.contains("apps.apple.com")
+    }
+
+    private static func hasInAppFallback(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        return lower.contains("|| open -a") ||
+            lower.contains("|| open ") ||
+            lower.contains("else open -a") ||
+            lower.contains("else open ")
     }
 
     private static func looksLikeGuidanceOnly(_ output: String) -> Bool {

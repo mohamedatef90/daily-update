@@ -11,7 +11,7 @@ struct CheckResult {
 }
 
 enum UpdateCheckService {
-    static func check(_ config: DetectorConfig, installed: Bool) async -> CheckResult {
+    static func check(_ config: DetectorConfig, installed: Bool, reviewedCommandHash: String? = nil) async -> CheckResult {
         guard installed else {
             return CheckResult(
                 status: .notInstalled,
@@ -41,7 +41,19 @@ enum UpdateCheckService {
         }
 
         let cwd = config.workingDirectory?.expandingTilde
-        let currentRaw = await DetectionService.getVersion(config)
+        let versionOutcome = await DetectionService.getVersionOutcome(config)
+        if versionOutcome.blockReason == .unsafeCheckCommand {
+            return CheckResult(
+                status: .blocked,
+                currentVersion: nil,
+                currentVersionRaw: nil,
+                latestVersion: nil,
+                message: "Blocked unsafe version command",
+                gateReasons: [],
+                blockReason: .unsafeCheckCommand
+            )
+        }
+        let currentRaw = versionOutcome.value
         let current = currentRaw.flatMap { VersionTokenExtractor.extract(from: $0, pattern: config.versionPattern) }
 
         if current == nil, config.versionCommand != nil {
@@ -57,7 +69,7 @@ enum UpdateCheckService {
         }
 
         if let checkCommand = config.checkCommand {
-            if shouldBlockCheckCommand(checkCommand: checkCommand, updateCommand: config.updateCommand) {
+            if GatePolicy.isUnsafeCheckPathCommand(checkCommand: checkCommand, updateCommand: config.updateCommand) {
                 return CheckResult(
                     status: .blocked,
                     currentVersion: current,
@@ -137,7 +149,8 @@ enum UpdateCheckService {
                     current: parsedCurrent,
                     currentRaw: currentRaw,
                     latest: parsedLatest,
-                    rawIndicatesUpdate: true
+                    rawIndicatesUpdate: true,
+                    reviewedCommandHash: reviewedCommandHash
                 )
             }
 
@@ -160,7 +173,8 @@ enum UpdateCheckService {
                     current: parsedCurrent,
                     currentRaw: currentRaw,
                     latest: parsedLatest,
-                    rawIndicatesUpdate: true
+                    rawIndicatesUpdate: true,
+                    reviewedCommandHash: reviewedCommandHash
                 )
             }
 
@@ -214,7 +228,8 @@ enum UpdateCheckService {
         current: String?,
         currentRaw: String?,
         latest: String?,
-        rawIndicatesUpdate: Bool
+        rawIndicatesUpdate: Bool,
+        reviewedCommandHash: String?
     ) -> CheckResult {
         guard rawIndicatesUpdate else {
             return CheckResult(
@@ -241,7 +256,13 @@ enum UpdateCheckService {
                     blockReason: nil
                 )
             case .older:
-                return gatedOrUpdatableResult(config: config, current: current, currentRaw: currentRaw, latest: latest)
+                return gatedOrUpdatableResult(
+                    config: config,
+                    current: current,
+                    currentRaw: currentRaw,
+                    latest: latest,
+                    reviewedCommandHash: reviewedCommandHash
+                )
             case .incomparable:
                 return CheckResult(
                     status: .checkFailed,
@@ -260,7 +281,8 @@ enum UpdateCheckService {
             current: current,
             currentRaw: currentRaw,
             latest: latest,
-            fallbackMessage: latest == nil ? "Update available (latest version not reported)" : nil
+            fallbackMessage: latest == nil ? "Update available (latest version not reported)" : nil,
+            reviewedCommandHash: reviewedCommandHash
         )
     }
 
@@ -312,28 +334,15 @@ enum UpdateCheckService {
         return nil
     }
 
-    private static func shouldBlockCheckCommand(checkCommand: String, updateCommand: String) -> Bool {
-        let risks = CommandShapeClassifier.classify(checkCommand).risks
-        if risks.contains(.bulk) || risks.contains(.remoteScript) || risks.contains(.privileged) || risks.contains(.destructive) {
-            return true
-        }
-        return ActionCommandPolicy.checkCommandContainsOwnUpdateCommand(
-            checkCommand: checkCommand,
-            updateCommand: updateCommand
-        )
-    }
-
     private static func gatedOrUpdatableResult(
         config: DetectorConfig,
         current: String?,
         currentRaw: String?,
         latest: String?,
-        fallbackMessage: String? = nil
+        fallbackMessage: String? = nil,
+        reviewedCommandHash: String?
     ) -> CheckResult {
-        var gateReasons = commandGateReasons(for: config)
-        if config.needsReview == true, !gateReasons.contains(.needsReview) {
-            gateReasons.append(.needsReview)
-        }
+        let gateReasons = GatePolicy.updateGateReasons(for: config, reviewedHash: reviewedCommandHash)
 
         if !gateReasons.isEmpty {
             let labels = gateReasons.map(\.label).joined(separator: ", ")
@@ -359,16 +368,6 @@ enum UpdateCheckService {
         )
     }
 
-    private static func commandGateReasons(for config: DetectorConfig) -> [GateReason] {
-        let classification = CommandShapeClassifier.classify(config.updateCommand)
-        var reasons: [GateReason] = []
-        if classification.risks.contains(.bulk) { reasons.append(.bulk) }
-        if classification.risks.contains(.remoteScript) { reasons.append(.remoteScript) }
-        if classification.risks.contains(.privileged) { reasons.append(.privileged) }
-        if classification.risks.contains(.destructive) { reasons.append(.destructive) }
-        if classification.needsReview { reasons.append(.needsReview) }
-        return reasons
-    }
 }
 
 private extension String {

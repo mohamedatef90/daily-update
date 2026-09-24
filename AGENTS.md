@@ -6,6 +6,8 @@ Daily Update is a Swift Package Manager macOS 13+ app. Its executable target is
 `Sources/DailyUpdate`. Keep code grouped by responsibility:
 
 - `Models/` contains shared data types and settings models.
+- `Engine/` contains pure update logic (version parsing/comparison, shell lexing,
+  command classification, and gate policy decisions).
 - `Services/` contains update detection, shell execution, persistence, scanning,
   scheduling, and app lifecycle behavior.
 - `Views/` contains SwiftUI screens and reusable UI components.
@@ -27,8 +29,8 @@ avoid mixing UI work with shell or persistence logic.
 - `DailyUpdate.app/Contents/MacOS/DailyUpdate --check` runs an update check from
   the command line.
 
-There is currently no test target. Run `swift build` before submitting changes,
-and manually exercise the affected UI or CLI flow.
+Run `swift build` and `swift test` before submitting changes, and manually
+exercise the affected UI or CLI flow.
 
 ## Coding Style & Naming Conventions
 

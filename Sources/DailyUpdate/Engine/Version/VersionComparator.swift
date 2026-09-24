@@ -30,9 +30,7 @@ enum VersionComparator {
             if lhs == rhs { return .same }
             return lhs < rhs ? .older : .newer
         case let (.revision(lhs), .revision(rhs)):
-            let left = lhs.lowercased()
-            let right = rhs.lowercased()
-            if left == right || left.hasPrefix(right) || right.hasPrefix(left) {
+            if lhs == rhs || lhs.hasPrefix(rhs) || rhs.hasPrefix(lhs) {
                 return .same
             }
             return .incomparable
@@ -44,10 +42,9 @@ enum VersionComparator {
     }
 
     static func normalize(_ version: String) -> String {
-        version
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "^v", with: "", options: .regularExpression)
-            .components(separatedBy: ",").first ?? version
-            .lowercased()
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutPrefix = trimmed.replacingOccurrences(of: "^v", with: "", options: .regularExpression)
+        let primary = withoutPrefix.components(separatedBy: ",").first ?? withoutPrefix
+        return primary.lowercased()
     }
 }

@@ -10,12 +10,12 @@ protocol CLIRunnerState: AnyObject {
     func selectAllUpdates(limitTo ids: [String]?)
     func deselectAll(limitTo ids: [String]?)
     func setSelection(for id: String, selected: Bool)
-    func updateSelected(skipDryRun: Bool) async
+    func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async
 }
 
 extension AppState: CLIRunnerState {
-    func updateSelected(skipDryRun: Bool) async {
-        await updateSelected(skipDryRun: skipDryRun, retryItemID: nil)
+    func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async {
+        await updateSelected(skipDryRun: skipDryRun, retryItemID: nil, explicitTargetIDs: explicitTargetIDs)
     }
 }
 
@@ -294,7 +294,7 @@ enum CLIRunner {
         }
 
         let targetIDs = Set(entries.map(\.id))
-        await state.updateSelected(skipDryRun: true)
+        await state.updateSelected(skipDryRun: true, explicitTargetIDs: nil)
         return actionExitCode(
             state: state,
             targetIDs: targetIDs,
@@ -316,7 +316,22 @@ enum CLIRunner {
             printAvailableIDs(state: state, for: action, output: output)
             return 1
         }
-        guard action.matches(item) else {
+        if action == .update, item.status == .gated, GatePolicy.canRunScopedUpdateWithYes(item), !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This update is gated. Re-run with --yes to execute it.")
+            return 2
+        }
+        let isNormalAction = action.matches(item)
+        let isScopedGatedUpdate = action == .update && confirmed && GatePolicy.canRunScopedUpdateWithYes(item)
+        guard isNormalAction || isScopedGatedUpdate else {
             output("Item '\(itemID)' is not available for \(action.noun).")
             printAvailableIDs(state: state, for: action, output: output)
             return 1
@@ -379,7 +394,7 @@ enum CLIRunner {
         }
 
         state.setSelection(for: item.id, selected: true)
-        await state.updateSelected(skipDryRun: true)
+        await state.updateSelected(skipDryRun: true, explicitTargetIDs: [item.id])
         return actionExitCode(state: state, targetIDs: Set([item.id]))
     }
 
@@ -390,7 +405,7 @@ enum CLIRunner {
         output: (String) -> Void
     ) {
         let ids = state.items
-            .filter { action.matches($0) }
+            .filter { action.matches($0) || (action == .update && GatePolicy.canRunScopedUpdateWithYes($0)) }
             .map(\.id)
             .sorted()
         if ids.isEmpty {

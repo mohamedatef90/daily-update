@@ -309,7 +309,7 @@ struct ItemNameCell: View {
                             .foregroundStyle(.blue)
                             .help("Pinned version mismatch")
                     }
-                    if item.needsReview {
+                    if item.requiresCommandReview {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.caption2)
                             .foregroundStyle(.orange)
@@ -450,7 +450,7 @@ extension ItemListView {
             }
             Divider()
         }
-        if item.needsReview {
+        if item.requiresCommandReview {
             Button("Mark Command Reviewed") {
                 appState.markCommandReviewed(id: item.id)
             }

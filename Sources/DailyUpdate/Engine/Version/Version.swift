@@ -10,7 +10,7 @@ struct Version: Hashable, Comparable, CustomStringConvertible {
             case let (.numeric(l), .numeric(r)):
                 return l < r
             case let (.alpha(l), .alpha(r)):
-                return l.localizedCaseInsensitiveCompare(r) == .orderedAscending
+                return l < r
             case (.numeric, .alpha):
                 return true
             case (.alpha, .numeric):
@@ -37,9 +37,22 @@ struct Version: Hashable, Comparable, CustomStringConvertible {
         guard let core = parts.core else { return nil }
 
         self.core = core
-        self.prerelease = Version.extractPrerelease(from: parts.suffix)
-        self.post = Version.extractPostRevision(from: parts.suffix)
+        let post = Version.extractPostRevision(from: parts.suffix)
+        self.post = post
+        self.prerelease = Version.extractPrerelease(from: Version.removePostSuffix(from: parts.suffix))
         self.raw = normalized
+    }
+
+    static func == (lhs: Version, rhs: Version) -> Bool {
+        normalizedCore(lhs.core) == normalizedCore(rhs.core) &&
+            lhs.prerelease == rhs.prerelease &&
+            lhs.post == rhs.post
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(Self.normalizedCore(core))
+        hasher.combine(prerelease)
+        hasher.combine(post)
     }
 
     static func < (lhs: Version, rhs: Version) -> Bool {
@@ -135,6 +148,22 @@ struct Version: Hashable, Comparable, CustomStringConvertible {
         return nil
     }
 
+    private static func removePostSuffix(from suffix: String) -> String {
+        var value = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patterns = [
+            #"(?:^|[._-])post\d+$"#,
+            #"_\d+$"#,
+            #"-\d+-g[0-9a-f]{7,40}$"#
+        ]
+        for pattern in patterns {
+            if let range = value.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
+                value.removeSubrange(range)
+                break
+            }
+        }
+        return value
+    }
+
     private static func extractPrerelease(from suffix: String) -> [Identifier] {
         guard !suffix.isEmpty else { return [] }
         var value = suffix
@@ -143,11 +172,6 @@ struct Version: Hashable, Comparable, CustomStringConvertible {
         guard !value.isEmpty else { return [] }
 
         value = value.replacingOccurrences(of: "_", with: ".")
-        if let postRange = value.range(of: #"(?:^|[.-])post\d+$"#, options: .regularExpression) {
-            value.removeSubrange(postRange)
-        } else if let gitDescribeRange = value.range(of: #"-\d+-g[0-9a-f]{7,40}$"#, options: [.regularExpression, .caseInsensitive]) {
-            value.removeSubrange(gitDescribeRange)
-        }
         value = value.trimmingCharacters(in: CharacterSet(charactersIn: ".-"))
         guard !value.isEmpty else { return [] }
 
@@ -203,5 +227,13 @@ struct Version: Hashable, Comparable, CustomStringConvertible {
             return nil
         }
         return Int(value[captureRange])
+    }
+
+    private static func normalizedCore(_ core: [Int]) -> [Int] {
+        var normalized = core
+        while normalized.count > 1, normalized.last == 0 {
+            normalized.removeLast()
+        }
+        return normalized
     }
 }

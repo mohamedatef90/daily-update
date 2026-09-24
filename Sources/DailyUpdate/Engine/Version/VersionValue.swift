@@ -22,10 +22,3 @@ enum VersionValue: Hashable {
         self = .opaque(trimmed)
     }
 }
-
-enum VersionOrder: String, Codable {
-    case older
-    case same
-    case newer
-    case incomparable
-}

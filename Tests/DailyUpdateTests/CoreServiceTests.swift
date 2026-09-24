@@ -122,23 +122,6 @@ final class CoreServiceTests: XCTestCase {
         XCTAssertTrue(result.completedOrInitiated)
     }
 
-    func testBrewFallbackOpenIsNotTreatedAsInAppUpdate() {
-        let command = "brew upgrade --cask cursor 2>/dev/null || open -a Cursor"
-        XCTAssertFalse(UpdateCommandSemantics.usesInAppUpdateFlow(command))
-        XCTAssertTrue(UpdateCommandSemantics.hasInAppFallback(command))
-    }
-
-    func testBrewElseOpenHasInAppFallback() {
-        let command = "if brew list --cask chatgpt >/dev/null 2>&1; then brew upgrade --cask chatgpt; else open -a ChatGPT; fi"
-        XCTAssertFalse(UpdateCommandSemantics.usesInAppUpdateFlow(command))
-        XCTAssertTrue(UpdateCommandSemantics.hasInAppFallback(command))
-    }
-
-    func testPrimaryOpenCommandIsInAppUpdate() {
-        XCTAssertTrue(UpdateCommandSemantics.usesInAppUpdateFlow("open -a \"ChatGPT Atlas\""))
-        XCTAssertTrue(UpdateCommandSemantics.usesInAppUpdateFlow("open 'macappstore://apps.apple.com/app/id497799835'"))
-    }
-
     func testTimedOutCommandsExposeAUsefulFailureReason() async {
         let result = await ShellRunner.run("sleep 2", timeout: 0.01)
 
@@ -257,8 +240,8 @@ final class CoreServiceTests: XCTestCase {
 
                     if ActionCommandPolicy.matchesBulkPattern(command) {
                         XCTAssertTrue(
-                            BulkUpdatePolicy.isBulkOperation(itemID: config.id) || command == config.updateCommand,
-                            "\(config.id) \(kind) matches bulk pattern but is not gated: \(command)"
+                            kind == "update",
+                            "\(config.id) \(kind) should only classify as bulk for update commands: \(command)"
                         )
                     }
                 }
@@ -392,8 +375,8 @@ final class CoreServiceTests: XCTestCase {
             workingDirectory: nil
         )
 
-        XCTAssertFalse(BulkUpdatePolicy.shouldAutoSelectForUpdate(bulk))
-        XCTAssertTrue(BulkUpdatePolicy.shouldAutoSelectForUpdate(singleItem))
+        XCTAssertFalse(GatePolicy.shouldAutoSelectForUpdate(bulk))
+        XCTAssertTrue(GatePolicy.shouldAutoSelectForUpdate(singleItem))
     }
 
     func testSparkleDirectInstallIsDisabled() async throws {
@@ -562,7 +545,7 @@ final class CoreServiceTests: XCTestCase {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
             items: [
-                makeItem(id: "brew", installed: true, status: .updateAvailable),
+                makeItem(id: "brew", installed: true, status: .updateAvailable, updateCommand: "brew upgrade"),
                 makeItem(id: "single-update", installed: true, status: .updateAvailable)
             ]
         )
@@ -613,6 +596,63 @@ final class CoreServiceTests: XCTestCase {
 
         XCTAssertEqual(code, 0)
         XCTAssertEqual(state.executedSelectionSnapshots, [["brew"]])
+    }
+
+    @MainActor
+    func testCLIScopedGatedBulkUpdateRequiresYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "gated-bulk", installed: true, status: .gated, updateCommand: "brew upgrade", gateReasons: [.bulk])
+            ]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "gated-bulk"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+        XCTAssertTrue(output.contains(where: { $0.contains("Re-run with --yes") }))
+    }
+
+    @MainActor
+    func testCLIScopedGatedBulkUpdateAllowsYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "gated-bulk", installed: true, status: .gated, updateCommand: "brew upgrade", gateReasons: [.bulk])
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "gated-bulk", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["gated-bulk"]])
+    }
+
+    @MainActor
+    func testCLIScopedGatedPrivilegedUpdateIsRefusedEvenWithYes() async {
+        let state = MockCLIRunnerState(
+            confirmBeforeUpdate: false,
+            items: [
+                makeItem(id: "gated-privileged", installed: true, status: .gated, updateCommand: "sudo brew upgrade", gateReasons: [.privileged])
+            ]
+        )
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--update", "gated-privileged", "--yes"],
+            state: state
+        )
+
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
     }
 
     @MainActor
@@ -806,14 +846,15 @@ final class CoreServiceTests: XCTestCase {
             let state = AppState(settingsStore: store)
             state.items = [
                 UpdateItem(
-                    id: "brew",
-                    name: "Homebrew",
+                    id: "bulk-retry",
+                    name: "Bulk Retry",
                     category: .runtime,
                     description: nil,
                     currentVersion: "1.0.0",
                     latestVersion: "1.1.0",
                     status: .updateAvailable,
                     statusMessage: "Still behind latest",
+                    gateReasons: [.bulk],
                     isInstalled: true,
                     isSelected: false,
                     isUserDefined: false,
@@ -828,15 +869,15 @@ final class CoreServiceTests: XCTestCase {
                 )
             ]
 
-            await state.retryUpdate(for: "brew")
+            await state.retryUpdate(for: "bulk-retry")
 
             XCTAssertTrue(state.showDryRun)
-            XCTAssertEqual(state.dryRunEntries.map(\.id), ["brew"])
+            XCTAssertEqual(state.dryRunEntries.map(\.id), ["bulk-retry"])
         }
     }
 
     @MainActor
-    func testRetryUpdateOnErrorRunsConfirmedDryRunTargetsOnly() async throws {
+    func testRetryUpdateRunsConfirmedDryRunTargetsOnly() async throws {
         try await withTemporaryAppSupportDirectory { tempRoot in
             let retryMarker = tempRoot.appendingPathComponent("retry-marker")
             let otherMarker = tempRoot.appendingPathComponent("other-marker")
@@ -853,8 +894,8 @@ final class CoreServiceTests: XCTestCase {
                     description: nil,
                     currentVersion: "1.0.0",
                     latestVersion: "1.1.0",
-                    status: .error,
-                    statusMessage: "Update failed",
+                    status: .updateAvailable,
+                    statusMessage: "Retry requested",
                     isInstalled: true,
                     isSelected: false,
                     isUserDefined: false,
@@ -1039,7 +1080,8 @@ final class CoreServiceTests: XCTestCase {
         status: ItemStatus,
         installCommand: String = "",
         updateCommand: String = "echo update",
-        isSelected: Bool = false
+        isSelected: Bool = false,
+        gateReasons: [GateReason] = []
     ) -> UpdateItem {
         UpdateItem(
             id: id,
@@ -1050,6 +1092,7 @@ final class CoreServiceTests: XCTestCase {
             latestVersion: installed ? "1.1.0" : nil,
             status: status,
             statusMessage: nil,
+            gateReasons: gateReasons,
             isInstalled: installed,
             isSelected: isSelected,
             isUserDefined: true,
@@ -1099,7 +1142,7 @@ private final class MockCLIRunnerState: CLIRunnerState {
         let allowed = ids.map(Set.init)
         for index in items.indices {
             if let allowed, !allowed.contains(items[index].id) { continue }
-            items[index].isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(items[index])
+            items[index].isSelected = GatePolicy.shouldAutoSelectForUpdate(items[index])
         }
     }
 
@@ -1116,9 +1159,15 @@ private final class MockCLIRunnerState: CLIRunnerState {
         items[index].isSelected = selected
     }
 
-    func updateSelected(skipDryRun: Bool) async {
+    func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async {
         updateSelectedCallCount += 1
-        let selectedIDs = items.filter { $0.isSelected && $0.isActionable }.map(\.id).sorted()
+        let selectedIDs: [String]
+        if let explicitTargetIDs {
+            let targetSet = Set(explicitTargetIDs)
+            selectedIDs = items.filter { targetSet.contains($0.id) }.map(\.id).sorted()
+        } else {
+            selectedIDs = items.filter { $0.isSelected && $0.isActionable }.map(\.id).sorted()
+        }
         executedSelectionSnapshots.append(selectedIDs)
         for index in items.indices where selectedIDs.contains(items[index].id) {
             let id = items[index].id
