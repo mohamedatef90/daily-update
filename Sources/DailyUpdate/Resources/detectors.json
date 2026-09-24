@@ -184,6 +184,10 @@
       "name": "Codex CLI",
       "category": "cli",
       "description": "OpenAI Codex CLI",
+      "command": "codex",
+      "packages": {
+        "npm": "@openai/codex"
+      },
       "detect": {
         "type": "command",
         "command": "command -v codex >/dev/null 2>&1"
@@ -197,6 +201,12 @@
       "name": "Claude Code",
       "category": "cli",
       "description": "Anthropic Claude Code CLI",
+      "command": "claude",
+      "packages": {
+        "npm": "@anthropic-ai/claude-code",
+        "brewCask": "claude-code"
+      },
+      "selfUpdater": "claudeCode",
       "detect": {
         "type": "command",
         "command": "command -v claude >/dev/null 2>&1"

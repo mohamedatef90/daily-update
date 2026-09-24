@@ -8,6 +8,8 @@ struct CheckResult {
     var message: String?
     var gateReasons: [GateReason]
     var blockReason: BlockReason?
+    var plannedUpdateCommandSpec: CommandSpec? = nil
+    var ownerFingerprint: String? = nil
 }
 
 enum UpdateCheckService {
@@ -54,6 +56,14 @@ enum UpdateCheckService {
                 gateReasons: [],
                 blockReason: nil
             )
+        }
+
+        if let strategyResult = await typedEngineCheck(
+            config: config,
+            current: current,
+            currentRaw: currentRaw
+        ) {
+            return strategyResult
         }
 
         if let checkCommand = config.checkCommand {
@@ -368,6 +378,112 @@ enum UpdateCheckService {
         if classification.risks.contains(.destructive) { reasons.append(.destructive) }
         if classification.needsReview { reasons.append(.needsReview) }
         return reasons
+    }
+
+    private static func typedEngineCheck(
+        config: DetectorConfig,
+        current: String?,
+        currentRaw: String?
+    ) async -> CheckResult? {
+        guard let plan = await StrategyPlanner.checkPlan(
+            config: config,
+            currentVersion: current
+        ) else {
+            return nil
+        }
+
+        let fingerprint = plan.ownerResolution.fingerprint
+
+        if let blockReason = plan.blockReason {
+            return CheckResult(
+                status: .blocked,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: plan.latestVersion,
+                message: plan.failureMessage ?? blockReason.label,
+                gateReasons: [],
+                blockReason: blockReason,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        if let failureMessage = plan.failureMessage {
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: plan.latestVersion,
+                message: failureMessage,
+                gateReasons: [],
+                blockReason: nil,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        guard let latest = plan.latestVersion else {
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: current,
+                currentVersionRaw: currentRaw,
+                latestVersion: nil,
+                message: "Could not determine latest version",
+                gateReasons: [],
+                blockReason: nil,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        if let current {
+            switch VersionComparator.compare(current: current, latest: latest) {
+            case .same, .newer:
+                return CheckResult(
+                    status: .upToDate,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: nil,
+                    gateReasons: [],
+                    blockReason: nil,
+                    plannedUpdateCommandSpec: plan.updateCommandSpec,
+                    ownerFingerprint: fingerprint
+                )
+            case .older:
+                var result = gatedOrUpdatableResult(
+                    config: config,
+                    current: current,
+                    currentRaw: currentRaw,
+                    latest: latest
+                )
+                result.plannedUpdateCommandSpec = plan.updateCommandSpec
+                result.ownerFingerprint = fingerprint
+                return result
+            case .incomparable:
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: current,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: "Could not compare \(current) with \(latest)",
+                    gateReasons: [],
+                    blockReason: nil,
+                    plannedUpdateCommandSpec: nil,
+                    ownerFingerprint: fingerprint
+                )
+            }
+        }
+
+        var result = gatedOrUpdatableResult(
+            config: config,
+            current: current,
+            currentRaw: currentRaw,
+            latest: latest
+        )
+        result.plannedUpdateCommandSpec = plan.updateCommandSpec
+        result.ownerFingerprint = fingerprint
+        return result
     }
 }
 

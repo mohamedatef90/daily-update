@@ -53,7 +53,16 @@ enum UpdateExecutor {
         let beforeVersion = await DetectionService.getVersion(config)
         let targetLatest = item.latestVersion
         let command = item.updateCommand
-        let result = await runner(command, item.workingDirectory?.expandingTilde, 600)
+        let result: ShellRunner.Result
+        if let commandSpec = item.plannedUpdateCommandSpec {
+            result = await ShellRunner.run(
+                commandSpec,
+                workingDirectory: item.workingDirectory?.expandingTilde,
+                timeout: 600
+            )
+        } else {
+            result = await runner(command, item.workingDirectory?.expandingTilde, 600)
+        }
 
         if !result.succeeded {
             let reason = failureReason(from: result, action: "Update")
@@ -134,6 +143,11 @@ enum UpdateExecutor {
             category: item.category,
             description: item.description,
             source: item.source,
+            command: item.command,
+            packages: item.packages,
+            selfUpdater: item.selfUpdater,
+            appcastURL: item.appcastURL,
+            autoUpdates: item.autoUpdates,
             detect: nil,
             versionCommand: item.versionCommand,
             versionPattern: item.versionPattern,

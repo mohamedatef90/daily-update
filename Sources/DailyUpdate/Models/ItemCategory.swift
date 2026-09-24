@@ -141,12 +141,19 @@ struct UpdateItem: Identifiable, Hashable {
     var duplicateGroupID: String? = nil
     let iconPath: String?
     let detectCommand: String?
+    var command: String? = nil
+    var packages: PackageIdentifiers? = nil
+    var selfUpdater: String? = nil
+    var appcastURL: String? = nil
+    var autoUpdates: Bool? = nil
     let versionCommand: String?
     var versionPattern: String? = nil
     let checkCommand: String?
     let installCommand: String
     let updateCommand: String
     let workingDirectory: String?
+    var plannedUpdateCommandSpec: CommandSpec? = nil
+    var ownerFingerprint: String? = nil
     var detectedPaths: [String] = []
     var needsReview: Bool = false
 
@@ -235,6 +242,8 @@ struct UpdateItem: Identifiable, Hashable {
         hasher.combine(latestVersion)
         hasher.combine(statusMessage)
         hasher.combine(versionPattern)
+        hasher.combine(plannedUpdateCommandSpec)
+        hasher.combine(ownerFingerprint)
     }
 
     static func == (lhs: UpdateItem, rhs: UpdateItem) -> Bool {
@@ -248,6 +257,8 @@ struct UpdateItem: Identifiable, Hashable {
             lhs.currentVersion == rhs.currentVersion &&
             lhs.latestVersion == rhs.latestVersion &&
             lhs.versionPattern == rhs.versionPattern &&
+            lhs.plannedUpdateCommandSpec == rhs.plannedUpdateCommandSpec &&
+            lhs.ownerFingerprint == rhs.ownerFingerprint &&
             lhs.isInstalled == rhs.isInstalled &&
             lhs.autoUpdate == rhs.autoUpdate &&
             lhs.isSnoozed == rhs.isSnoozed &&
