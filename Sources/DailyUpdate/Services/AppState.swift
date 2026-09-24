@@ -572,16 +572,35 @@ final class AppState: ObservableObject {
         await updateSelected(skipDryRun: false, retryItemID: item.id)
     }
 
+    func dismissDryRun() {
+        showDryRun = false
+        dryRunEntries = []
+        pendingDryRunItemIDs = []
+    }
+
     func confirmDryRun() async {
         let targetIDs = pendingDryRunItemIDs
+        let plannedEntries = dryRunEntries
         guard !targetIDs.isEmpty else {
             appendLog("No items selected")
             return
         }
-        showDryRun = false
-        dryRunEntries = []
-        pendingDryRunItemIDs = []
-        await updateSelected(skipDryRun: true, explicitTargetIDs: targetIDs)
+        dismissDryRun()
+
+        let plannedByID = Dictionary(uniqueKeysWithValues: plannedEntries.map { ($0.id, $0) })
+        let confirmedTargetIDs = actionTargets(for: targetIDs).compactMap { target -> String? in
+            guard let planned = plannedByID[target.id] else { return nil }
+            if planned.action != target.actionLabel || planned.command != actionCommand(for: target) {
+                appendLog("\(target.name): changed since you confirmed, not run")
+                return nil
+            }
+            return target.id
+        }
+        guard !confirmedTargetIDs.isEmpty else {
+            appendLog("No items selected")
+            return
+        }
+        await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
     }
 
     func updateSelected(

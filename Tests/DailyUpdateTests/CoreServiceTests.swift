@@ -273,6 +273,54 @@ final class CoreServiceTests: XCTestCase {
         }
     }
 
+    func testBundledMiseCheckHandlesCurrentLatestAndMissingLatest() async throws {
+        try await withTemporaryAppSupportDirectory { tempAppSupport in
+            let bundled = ConfigLoader.loadConfigs(settings: .defaults).filter { $0.source == .bundled }
+            let miseConfig = try XCTUnwrap(bundled.first(where: { $0.id == "mise" }))
+            let checkCommand = try XCTUnwrap(miseConfig.checkCommand)
+
+            let stubDirectory = tempAppSupport.appendingPathComponent("bin", isDirectory: true)
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+
+            let miseStubPath = stubDirectory.appendingPathComponent("mise")
+            let jsonPath = tempAppSupport.appendingPathComponent("mise.json")
+            let script = """
+            #!/bin/sh
+            if [ "$1" = "version" ] && [ "$2" = "--json" ]; then
+              cat "$MISE_STUB_JSON_FILE"
+              exit 0
+            fi
+            echo "unexpected invocation: $*" >&2
+            exit 1
+            """
+            try script.write(to: miseStubPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: miseStubPath.path)
+
+            let environment = [
+                "PATH": "\(stubDirectory.path):/usr/bin:/bin:/usr/sbin:/sbin",
+                "MISE_STUB_JSON_FILE": jsonPath.path
+            ]
+
+            try """
+            {"version":"2026.9.1 macos-arm64 (2026-09-20)","latest":"2026.9.1"}
+            """.write(to: jsonPath, atomically: true, encoding: .utf8)
+            let upToDate = await ShellRunner.run(checkCommand, environment: environment)
+            XCTAssertEqual(upToDate.stdout, "OK")
+
+            try """
+            {"version":"2026.8.0 macos-arm64 (2026-08-20)","latest":"2026.9.1"}
+            """.write(to: jsonPath, atomically: true, encoding: .utf8)
+            let behind = await ShellRunner.run(checkCommand, environment: environment)
+            XCTAssertEqual(behind.stdout, "UPDATE")
+
+            try """
+            {"version":"2026.9.1 macos-arm64 (2026-09-20)","latest":null}
+            """.write(to: jsonPath, atomically: true, encoding: .utf8)
+            let missingLatest = await ShellRunner.run(checkCommand, environment: environment)
+            XCTAssertTrue(missingLatest.stdout.hasPrefix("CHECK_FAILED:"))
+        }
+    }
+
     func testBulkItemsAreNotAutoSelectedForUpdateAll() {
         let bulk = UpdateItem(
             id: "brew",
@@ -689,142 +737,236 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testRequestUpdateSelectedShowsDryRunWhenConfirmationEnabled() async {
-        let store = UserSettingsStore()
-        store.settings.confirmBeforeUpdate = true
-        let state = AppState(settingsStore: store)
-        state.notificationsEnabled = false
-        state.items = [
-            makeItem(id: "menu-bar-update", installed: true, status: .updateAvailable, isSelected: true)
-        ]
+    func testRequestUpdateSelectedShowsDryRunWhenConfirmationEnabled() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            store.settings.confirmBeforeUpdate = true
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            state.items = [
+                makeItem(id: "menu-bar-update", installed: true, status: .updateAvailable, isSelected: true)
+            ]
 
-        await state.requestUpdateSelected()
+            await state.requestUpdateSelected()
 
-        XCTAssertTrue(state.showDryRun)
-        XCTAssertEqual(state.dryRunEntries.map(\.id), ["menu-bar-update"])
+            XCTAssertTrue(state.showDryRun)
+            XCTAssertEqual(state.dryRunEntries.map(\.id), ["menu-bar-update"])
+        }
     }
 
     @MainActor
-    func testAppStateSelectAllInstallableExcludesRemoteScriptInstallers() {
-        let store = UserSettingsStore()
-        let state = AppState(settingsStore: store)
-        state.items = [
-            makeItem(id: "safe-install", installed: false, status: .notInstalled, installCommand: "brew install safe-tool"),
-            makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
-        ]
+    func testAppStateSelectAllInstallableExcludesRemoteScriptInstallers() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            let state = AppState(settingsStore: store)
+            state.items = [
+                makeItem(id: "safe-install", installed: false, status: .notInstalled, installCommand: "brew install safe-tool"),
+                makeItem(id: "remote-install", installed: false, status: .notInstalled, installCommand: "curl -fsSL https://example.com/install.sh | bash")
+            ]
 
-        state.selectAllInstallable()
+            state.selectAllInstallable()
 
-        XCTAssertTrue(state.items.first(where: { $0.id == "safe-install" })?.isSelected == true)
-        XCTAssertTrue(state.items.first(where: { $0.id == "remote-install" })?.isSelected == false)
+            XCTAssertTrue(state.items.first(where: { $0.id == "safe-install" })?.isSelected == true)
+            XCTAssertTrue(state.items.first(where: { $0.id == "remote-install" })?.isSelected == false)
+        }
     }
 
     @MainActor
-    func testRetryUpdateForBulkItemUsesForcedDryRun() async {
-        let store = UserSettingsStore()
-        store.settings.confirmBeforeUpdate = false
-        let state = AppState(settingsStore: store)
-        state.items = [
-            UpdateItem(
-                id: "brew",
-                name: "Homebrew",
-                category: .runtime,
-                description: nil,
-                currentVersion: "1.0.0",
-                latestVersion: "1.1.0",
-                status: .updateAvailable,
-                statusMessage: "Still behind latest",
-                isInstalled: true,
-                isSelected: false,
-                isUserDefined: false,
-                source: .bundled,
-                iconPath: nil,
-                detectCommand: nil,
-                versionCommand: nil,
-                checkCommand: nil,
-                installCommand: "",
-                updateCommand: "brew upgrade",
-                workingDirectory: nil
-            )
-        ]
+    func testRetryUpdateForBulkItemUsesForcedDryRun() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            store.settings.confirmBeforeUpdate = false
+            let state = AppState(settingsStore: store)
+            state.items = [
+                UpdateItem(
+                    id: "brew",
+                    name: "Homebrew",
+                    category: .runtime,
+                    description: nil,
+                    currentVersion: "1.0.0",
+                    latestVersion: "1.1.0",
+                    status: .updateAvailable,
+                    statusMessage: "Still behind latest",
+                    isInstalled: true,
+                    isSelected: false,
+                    isUserDefined: false,
+                    source: .bundled,
+                    iconPath: nil,
+                    detectCommand: nil,
+                    versionCommand: nil,
+                    checkCommand: nil,
+                    installCommand: "",
+                    updateCommand: "brew upgrade",
+                    workingDirectory: nil
+                )
+            ]
 
-        await state.retryUpdate(for: "brew")
+            await state.retryUpdate(for: "brew")
 
-        XCTAssertTrue(state.showDryRun)
-        XCTAssertEqual(state.dryRunEntries.map(\.id), ["brew"])
+            XCTAssertTrue(state.showDryRun)
+            XCTAssertEqual(state.dryRunEntries.map(\.id), ["brew"])
+        }
     }
 
     @MainActor
     func testRetryUpdateOnErrorRunsConfirmedDryRunTargetsOnly() async throws {
+        try await withTemporaryAppSupportDirectory { tempRoot in
+            let retryMarker = tempRoot.appendingPathComponent("retry-marker")
+            let otherMarker = tempRoot.appendingPathComponent("other-marker")
+
+            let store = UserSettingsStore()
+            store.settings.confirmBeforeUpdate = true
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            state.items = [
+                UpdateItem(
+                    id: "retry-item",
+                    name: "Retry Item",
+                    category: .runtime,
+                    description: nil,
+                    currentVersion: "1.0.0",
+                    latestVersion: "1.1.0",
+                    status: .error,
+                    statusMessage: "Update failed",
+                    isInstalled: true,
+                    isSelected: false,
+                    isUserDefined: false,
+                    source: .bundled,
+                    iconPath: nil,
+                    detectCommand: nil,
+                    versionCommand: nil,
+                    checkCommand: nil,
+                    installCommand: "",
+                    updateCommand: "touch \(ShellEscaping.quote(retryMarker.path))",
+                    workingDirectory: nil
+                ),
+                UpdateItem(
+                    id: "other-item",
+                    name: "Other Item",
+                    category: .runtime,
+                    description: nil,
+                    currentVersion: "1.0.0",
+                    latestVersion: "1.1.0",
+                    status: .updateAvailable,
+                    statusMessage: nil,
+                    isInstalled: true,
+                    isSelected: false,
+                    isUserDefined: false,
+                    source: .bundled,
+                    iconPath: nil,
+                    detectCommand: nil,
+                    versionCommand: nil,
+                    checkCommand: nil,
+                    installCommand: "",
+                    updateCommand: "touch \(ShellEscaping.quote(otherMarker.path))",
+                    workingDirectory: nil
+                )
+            ]
+
+            await state.retryUpdate(for: "retry-item")
+            XCTAssertTrue(state.showDryRun)
+            XCTAssertEqual(state.dryRunEntries.map(\.id), ["retry-item"])
+
+            if let index = state.items.firstIndex(where: { $0.id == "other-item" }) {
+                state.items[index].isSelected = true
+            }
+
+            await state.confirmDryRun()
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: retryMarker.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: otherMarker.path))
+        }
+    }
+
+    @MainActor
+    func testConfirmDryRunSkipsTargetsThatChangedSinceConfirmation() async throws {
+        try await withTemporaryAppSupportDirectory { tempRoot in
+            let updateMarker = tempRoot.appendingPathComponent("update-marker")
+            let installMarker = tempRoot.appendingPathComponent("install-marker")
+
+            let store = UserSettingsStore()
+            store.settings.confirmBeforeUpdate = true
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            state.items = [
+                UpdateItem(
+                    id: "flip-item",
+                    name: "Flip Item",
+                    category: .runtime,
+                    description: nil,
+                    currentVersion: "1.0.0",
+                    latestVersion: "1.1.0",
+                    status: .updateAvailable,
+                    statusMessage: nil,
+                    isInstalled: true,
+                    isSelected: true,
+                    isUserDefined: false,
+                    source: .bundled,
+                    iconPath: nil,
+                    detectCommand: nil,
+                    versionCommand: nil,
+                    checkCommand: nil,
+                    installCommand: "touch \(ShellEscaping.quote(installMarker.path))",
+                    updateCommand: "touch \(ShellEscaping.quote(updateMarker.path))",
+                    workingDirectory: nil
+                )
+            ]
+
+            await state.requestUpdateSelected()
+            XCTAssertTrue(state.showDryRun)
+            XCTAssertEqual(state.dryRunEntries.first?.action, "Update")
+
+            if let index = state.items.firstIndex(where: { $0.id == "flip-item" }) {
+                state.items[index].status = .notInstalled
+                state.items[index].isInstalled = false
+                state.items[index].currentVersion = nil
+                state.items[index].latestVersion = nil
+            }
+
+            await state.confirmDryRun()
+
+            XCTAssertFalse(FileManager.default.fileExists(atPath: updateMarker.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: installMarker.path))
+            XCTAssertTrue(state.logLines.contains { $0.contains("changed since you confirmed, not run") })
+        }
+    }
+
+    @MainActor
+    func testDismissDryRunClearsPendingTargets() async throws {
+        try await withTemporaryAppSupportDirectory { _ in
+            let store = UserSettingsStore()
+            store.settings.confirmBeforeUpdate = true
+            let state = AppState(settingsStore: store)
+            state.items = [
+                makeItem(id: "dismiss-item", installed: true, status: .updateAvailable, isSelected: true)
+            ]
+
+            await state.requestUpdateSelected()
+            XCTAssertTrue(state.showDryRun)
+            XCTAssertEqual(state.dryRunEntries.map(\.id), ["dismiss-item"])
+
+            state.dismissDryRun()
+            await state.confirmDryRun()
+
+            XCTAssertFalse(state.showDryRun)
+            XCTAssertTrue(state.dryRunEntries.isEmpty)
+            XCTAssertTrue(state.logLines.contains { $0.contains("No items selected") })
+        }
+    }
+
+    private func withTemporaryAppSupportDirectory(
+        _ operation: (URL) async throws -> Void
+    ) async throws {
         let tempRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempRoot) }
-
-        let retryMarker = tempRoot.appendingPathComponent("retry-marker")
-        let otherMarker = tempRoot.appendingPathComponent("other-marker")
-
-        let store = UserSettingsStore()
-        store.settings.confirmBeforeUpdate = true
-        let state = AppState(settingsStore: store)
-        state.notificationsEnabled = false
-        state.items = [
-            UpdateItem(
-                id: "retry-item",
-                name: "Retry Item",
-                category: .runtime,
-                description: nil,
-                currentVersion: "1.0.0",
-                latestVersion: "1.1.0",
-                status: .error,
-                statusMessage: "Update failed",
-                isInstalled: true,
-                isSelected: false,
-                isUserDefined: false,
-                source: .bundled,
-                iconPath: nil,
-                detectCommand: nil,
-                versionCommand: nil,
-                checkCommand: nil,
-                installCommand: "",
-                updateCommand: "touch \(ShellEscaping.quote(retryMarker.path))",
-                workingDirectory: nil
-            ),
-            UpdateItem(
-                id: "other-item",
-                name: "Other Item",
-                category: .runtime,
-                description: nil,
-                currentVersion: "1.0.0",
-                latestVersion: "1.1.0",
-                status: .updateAvailable,
-                statusMessage: nil,
-                isInstalled: true,
-                isSelected: false,
-                isUserDefined: false,
-                source: .bundled,
-                iconPath: nil,
-                detectCommand: nil,
-                versionCommand: nil,
-                checkCommand: nil,
-                installCommand: "",
-                updateCommand: "touch \(ShellEscaping.quote(otherMarker.path))",
-                workingDirectory: nil
-            )
-        ]
-
-        await state.retryUpdate(for: "retry-item")
-        XCTAssertTrue(state.showDryRun)
-        XCTAssertEqual(state.dryRunEntries.map(\.id), ["retry-item"])
-
-        if let index = state.items.firstIndex(where: { $0.id == "other-item" }) {
-            state.items[index].isSelected = true
+        ConfigLoader.setAppSupportDirectoryForTesting(tempRoot)
+        defer {
+            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            try? FileManager.default.removeItem(at: tempRoot)
         }
 
-        await state.confirmDryRun()
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: retryMarker.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: otherMarker.path))
+        try await operation(tempRoot)
     }
 
     private func makeItem(

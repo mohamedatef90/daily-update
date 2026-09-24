@@ -126,9 +126,9 @@ struct UserSettings: Codable {
 final class UserSettingsStore: ObservableObject {
     @Published var settings: UserSettings
 
-    private static let settingsURL: URL = {
+    private static var settingsURL: URL {
         ConfigLoader.appSupportDirectory.appendingPathComponent("settings.json")
-    }()
+    }
 
     init() {
         if let loaded = Self.load() {
