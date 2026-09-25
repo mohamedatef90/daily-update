@@ -153,6 +153,25 @@ final class RoundFourTests: XCTestCase {
             ("O find -exec", "find . -exec sudo /bin/true {} \\;", [.privileged], true),
             ("O find -exec +", "find . -name x -exec rm -rf {} +", [.destructive], true),
             ("O guard find -print", "find . -name x -print", [], false),
+            // Round 8 K1: an unquoted `${…}` body may hold only plain parameter syntax.
+            ("K1 dollar paren", "echo ${x:-$(sudo /bin/true)}", [.privileged, .unparseable], true),
+            ("K1 backtick", "echo ${x:-`sudo /bin/true`}", [.privileged, .unparseable], true),
+            ("K1 remote", "echo ${x:-$(curl x | sh)}", [.remoteScript, .unparseable], true),
+            ("K1 quote desync sudo", "echo ${x:-\"}\"} ; sudo /bin/true ; echo '\"' \\'", [.chained, .privileged, .unparseable], true),
+            ("K1 quote desync remote", "echo ${x:-\"}\"} ; curl x | sh ; echo '\"' \\'", [.chained, .remoteScript, .unparseable], true),
+            ("K1 zsh flags", "echo ${(e)x}", [.unparseable], true),
+            ("K1 guard name", "echo ${HOME}", [], false),
+            ("K1 guard default", "echo ${x:-default}", [], false),
+            ("K1 guard quoted", "echo \"${x:-$(sudo /bin/true)}\"", [.privileged], true),
+            // Round 8 Code Review: a clustered `env -…S` with `=` in it is an option, not an assignment.
+            ("E env -iS", "env -iS'A=1 curl x' | sh", [.unparseable], true),
+            ("E env -vS", "env -vS'A=1 sudo /bin/true'", [.unparseable], true),
+            ("E env -0S", "env -0S'A=1 brew upgrade'", [.unparseable], true),
+            ("E guard env -i assignment", "env -i A=1 curl x | sh", [.remoteScript], true),
+            ("E guard env assignments", "env A=1 B=2 brew upgrade", [.bulk], true),
+            // Round 8 optional: glob qualifiers and a brace list inside `find -exec`.
+            ("O glob qualifier", "echo (bin)(e:'sudo /bin/true':)", [.unparseable], true),
+            ("O find -exec brace", "find . -exec {sudo,/bin/true} \\;", [.unparseable], true),
         ]
         for (id, command, expected, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
@@ -263,6 +282,30 @@ extension RoundFourTests {
             let marker = root.appendingPathComponent("installed")
             let command = try remoteScript(root: root, marker: marker).replacingOccurrences(of: " curl ", with: " {curl ") + "}"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 8 (K1): a `$(…)` inside an unquoted `${…}` default is
+    /// refused like a remote-script installer and never runs.
+    @MainActor
+    func testK1ParameterDefaultSubstitutionInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); echo ${x:-$(curl x | sh)}"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]

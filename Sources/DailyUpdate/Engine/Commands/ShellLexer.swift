@@ -133,7 +133,9 @@ enum ShellLexer {
                     result.tokens += body.tokens
                     result.tokens.append(ShellToken(value: String(closing), kind: .op(char == "(" ? .rightParen : .rightBrace)))
                     result.nested.append(String(chars[(index + 1)..<body.end]))
-                    result.invalid = result.invalid || body.invalid
+                    // zsh reads `(…)(…)` as a glob with qualifiers, e.g. `(e:'cmd':)`.
+                    let attached = char == "(" && body.end + 1 < chars.count && chars[body.end + 1] == "("
+                    result.invalid = result.invalid || body.invalid || attached
                     index = min(body.end + 1, chars.count); continue
                 }
                 if char == "\n" { flush(); result.tokens.append(ShellToken(value: "\n", kind: .op(.newline))); index += 1; continue }
@@ -147,13 +149,18 @@ enum ShellLexer {
                 }
                 if ["*", "?", "["].contains(char) { glob = true }
                 if char == "$", next == "{" {
-                    // `${…}` is parameter expansion, not a brace list or group.
+                    // `${…}` is parameter expansion, not a brace list or group. Its body
+                    // may hold only plain parameter syntax and nested `${…}`; a quote,
+                    // escape, substitution or zsh `(flags)` is not modelled.
                     var depth = 0
                     while index < chars.count {
                         let part = chars[index]
+                        if part == "$", index + 1 < chars.count, chars[index + 1] == "{" {
+                            word += "${"; index += 2; depth += 1; continue
+                        }
+                        if part == "}" { word.append(part); index += 1; depth -= 1; if depth == 0 { break }; continue }
+                        guard isParameterCharacter(part) else { break }
                         word.append(part); index += 1
-                        if part == "{" { depth += 1 }
-                        if part == "}" { depth -= 1; if depth == 0 { break } }
                     }
                     if depth != 0 { result.invalid = true }
                     started = true; continue
@@ -170,6 +177,10 @@ enum ShellLexer {
         result.invalid = result.invalid || single || double || until != nil
         result.end = index
         return result
+    }
+
+    private static func isParameterCharacter(_ char: Character) -> Bool {
+        (char.isASCII && (char.isLetter || char.isNumber)) || "_#%:/?=+-.,@*^~!".contains(char)
     }
 
     private static func endsFunctionName(_ chars: [Character], at index: Int) -> Bool {

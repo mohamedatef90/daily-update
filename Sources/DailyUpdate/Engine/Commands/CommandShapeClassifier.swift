@@ -164,7 +164,8 @@ enum CommandShapeClassifier {
                 }
                 var words = armTokens.map(\.value)
                 let executableIndex = words.count - stripWrappersRaw(words).count
-                if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed {
+                if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
+                    || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex))) {
                     failsClosed = true
                 }
                 if executableIndex < words.count, words[executableIndex] != "[",
@@ -595,6 +596,18 @@ enum CommandShapeClassifier {
         return nested
     }
 
+    /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.
+    private static func findExecBodyHasUnquotedBrace(_ tokens: [ShellToken]) -> Bool {
+        guard let first = tokens.first, normalizedExecutableName(first.value) == "find" else { return false }
+        var inBody = false
+        for token in tokens.dropFirst() {
+            if inBody, token.value == ";" || token.value == "+" { inBody = false; continue }
+            if inBody, token.hasUnquotedBrace { return true }
+            if ["-exec", "-execdir", "-ok", "-okdir"].contains(token.value) { inBody = true }
+        }
+        return false
+    }
+
     private static func findExecCommands(_ args: [String]) -> [String] {
         var commands: [String] = []
         var index = 0
@@ -739,7 +752,7 @@ enum CommandShapeClassifier {
             if arg == "--" { working = working.dropFirst(); break }
             if options.words.contains(arg) { working = working.dropFirst(); continue }
             if options.valueWords.contains(arg) { working = working.dropFirst(2); continue }
-            if options.assignments, isAssignment(arg) { working = working.dropFirst(); continue }
+            if options.assignments, !arg.hasPrefix("-"), isAssignment(arg) { working = working.dropFirst(); continue }
             guard arg.hasPrefix("-"), arg != "-" else { break }
             if arg.hasPrefix("--") {
                 let name = String(arg.prefix { $0 != "=" })
