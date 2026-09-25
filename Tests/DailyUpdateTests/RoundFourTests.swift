@@ -199,6 +199,35 @@ final class RoundFourTests: XCTestCase {
             ("P sh -c", "sh -c 'curl x' | sh", [.remoteScript], true),
             ("P bash -c", "bash -c \"curl x\" | sh", [.remoteScript], true),
             ("P trap", "trap 'curl x' EXIT | sh", [.remoteScript], true),
+            // Round 10 M1: any `\` inside a double-quoted `${…}` fails closed; zsh reads
+            // `\}` there as a literal brace, which would reopen the L1 desync.
+            ("M1 backslash brace sudo", "echo \"${x:-\\}\"'\"}\" ; sudo /bin/true ; echo \"${x:-\\}\"'\"}\"", [.unparseable], true),
+            ("M1 backslash brace remote", "echo \"${x:-\\}\"'\"}\" ; curl x | sh ; echo \"${x:-\\}\"'\"}\"", [.unparseable], true),
+            ("M1 backslash brace substitution", "echo \"${x:-\\}\"'\"}\"$(sudo /bin/true)\"${x:-\\}\"'\"}\"", [.unparseable], true),
+            ("M1 backslash brace pattern", "echo \"${x#\\}\"'\"}\" ; sudo /bin/true ; echo \"${x#\\}\"'\"}\"", [.unparseable], true),
+            ("M1 backslash brace bulk", "echo \"${x:-\\}\"'\"}\" ; brew upgrade ; echo \"${x:-\\}\"'\"}\"", [.unparseable], true),
+            ("M1 backslash brace replace", "echo \"${x/\\}/\"'\"}\" ; sudo /bin/true ; echo \"${y:-\\}\"'\"}\"", [.unparseable], true),
+            ("M1 guard name", "echo \"${HOME}\"", [], false),
+            ("M1 guard escaped backslash", "echo \"${x:-\\\\}\"", [.unparseable], true),
+            ("M1 guard escaped quote", "echo \"${x:-\\\"}\" ; sudo /bin/true", [.chained, .privileged, .unparseable], true),
+            ("M1 guard substitution", "echo \"${x:-$(sudo /bin/true)}\"", [.privileged], true),
+            // Round 10 M2: `sh`/`bash`/`zsh` keep parsing options after `-c`, so an
+            // option word there fails closed instead of being read as the script.
+            ("M2 sh -c -- sudo", "sh -c -- 'sudo /bin/true'", [.unparseable], true),
+            ("M2 sh -c -- remote", "sh -c -- 'curl x | sh'", [.unparseable], true),
+            ("M2 sh -c -- fetcher", "sh -c -- 'curl x' | sh", [.unparseable], true),
+            ("M2 sh -c -e", "sh -c -e 'sudo /bin/true'", [.unparseable], true),
+            ("M2 bash -c -x", "bash -c -x 'curl x | sh'", [.unparseable], true),
+            ("M2 zsh -c -o", "zsh -c -o errexit 'brew upgrade'", [.unparseable], true),
+            ("M2 sh -c +x", "sh -c +x 'sudo /bin/true'", [.unparseable], true),
+            ("M2 guard sh -c", "sh -c 'sudo /bin/true'", [.privileged], true),
+            ("M2 guard sh -ec", "sh -ec 'sudo /bin/true'", [.privileged], true),
+            ("M2 guard zsh -fc", "zsh -fc 'sudo /bin/true'", [.privileged], true),
+            // Round 10 Code Review: zsh takes a non-ASCII name like `é=1` as an assignment.
+            ("A non-ASCII sudo", "é=1 sudo /bin/true", [.privileged], true),
+            ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
+            ("A non-ASCII bulk", "café_2=1 brew upgrade", [.bulk], true),
+            ("A guard digit name", "1A=x sudo /bin/true", [], false),
         ]
         for (id, command, expected, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
@@ -356,6 +385,54 @@ extension RoundFourTests {
             let marker = root.appendingPathComponent("installed")
             let remote = try remoteScript(root: root, marker: marker)
             let command = "export \(remote.components(separatedBy: " curl ")[0]); echo \"${x:-\"'\"}\" ; curl x | sh ; echo \"${y:-\"'\"}\""
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 10 (M1): a `\}` inside a double-quoted `${…}` cannot
+    /// hide a remote-script installer from the refusal.
+    @MainActor
+    func testM1BackslashBraceInParameterInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); echo \"${x:-\\}\"'\"}\" ; curl x | sh ; echo \"${x:-\\}\"'\"}\""
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 10 (M2): `sh -c --` cannot hide a remote-script
+    /// installer from the refusal.
+    @MainActor
+    func testM2ShellOptionAfterDashCInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); sh -c -- 'curl x | sh'"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),

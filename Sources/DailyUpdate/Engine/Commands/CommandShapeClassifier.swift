@@ -165,7 +165,8 @@ enum CommandShapeClassifier {
                 var words = armTokens.map(\.value)
                 let executableIndex = words.count - stripWrappersRaw(words).count
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
-                    || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex))) {
+                    || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
+                    || shellScriptFollowsOption(words) {
                     failsClosed = true
                 }
                 if executableIndex < words.count, words[executableIndex] != "[",
@@ -588,14 +589,30 @@ enum CommandShapeClassifier {
             return []
         }
 
-        var nested: [String] = []
-        for (index, token) in stripped.enumerated() {
-            let lowered = token.lowercased()
-            guard lowered.hasPrefix("-"), !lowered.hasPrefix("--"), lowered.dropFirst().contains("c") else { continue }
-            guard index + 1 < stripped.count else { continue }
-            nested.append(stripped[index + 1])
+        return shellCommandFlagIndices(stripped).compactMap { index in
+            index + 1 < stripped.count ? stripped[index + 1] : nil
         }
-        return nested
+    }
+
+    /// `sh -c -- 'x'`, `sh -c -e 'x'`, `sh -c +x 'x'`: the shell keeps parsing options
+    /// after `-c`, so the script is not the next word. Not modelled, so fail closed.
+    private static func shellScriptFollowsOption(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName),
+              shellExecutables.contains(executable) else { return false }
+        return shellCommandFlagIndices(stripped).contains { index in
+            guard index + 1 < stripped.count else { return false }
+            let script = stripped[index + 1]
+            return script.hasPrefix("-") || script.hasPrefix("+")
+        }
+    }
+
+    /// Indices of `-…c…` flags, whose next word `sh`/`bash`/`zsh` would run as a script.
+    private static func shellCommandFlagIndices(_ stripped: [String]) -> [Int] {
+        stripped.indices.filter { index in
+            let lowered = stripped[index].lowercased()
+            return lowered.hasPrefix("-") && !lowered.hasPrefix("--") && lowered.dropFirst().contains("c")
+        }
     }
 
     /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.
@@ -787,12 +804,13 @@ enum CommandShapeClassifier {
     }
 
     /// `NAME=value` or `NAME+=value`, `NAME` a shell identifier; `NAME=` is empty, not a command.
+    /// Non-ASCII counts as a name character, because zsh takes `é=1` as a name in a UTF-8 locale.
     private static func isAssignment(_ word: String) -> Bool {
         guard let equals = word.firstIndex(of: "=") else { return false }
         var name = word[..<equals]
         if name.hasSuffix("+") { name = name.dropLast() }
-        guard let first = name.first, first == "_" || (first.isASCII && first.isLetter) else { return false }
-        return name.allSatisfy { $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }
+        guard let first = name.first, !(first.isASCII && first.isNumber) else { return false }
+        return name.allSatisfy { $0 == "_" || !$0.isASCII || $0.isLetter || $0.isNumber }
     }
 
     private static func stripWrappersRaw(_ tokens: [String], preservePrivilege: Bool = false) -> [String] {

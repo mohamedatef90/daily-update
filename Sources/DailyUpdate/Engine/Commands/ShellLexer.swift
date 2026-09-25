@@ -63,6 +63,8 @@ enum ShellLexer {
                 if char == "'" { single = false } else { word.append(char) }
                 index += 1; continue
             }
+            // zsh reads `\}`, `\$`, `\"` and `\\` in a quoted `${…}` its own way; not modelled.
+            if char == "\\", double, doubleParameterDepth > 0 { result.invalid = true }
             if char == "\\" {
                 if next == "\0" { result.invalid = true; index += 1; continue }
                 if !double || ["$", "`", "\"", "\\", "\n"].contains(next) {
@@ -168,7 +170,7 @@ enum ShellLexer {
                         }
                         if part == "}" { word.append(part); index += 1; depth -= 1; if depth == 0 { break }; continue }
                         // `index` stays on the rejected character for the outer loop.
-                    guard isParameterCharacter(part) else { break }
+                        guard isParameterCharacter(part) else { break }
                         word.append(part); index += 1
                     }
                     if depth != 0 { result.invalid = true }
