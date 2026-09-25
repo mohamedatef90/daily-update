@@ -4,6 +4,11 @@ import Foundation
 enum GatePolicy {
     private static let yesEligibleReasons: Set<GateReason> = [.bulk, .needsReview, .pinned]
 
+    static func versionsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        if let left = Version(lhs), let right = Version(rhs) { return left == right }
+        return lhs == rhs
+    }
+
     static func reviewedCommandHash(updateCommand: String, installCommand: String) -> String {
         let payload = "\(updateCommand)\n--\n\(installCommand)"
         let digest = SHA256.hash(data: Data(payload.utf8))

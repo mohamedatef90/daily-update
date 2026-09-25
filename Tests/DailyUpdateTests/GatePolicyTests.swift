@@ -367,7 +367,7 @@ final class GatePolicyTests: XCTestCase {
                 return
             }
             XCTAssertEqual(item.status, .gated)
-            XCTAssertTrue(item.gateReasons.contains(.needsReview))
+            XCTAssertEqual(item.gateReasons, [.needsReview])
         }
     }
 

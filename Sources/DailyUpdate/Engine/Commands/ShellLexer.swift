@@ -11,6 +11,7 @@ struct ShellToken: Hashable {
     let value: String
     let kind: Kind
     var hasUnquotedGlob = false
+    var hasUnquotedCaseTerminator = false
     var isWord: Bool { if case .word = kind { return true }; return false }
 }
 
@@ -35,11 +36,12 @@ enum ShellLexer {
         var word = ""
         var started = false
         var glob = false
+        var caseTerminator = false
         var single = false
         var double = false
         func flush() {
-            if started { result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob)) }
-            word = ""; started = false; glob = false
+            if started { result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob, hasUnquotedCaseTerminator: caseTerminator)) }
+            word = ""; started = false; glob = false; caseTerminator = false
         }
         while index < chars.count {
             let char = chars[index]
@@ -93,7 +95,7 @@ enum ShellLexer {
                 word += String(chars[begin..<index]); started = true
                 continue
             }
-            if next == "(", char == "$" || (!double && (char == "<" || char == ">")) {
+            if next == "(", char == "$" || (!double && (char == "<" || char == ">" || char == "=")) {
                 let body = scan(chars, start: index + 2, until: ")")
                 result.nested.append(String(chars[(index + 2)..<body.end]))
                 result.invalid = result.invalid || body.invalid
@@ -130,6 +132,9 @@ enum ShellLexer {
                     flush(); result.tokens.append(ShellToken(value: String(char), kind: .op(op))); index += 1; continue
                 }
                 if ["*", "?", "["].contains(char) { glob = true }
+                if char == "{", let closing = chars[(index + 1)...].firstIndex(of: "}"),
+                   chars[(index + 1)..<closing].contains(",") { glob = true }
+                if char == ")" { caseTerminator = true }
             }
             word.append(char); started = true; index += 1
         }

@@ -1039,7 +1039,7 @@ final class AppState: ObservableObject {
 private func applyPinnedGateIfNeeded(to item: inout UpdateItem) {
     guard let pinned = item.pinnedVersion?.nilIfEmpty,
           let target = item.latestVersion?.nilIfEmpty,
-          target != pinned else {
+          !GatePolicy.versionsMatch(target, pinned) else {
         return
     }
     guard item.status == .updateAvailable || item.status == .gated else {

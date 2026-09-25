@@ -140,15 +140,16 @@ enum CLIRunner {
             return state.items.contains(where: { $0.status == .checkFailed }) ? 1 : 0
         case .installAll:
             await state.checkAll()
-            if state.items.contains(where: { $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand) }) {
-                output("Remote-script installs must be confirmed in the app.")
-                return 2
+            let skipped = state.items.filter { $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand) }
+            for item in skipped {
+                output("skipped \(item.id): remote-script install must be confirmed in the app")
             }
             state.selectAllInstallable()
             return await runSelectedActions(
                 state: state,
                 requireExplicitConfirmation: state.confirmBeforeUpdate,
                 confirmed: parsed.yes,
+                emptySelectionExitCode: skipped.isEmpty ? 0 : 2,
                 output: output
             )
         case .updateAll:
@@ -267,7 +268,15 @@ enum CLIRunner {
         failOnAnyCheckFailure: Bool = false,
         output: (String) -> Void
     ) async -> Int32 {
-        let entries = state.selectedActionableItems.map { item in
+        let remoteInstalls = state.selectedActionableItems.filter {
+            $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand)
+        }
+        for item in remoteInstalls {
+            state.setSelection(for: item.id, selected: false)
+            output("skipped \(item.id): remote-script install must be confirmed in the app")
+        }
+        let excludedIDs = Set(remoteInstalls.map(\.id))
+        let entries = state.selectedActionableItems.filter { !excludedIDs.contains($0.id) }.map { item in
             DryRunEntry(
                 id: item.id,
                 name: item.name,
@@ -281,7 +290,7 @@ enum CLIRunner {
             if failOnAnyCheckFailure && state.items.contains(where: { $0.status == .checkFailed }) {
                 return 1
             }
-            return emptySelectionExitCode
+            return remoteInstalls.isEmpty ? emptySelectionExitCode : 2
         }
 
         let requiresRiskConfirmation = entries.contains { entry in

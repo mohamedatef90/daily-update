@@ -24,7 +24,7 @@ struct CommandClassification: Equatable {
 }
 
 enum CommandShapeClassifier {
-    private static let fetchers: Set<String> = ["curl", "wget", "fetch", "http"]
+    private static let fetchers: Set<String> = ["curl", "wget", "fetch", "http", "lwp-request", "lwp-download", "get", "nscurl", "aria2c", "https", "xh"]
     private static let interpreters: Set<String> = [
         "sh", "bash", "zsh", "dash", "ksh", "fish",
         "python", "python3", "python2", "perl", "ruby", "node"
@@ -32,7 +32,7 @@ enum CommandShapeClassifier {
     private static let shellExecutables: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish"]
     private static let privilegeCommands: Set<String> = ["sudo", "doas", "pkexec", "su"]
     private static let controlFlowKeywords: Set<String> = [
-        "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until"
+        "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until", "coproc", "repeat"
     ]
 
     static func classify(_ command: String) -> CommandClassification {
@@ -134,7 +134,7 @@ enum CommandShapeClassifier {
             for segment in logical {
                 let pipelineStages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
                 for stage in pipelineStages {
-                    var words = ShellLexer.words(from: stage)
+                    var words = commandWords(stage)
                     if let executable = stripWrappersRaw(words).first, executable != "[",
                        stage.contains(where: { $0.value == executable && $0.hasUnquotedGlob }),
                        let index = words.firstIndex(of: executable) {
@@ -148,6 +148,15 @@ enum CommandShapeClassifier {
             queue.append(contentsOf: ShellLexer.nestedCommands(in: trimmed))
         }
         return segments
+    }
+
+    private static func commandWords(_ tokens: [ShellToken]) -> [String] {
+        // A case arm's unquoted closing parenthesis introduces a new command.
+        // Quoted parentheses remain ordinary arguments.
+        if let arm = tokens.firstIndex(where: { $0.hasUnquotedCaseTerminator }) {
+            return ShellLexer.words(from: Array(tokens.dropFirst(arm + 1)))
+        }
+        return ShellLexer.words(from: tokens)
     }
 
     private static func containsControlFlow(_ tokens: [ShellToken]) -> Bool {
@@ -221,14 +230,13 @@ enum CommandShapeClassifier {
             let executable = normalizedExecutableName(executableToken)
             let args = Array(strippedRaw.dropFirst())
 
-            if executable == "." || executable == "source" || executable == "eval" {
-                if argumentsContainFetcherSubstitution(args) {
-                    return true
+            if argumentsContainFetcherSubstitution(args) {
+                let dataCommands: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum", "echo", "printf", "test", "["]
+                // awk/sed -f consume a program file, not input data.
+                let programFile = ["awk", "sed"].contains(executable) && args.contains {
+                    $0 == "-f" || $0.hasPrefix("-f") || $0 == "--file" || $0.hasPrefix("--file=")
                 }
-            }
-
-            if interpreters.contains(executable), argumentsContainFetcherSubstitution(args) {
-                return true
+                if !dataCommands.contains(executable) || programFile { return true }
             }
         }
 
@@ -236,7 +244,7 @@ enum CommandShapeClassifier {
             let stages = ShellLexer.split(logicalSegment, by: [.pipe, .pipeAnd])
             var downloadFed = false
             for stage in stages {
-                let words = ShellLexer.words(from: stage)
+                let words = commandWords(stage)
                 if downloadFed {
                     let grouped = stage.contains { $0.kind == .op(.leftBrace) || $0.kind == .op(.leftParen) }
                     if grouped || executesPipelineInput(words) { return true }
@@ -260,7 +268,7 @@ enum CommandShapeClassifier {
             ![ShellToken.Kind.op(.leftParen), .op(.rightParen), .op(.leftBrace), .op(.rightBrace)].contains($0.kind)
         }, by: [.and, .or, .semicolon, .newline, .background, .pipe, .pipeAnd])
         for command in commands {
-            let words = ShellLexer.words(from: command)
+            let words = commandWords(command)
             if let executable = stripWrappers(normalizedTokens(words: words)).first,
                fetchers.contains(executable) { return true }
             for word in words {
@@ -279,30 +287,40 @@ enum CommandShapeClassifier {
         let filters: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum"]
         if filters.contains(executable) { return false }
         if ["python", "python2", "python3"].contains(executable) {
-            return !containsInlineFlag(args, allowedShortOptions: ["c", "m"])
+            return !containsInlineFlag(args, allowedShortOptions: ["c", "m"], valueOptions: ["W", "X"])
         }
         if ["node", "perl", "ruby"].contains(executable) {
-            return !containsInlineFlag(args, allowedShortOptions: ["e"])
+            return !containsInlineFlag(args, allowedShortOptions: ["e"], valueOptions: executable == "perl" ? ["I", "M", "m", "F"] : ["I", "r", "C", "E"])
         }
         return true
     }
 
-    private static func containsInlineFlag(_ arguments: [String], allowedShortOptions: Set<Character>) -> Bool {
-        for arg in arguments {
-            if arg == "--" {
-                break
+    private static func containsInlineFlag(
+        _ arguments: [String], allowedShortOptions: Set<Character>, valueOptions: Set<Character>
+    ) -> Bool {
+        var index = 0
+        while index < arguments.count {
+            let arg = arguments[index]
+            guard arg != "-", arg != "--", arg.hasPrefix("-") else { return false }
+            // Unknown long options can consume a value; don't guess past them.
+            guard !arg.hasPrefix("--") else { return false }
+            let letters = Array(arg.dropFirst())
+            for (offset, letter) in letters.enumerated() {
+                if valueOptions.contains(letter) {
+                    if offset == letters.count - 1 { index += 1 }
+                    break
+                }
+                if allowedShortOptions.contains(letter) {
+                    return offset == letters.count - 1 && index + 1 < arguments.count
+                }
             }
-            guard arg.hasPrefix("-"), !arg.hasPrefix("--") else { continue }
-            let letters = arg.dropFirst()
-            if letters.contains(where: { allowedShortOptions.contains($0) }) {
-                return true
-            }
+            index += 1
         }
         return false
     }
 
     private static func argumentsContainFetcherSubstitution(_ args: [String]) -> Bool {
-        for arg in args where arg.contains("$(") || arg.contains("<(") || arg.contains("`") {
+        for arg in args where arg.contains("$(") || arg.contains("<(") || arg.contains("=(") || arg.contains("`") {
             for nested in ShellLexer.nestedCommands(in: arg) {
                 if nestedCommandStartsWithFetcher(nested) {
                     return true
@@ -350,7 +368,7 @@ enum CommandShapeClassifier {
 
         guard let executable = normalized.first else { return false }
         let args = Array(normalized.dropFirst())
-        let hasSubstitution = args.contains(where: containsCommandSubstitution) || args.contains("$") || args.contains("<")
+        let hasSubstitution = stripWrappersRaw(words).dropFirst().contains(where: containsCommandSubstitution) || args.contains("$") || args.contains("<")
 
         switch executable {
         case "brew":
@@ -553,7 +571,10 @@ enum CommandShapeClassifier {
         }
 
         while let first = working.first {
-            if ["then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(first) {
+            if first == "repeat" {
+                working.removeFirst(min(2, working.count)); continue
+            }
+            if ["if", "while", "until", "coproc", "then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(first) {
                 working.removeFirst(); continue
             }
             if ["env", "command", "exec", "nohup", "time"].contains(first) {
@@ -630,7 +651,10 @@ enum CommandShapeClassifier {
         var working = tokens
         while let first = working.first {
             let lowered = normalizedExecutableName(first)
-            if ["then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(lowered) {
+            if lowered == "repeat" {
+                working.removeFirst(min(2, working.count)); continue
+            }
+            if ["if", "while", "until", "coproc", "then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(lowered) {
                 working.removeFirst(); continue
             }
             if ["env", "command", "exec", "nohup", "time"].contains(lowered) {
@@ -755,7 +779,7 @@ enum CommandShapeClassifier {
     }
 
     private static func containsCommandSubstitution(_ token: String) -> Bool {
-        token.contains("$(") || token.contains("<(") || token.contains("`")
+        token.contains("$(") || token.contains("<(") || token.contains("=(") || token.contains("`")
     }
 
     private static func startsWithDynamicExecutable(_ words: [String]) -> Bool {

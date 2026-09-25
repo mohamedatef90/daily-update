@@ -4,6 +4,28 @@ import XCTest
 final class RoundFourTests: XCTestCase {
     func testRoundFourClassifierAndCheckPathMatrix() {
         let rows: [(String, String, Set<CommandRisk>, Bool)] = [
+            ("G1 brace command", "/usr/bin/{sudo,true} brew upgrade", [.unparseable], true),
+            ("G1 quoted brace", "'/usr/bin/{sudo,true}' brew upgrade", [], false),
+            ("G2/N6 if", "if sudo brew upgrade; then echo ok; fi", [.privileged, .bulk, .chained, .controlFlow], true),
+            ("G2/N6 while", "while sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
+            ("G2/N6 until", "until sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
+            ("G2/N6 if remote", "if curl x | sh; then echo ok; fi", [.remoteScript, .chained, .controlFlow], true),
+            ("G2/N6 repeat", "repeat 1 sudo brew upgrade", [.privileged, .bulk, .controlFlow], true),
+            ("G2/N6 coproc", "coproc sudo brew upgrade", [.privileged, .bulk, .controlFlow], true),
+            ("N6 case", "case a in a) curl x | sh;; esac", [.remoteScript, .chained, .controlFlow], true),
+            ("G3/N8 equals sh", "sh =(curl x)", [.remoteScript], true),
+            ("G3/N8 equals source", "source =(curl x)", [.remoteScript], true),
+            ("G3 bulk equals", "brew upgrade =(echo gh)", [.bulk], true),
+            ("N8 awk program", "awk -f <(curl x) /dev/null", [.remoteScript], true),
+            ("N8 swift", "swift <(curl x)", [.remoteScript], true),
+            ("N8 php", "php <(curl x)", [.remoteScript], true),
+            ("N8 lua", "lua <(curl x)", [.remoteScript], true),
+            ("N8 busybox", "busybox sh <(curl x)", [.remoteScript], true),
+            ("N8 unknown dollar", "unknown $(curl x)", [.remoteScript], true),
+            ("N8 unknown backtick", "unknown `curl x`", [.remoteScript], true),
+            ("N8 assignment", "VALUE=$(curl x)", [], false),
+            ("I1-R safe install", "touch marker", [], false),
+            ("I1-R remote install", "curl file:///fixture/s.sh | sh", [.remoteScript], true),
             ("N4 shell", "curl x | s\\\nh", [.remoteScript], true),
             ("N4 fetcher", "cu\\\nrl x | sh", [.remoteScript], true),
             ("N4 sudo", "s\\\nudo brew upgrade", [.privileged, .bulk], true),
@@ -46,10 +68,15 @@ final class RoundFourTests: XCTestCase {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
             XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), unsafe, id)
         }
-        let remoteStages = ["bash -o pipefail", "bash --rcfile /dev/null", "bash +x", "bash -c sh", "lua -", "sh -o errexit", "bash +o posix", "bash -O extglob", "bash +O extglob", "bash --rcfile /tmp/rc", "bash --init-file /tmp/rc", "sh +x", "sh -c 'source /dev/stdin'", "sh -c sh", "php", "lua", "swift -", "busybox sh", "unknown-interpreter"]
+        let remoteStages = ["bash -o pipefail", "bash --rcfile /dev/null", "bash +x", "bash -c sh", "lua -", "sh -o errexit", "bash +o posix", "bash -O extglob", "bash +O extglob", "bash --rcfile /tmp/rc", "bash --init-file /tmp/rc", "sh +x", "sh -c 'source /dev/stdin'", "sh -c sh", "php", "lua", "swift -", "busybox sh", "unknown-interpreter", "perl -I/usr/lib/perl5", "perl -Mfeature=say", "ruby -rset", "python3 -Wmodule", "python3 -Xfrozen_modules=off", "python3 -c", "python3 - -c", "python3 script.py -c code"]
         for stage in remoteStages {
             let command = "curl x | \(stage)"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.remoteScript], command)
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), true, command)
+        }
+        for fetcher in ["lwp-request", "lwp-download", "GET", "nscurl", "aria2c", "https", "xh"] {
+            let command = "\(fetcher) x | sh"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.remoteScript], "F1: \(command)")
             XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), true, command)
         }
         let sources: [(String, Set<CommandRisk>)] = [
@@ -78,18 +105,20 @@ extension RoundFourTests {
     @MainActor
     func testMDPinnedRealAppStateNeverRunsRemoteUpdateWithYes() async throws {
         try await withStateFixture { root, store in
-            let marker = root.appendingPathComponent("updated")
-            let command = try remoteScript(root: root, marker: marker)
+            var commands: [String: String] = [:]
+            for id in ["ok", "available", "blocked", "failed"] {
+                commands[id] = try remoteScript(root: root, marker: root.appendingPathComponent(id))
+            }
             let rows: [(String, String, ItemStatus, [GateReason], BlockReason?)] = [
                 ("ok", "echo OK", .upToDate, [], nil),
                 ("available", "printf 'UPDATE\\nlatest: 1.3.0\\n'", .gated, [.remoteScript, .pinned], nil),
-                ("blocked", command, .blocked, [], .unsafeCheckCommand),
+                ("blocked", commands["blocked"]!, .blocked, [], .unsafeCheckCommand),
                 ("failed", "exit 3", .checkFailed, [], nil),
             ]
             store.settings.customItems = rows.map { row in
                 DetectorConfig(id: row.0, name: row.0, category: .cli, description: nil, source: .user,
                     detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil), versionCommand: "echo 1.0.0",
-                    checkCommand: row.1, installCommand: nil, updateCommand: command, workingDirectory: nil)
+                    checkCommand: row.1, installCommand: nil, updateCommand: commands[row.0]!, workingDirectory: nil)
             }
             for row in rows {
                 store.settings.itemPreferences[row.0] = ItemPreference(autoUpdate: false,
@@ -107,7 +136,7 @@ extension RoundFourTests {
                 XCTAssertEqual(item.status, row.2, row.0)
                 XCTAssertEqual(item.gateReasons, row.3, row.0)
                 XCTAssertEqual(item.blockReason, row.4, row.0)
-                XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), row.0)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(row.0).path), row.0)
             }
         }
     }
@@ -123,10 +152,48 @@ extension RoundFourTests {
     }
 
     @MainActor
-    private func assertRemoteInstallRefused(arguments: [String]) async throws {
+    func testI1EqualsSubstitutionInstallRequiresAppConfirmation() async throws {
+        try await assertRemoteInstallRefused(arguments: ["--install", "install-fixture", "--yes"], equals: true)
+    }
+
+    func testPinsUseVersionEquality() {
+        XCTAssertTrue(GatePolicy.versionsMatch("v1.2.0", "1.2"))
+        XCTAssertFalse(GatePolicy.versionsMatch("1.2.0-rc.1", "1.2.0"))
+        XCTAssertTrue(GatePolicy.versionsMatch("abc123", "abc123"))
+        XCTAssertFalse(GatePolicy.versionsMatch("abc123", "def456"))
+    }
+
+    @MainActor
+    func testI1RMixedBatchInstallsSafeItemAndSkipsRemote() async throws {
+        try await withStateFixture { root, store in
+            let safeMarker = root.appendingPathComponent("safe-installed")
+            let remoteMarker = root.appendingPathComponent("remote-installed")
+            let remote = try remoteScript(root: root, marker: remoteMarker)
+            store.settings.customItems = [("safe", "touch \(ShellEscaping.quote(safeMarker.path))"), ("remote", remote)].map { id, command in
+                DetectorConfig(id: id, name: id, category: .cli, description: nil, source: .user,
+                    detect: DetectRule(type: .command, paths: nil,
+                        command: "test -f \(ShellEscaping.quote((id == "safe" ? safeMarker : remoteMarker).path))", appName: nil),
+                    versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command,
+                    updateCommand: "echo update", workingDirectory: nil)
+            }
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["safe", "remote"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install-all", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 0, "\(output)")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: safeMarker.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: remoteMarker.path))
+            XCTAssertEqual(output.filter { $0.hasPrefix("skipped ") }, ["skipped remote: remote-script install must be confirmed in the app"])
+        }
+    }
+
+    @MainActor
+    private func assertRemoteInstallRefused(arguments: [String], equals: Bool = false) async throws {
         try await withStateFixture { root, store in
             let marker = root.appendingPathComponent("installed")
-            let command = try remoteScript(root: root, marker: marker)
+            let pipeline = try remoteScript(root: root, marker: marker)
+            let command = equals ? "sh =(\(pipeline.replacingOccurrences(of: " | sh", with: "")))" : pipeline
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
@@ -142,12 +209,14 @@ extension RoundFourTests {
     }
 
     private func remoteScript(root: URL, marker: URL) throws -> String {
-        let script = root.appendingPathComponent("s.sh")
+        let script = root.appendingPathComponent("\(marker.lastPathComponent).sh")
         try "touch \(ShellEscaping.quote(marker.path))\n".write(to: script, atomically: true, encoding: .utf8)
-        let stub = root.appendingPathComponent("curl")
+        let stubDirectory = root.appendingPathComponent("stub-\(marker.lastPathComponent)")
+        try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+        let stub = stubDirectory.appendingPathComponent("curl")
         try "#!/bin/sh\n/bin/cat \(ShellEscaping.quote(script.path))\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
-        return "PATH=\(ShellEscaping.quote(root.path)):$PATH curl -fsSL file://\(script.path) | sh"
+        return "PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH curl -fsSL file://\(script.path) | sh"
     }
 
     @MainActor
