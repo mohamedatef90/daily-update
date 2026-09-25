@@ -737,12 +737,15 @@ final class CoreServiceTests: XCTestCase {
             }
         )
 
+        var output: [String] = []
         let code = await CLIRunner.run(
             arguments: ["DailyUpdate", "--update", "pinned-remote", "--yes"],
-            state: state
+            state: state,
+            output: { output.append($0) }
         )
 
-        XCTAssertEqual(code, 1)
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(output.last, "This update runs a remote script and must be confirmed in the app.")
         XCTAssertEqual(state.updateSelectedCallCount, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }

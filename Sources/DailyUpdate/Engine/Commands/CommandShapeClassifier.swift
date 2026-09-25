@@ -39,8 +39,9 @@ enum CommandShapeClassifier {
     private static let commandSeparators: Set<ShellOperator> = [.and, .or, .semicolon, .newline, .background, .pipe, .pipeAnd]
 
     /// One simple command. `failsClosed` marks shapes this model does not
-    /// interpret: brace expansion at or before the executable, a loop or
-    /// `case` header outside the modelled grammar, or a stray `)`.
+    /// interpret: an unquoted `{` or `}` at or before the executable, an
+    /// unknown wrapper option, a loop or `case` header outside the modelled
+    /// grammar, or a stray `)`.
     private struct SimpleCommand {
         var words: [String]
         var failsClosed: Bool
@@ -66,7 +67,7 @@ enum CommandShapeClassifier {
 
     static func containsMutatingPackageManagerVerb(_ command: String) -> Bool {
         for words in allSimpleCommands(command) {
-            let normalized = stripWrappers(normalizedTokens(words: words))
+            let normalized = stripWrappers(words: words)
             if isMutatingPackageManagerInvocation(normalized) {
                 return true
             }
@@ -126,7 +127,10 @@ enum CommandShapeClassifier {
             risks.insert(.remoteScript)
         }
 
-        for nested in ShellLexer.nestedCommands(in: trimmed) + simpleCommands.flatMap({ inlineShellCommands(in: $0) }) {
+        let inline = simpleCommands.flatMap { inlineShellCommands(in: $0) }
+        // An empty body (`f()`, `$()`) runs nothing; only the top level must be non-empty.
+        let nestedBodies = ShellLexer.nestedCommands(in: trimmed).filter { !$0.allSatisfy(\.isWhitespace) }
+        for nested in nestedBodies + inline {
             risks.formUnion(classify(nested, depth: depth + 1, visited: nextVisited))
         }
 
@@ -160,7 +164,7 @@ enum CommandShapeClassifier {
                 }
                 var words = armTokens.map(\.value)
                 let executableIndex = words.count - stripWrappersRaw(words).count
-                if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBraceExpansion) {
+                if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed {
                     failsClosed = true
                 }
                 if executableIndex < words.count, words[executableIndex] != "[",
@@ -228,7 +232,7 @@ enum CommandShapeClassifier {
         let attached = String(tokens[arm].value.dropFirst(end))
         if !attached.isEmpty {
             rest.insert(ShellToken(value: attached, kind: .word, hasUnquotedGlob: tokens[arm].hasUnquotedGlob,
-                hasUnquotedBraceExpansion: tokens[arm].hasUnquotedBraceExpansion), at: 0)
+                hasUnquotedBrace: tokens[arm].hasUnquotedBrace), at: 0)
         }
         return rest
     }
@@ -251,7 +255,7 @@ enum CommandShapeClassifier {
     }
 
     private static func containsDestructiveOperation(words: [String]) -> Bool {
-        let normalized = stripWrappers(normalizedTokens(words: words))
+        let normalized = stripWrappers(words: words)
         guard let executable = normalized.first else { return false }
         let args = Array(normalized.dropFirst())
 
@@ -342,7 +346,7 @@ enum CommandShapeClassifier {
         // Groups remain intact until the surrounding pipeline has been split.
         for (command, _) in splitSimpleCommands(tokens) {
             let words = commandWords(command)
-            if let executable = stripWrappers(normalizedTokens(words: words)).first,
+            if let executable = stripWrappers(words: words).first,
                fetchers.contains(executable) { return true }
             for word in words {
                 for nested in ShellLexer.nestedCommands(in: word) {
@@ -359,6 +363,8 @@ enum CommandShapeClassifier {
         let args = Array(stripped.dropFirst())
         let filters: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum"]
         if filters.contains(executable) { return false }
+        // `-m` runs any module on stdin (`code`, `pdb`), so only json.tool is data.
+        if ["python", "python2", "python3"].contains(executable), args == ["-m", "json.tool"] { return false }
         guard let flags = inlineProgramFlags[executable] else { return true }
         return !containsInlineProgram(args, flags: flags)
     }
@@ -375,7 +381,7 @@ enum CommandShapeClassifier {
     // `-i` is excluded everywhere: python and node read stdin interactively
     // after the inline program, and perl/ruby `-i` takes an attached suffix.
     private static let inlineProgramFlags: [String: InlineProgramFlags] = {
-        let python = InlineProgramFlags(program: ["c", "m"], noArgument: Set("BEIOPqsSub"), value: ["W", "X"])
+        let python = InlineProgramFlags(program: ["c"], noArgument: Set("BEIOPqsSub"), value: ["W", "X"])
         return [
             "python": python, "python2": python, "python3": python,
             "perl": InlineProgramFlags(program: ["e"], noArgument: Set("anlpstTwWX"), value: ["I", "M", "m"]),
@@ -436,7 +442,7 @@ enum CommandShapeClassifier {
 
     private static func nestedCommandStartsWithFetcher(_ command: String) -> Bool {
         for words in allSimpleCommands(command) {
-            let normalized = stripWrappers(normalizedTokens(words: words))
+            let normalized = stripWrappers(words: words)
             guard let executable = normalized.first else { continue }
             if fetchers.contains(executable) {
                 return true
@@ -448,15 +454,7 @@ enum CommandShapeClassifier {
     private static func isBulkOperation(words: [String]) -> Bool {
         let normalizedAll = normalizedTokens(words: words)
         let includesXargs = normalizedAll.contains("xargs")
-        var normalized = stripWrappers(normalizedTokens(words: words))
-        guard !words.isEmpty else { return false }
-        guard !normalized.isEmpty else { return false }
-
-        if normalized.first == "xargs" {
-            normalized = stripWrappers(normalized)
-            guard !normalized.isEmpty else { return false }
-        }
-
+        let normalized = stripWrappers(words: words)
         guard let executable = normalized.first else { return false }
         let args = Array(normalized.dropFirst())
         let hasSubstitution = stripWrappersRaw(words).dropFirst().contains(where: containsCommandSubstitution) || args.contains("$") || args.contains("<")
@@ -525,10 +523,8 @@ enum CommandShapeClassifier {
     }
 
     private static func isMutatingPackageManagerInvocation(_ normalized: [String]) -> Bool {
-        guard !normalized.isEmpty else { return false }
-        let words = stripWrappers(normalized)
-        guard let executable = words.first else { return false }
-        let args = Array(words.dropFirst())
+        guard let executable = normalized.first else { return false }
+        let args = Array(normalized.dropFirst())
 
         switch executable {
         case "brew":
@@ -582,6 +578,9 @@ enum CommandShapeClassifier {
         let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first.map(normalizedExecutableName) else { return [] }
         if executable == "eval" { return [stripped.dropFirst().joined(separator: " ")] }
+        // `trap` runs its first argument as code; `find -exec` runs the words up to `;` or `+`.
+        if executable == "trap" { return stripped.dropFirst().first { $0 != "--" }.map { [$0] } ?? [] }
+        if executable == "find" { return findExecCommands(Array(stripped.dropFirst())) }
         guard shellExecutables.contains(executable) else {
             return []
         }
@@ -594,6 +593,19 @@ enum CommandShapeClassifier {
             nested.append(stripped[index + 1])
         }
         return nested
+    }
+
+    private static func findExecCommands(_ args: [String]) -> [String] {
+        var commands: [String] = []
+        var index = 0
+        while index < args.count {
+            defer { index += 1 }
+            guard ["-exec", "-execdir", "-ok", "-okdir"].contains(args[index]) else { continue }
+            let body = args[(index + 1)...].prefix { $0 != ";" && $0 != "+" }
+            commands.append(body.map(ShellEscaping.quote).joined(separator: " "))
+            index += body.count + 1
+        }
+        return commands
     }
 
     private static func containsSuppressedErrors(_ command: String) -> Bool {
@@ -636,92 +648,6 @@ enum CommandShapeClassifier {
         return lower
     }
 
-    private static func stripWrappers(_ tokens: [String]) -> [String] {
-        var working = tokens
-
-        func removeLeadingOptions(optionValueFlags: Set<String> = [], allowAssignments: Bool = false) {
-            while let first = working.first {
-                if first == "--" {
-                    working.removeFirst()
-                    break
-                }
-                if optionValueFlags.contains(first), working.count > 1 {
-                    working.removeFirst(2)
-                    continue
-                }
-                if allowAssignments && first.contains("="), !first.hasPrefix("="), !first.hasSuffix("=") {
-                    working.removeFirst()
-                    continue
-                }
-                if first.hasPrefix("-") {
-                    working.removeFirst()
-                    continue
-                }
-                break
-            }
-        }
-
-        while let first = working.first {
-            if first == "repeat" {
-                working.removeFirst(min(2, working.count)); continue
-            }
-            if ["if", "while", "until", "coproc", "then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(first) {
-                working.removeFirst(); continue
-            }
-            if ["env", "command", "exec", "nohup", "time"].contains(first) {
-                working.removeFirst()
-                if first == "env" {
-                    removeLeadingOptions(optionValueFlags: ["-u"], allowAssignments: true)
-                } else if first == "exec" || first == "command" {
-                    removeLeadingOptions(optionValueFlags: ["-a"])
-                }
-                continue
-            }
-            if first == "sudo" || first == "doas" {
-                working.removeFirst()
-                removeLeadingOptions(optionValueFlags: ["-u", "-g", "-h", "-p", "-r", "-t", "-C", "-T"])
-                continue
-            }
-            if first == "timeout" {
-                working.removeFirst()
-                removeLeadingOptions(optionValueFlags: ["--signal", "-s", "-k"])
-                if let duration = working.first, !duration.hasPrefix("-") {
-                    working.removeFirst()
-                }
-                continue
-            }
-            if first == "arch" {
-                working.removeFirst()
-                if let architecture = working.first, architecture.hasPrefix("-") || architecture == "arm64" || architecture == "x86_64" {
-                    working.removeFirst()
-                }
-                continue
-            }
-            if first == "nice" {
-                working.removeFirst()
-                removeLeadingOptions(optionValueFlags: ["-n"])
-                continue
-            }
-            if first == "caffeinate" {
-                working.removeFirst()
-                removeLeadingOptions()
-                continue
-            }
-            if first == "xargs" {
-                working.removeFirst()
-                removeLeadingOptions(optionValueFlags: ["-n", "-p", "-i", "-l", "-s", "-e", "-I", "-L", "-P", "-E"])
-                continue
-            }
-            if first.contains("="), !first.hasPrefix("="), !first.hasSuffix("=") {
-                working.removeFirst()
-                continue
-            }
-            break
-        }
-
-        return working
-    }
-
     private static func hasGlobalFlag(_ args: [String]) -> Bool {
         if args.contains("-g") || args.contains("--global") {
             return true
@@ -738,110 +664,120 @@ enum CommandShapeClassifier {
         return false
     }
 
-    private static func stripWrappersRaw(_ tokens: [String], preservePrivilege: Bool = false) -> [String] {
-        var working = tokens
+    /// getopt-style options for one wrapper. Short letters may be clustered
+    /// (`-iv`) and a value letter takes the rest of its word or the next word.
+    /// Any option not listed fails closed.
+    private struct WrapperOptions {
+        var flags: Set<Character> = []
+        var values: Set<Character> = []
+        var longFlags: Set<String> = []
+        var longValues: Set<String> = []
+        /// Whole-word options, for wrappers that do not cluster (`arch`).
+        var words: Set<String> = []
+        var valueWords: Set<String> = []
+        /// Options that turn a string into a new command line (`env -S`).
+        var refused: Set<String> = []
+        var numeric = false
+        var assignments = false
+        var operands = 0
+    }
+
+    private static let wrapperOptions: [String: WrapperOptions] = [
+        "env": WrapperOptions(flags: Set("0iv"), values: Set("uPLU"), words: ["-"],
+            refused: ["-S", "--split-string"], assignments: true),
+        "sudo": WrapperOptions(flags: Set("ABbEeHiKklNnPSsVv"), values: Set("CDghpRrTtUu"),
+            longFlags: ["--askpass", "--background", "--bell", "--edit", "--login", "--non-interactive",
+                "--preserve-env", "--preserve-groups", "--remove-timestamp", "--reset-timestamp", "--set-home",
+                "--shell", "--stdin"],
+            longValues: ["--chdir", "--chroot", "--close-from", "--command-timeout", "--group", "--host",
+                "--other-user", "--prompt", "--role", "--type", "--user"]),
+        "doas": WrapperOptions(flags: Set("Lns"), values: Set("Cu")),
+        "nice": WrapperOptions(values: ["n"], longValues: ["--adjustment"], numeric: true),
+        "timeout": WrapperOptions(flags: Set("fpv"), values: Set("ks"),
+            longFlags: ["--foreground", "--preserve-status", "--verbose"], longValues: ["--kill-after", "--signal"],
+            operands: 1),
+        "exec": WrapperOptions(flags: Set("cl"), values: ["a"]),
+        "command": WrapperOptions(flags: Set("pvV")),
+        "time": WrapperOptions(flags: Set("alp"), values: ["o"]),
+        "nohup": WrapperOptions(),
+        "caffeinate": WrapperOptions(flags: Set("disum"), values: Set("tw")),
+        "arch": WrapperOptions(words: ["-32", "-64", "-arm64", "-arm64e", "-x86_64", "-i386", "-c", "arm64", "x86_64"],
+            valueWords: ["-arch", "-d", "-e"]),
+        "xargs": WrapperOptions(flags: Set("0oprtx"), values: Set("EIJLnPRSs")),
+    ]
+
+    /// Removes leading wrappers (`sudo -u root`, `env A=1`, `if`, `then` …)
+    /// and returns the words from the executable on. `failsClosed` is set
+    /// when a wrapper option is unknown or re-parses a string as a command.
+    private static func unwrap(_ tokens: [String], preservePrivilege: Bool = false) -> (words: [String], failsClosed: Bool) {
+        var working = ArraySlice(tokens)
         while let first = working.first {
             let lowered = normalizedExecutableName(first)
             if lowered == "repeat" {
-                working.removeFirst(min(2, working.count)); continue
+                working = working.dropFirst(2); continue
             }
             if ["if", "while", "until", "coproc", "then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(lowered) {
-                working.removeFirst(); continue
+                working = working.dropFirst(); continue
             }
-            if ["env", "command", "exec", "nohup", "time"].contains(lowered) {
-                working.removeFirst()
-                if ["env", "exec", "command"].contains(lowered) {
-                    while let next = working.first {
-                        if next == "--" {
-                            working.removeFirst()
-                            break
-                        }
-                        if (next == "-u" || next == "-a"), working.count > 1 {
-                            working.removeFirst(2)
-                            continue
-                        }
-                        if next.hasPrefix("-") {
-                            working.removeFirst()
-                            continue
-                        }
-                        if next.contains("="), !next.hasPrefix("="), !next.hasSuffix("=") {
-                            working.removeFirst()
-                            continue
-                        }
-                        break
-                    }
-                }
+            if let options = wrapperOptions[lowered] {
+                if preservePrivilege, lowered == "sudo" || lowered == "doas" { return (Array(working), false) }
+                working = working.dropFirst()
+                guard skipOptions(&working, options) else { return (Array(working), true) }
                 continue
             }
-            if lowered == "sudo" || lowered == "doas" {
-                if preservePrivilege { return working }
-                working.removeFirst()
-                while let next = working.first, next.hasPrefix("-") {
-                    let consumesValue = ["-u", "-g", "-h", "-p", "-r", "-t", "-C", "-T"].contains(next)
-                    working.removeFirst()
-                    if consumesValue, !working.isEmpty {
-                        working.removeFirst()
-                    }
-                }
-                continue
-            }
-            if lowered == "timeout" {
-                working.removeFirst()
-                while let next = working.first, next.hasPrefix("-") {
-                    let consumesValue = next == "--signal" || next == "-s" || next == "-k"
-                    working.removeFirst()
-                    if consumesValue, !working.isEmpty {
-                        working.removeFirst()
-                    }
-                }
-                if let duration = working.first, !duration.hasPrefix("-") {
-                    working.removeFirst()
-                }
-                continue
-            }
-            if lowered == "arch" {
-                working.removeFirst()
-                if let next = working.first, next.hasPrefix("-") || next == "arm64" || next == "x86_64" {
-                    working.removeFirst()
-                }
-                continue
-            }
-            if lowered == "nice" {
-                working.removeFirst()
-                while let next = working.first, next.hasPrefix("-") {
-                    let consumesValue = next == "-n"
-                    working.removeFirst()
-                    if consumesValue, !working.isEmpty {
-                        working.removeFirst()
-                    }
-                }
-                continue
-            }
-            if lowered == "caffeinate" {
-                working.removeFirst()
-                while let next = working.first, next.hasPrefix("-") {
-                    working.removeFirst()
-                }
-                continue
-            }
-            if lowered == "xargs" {
-                working.removeFirst()
-                while let next = working.first, next.hasPrefix("-") {
-                    let consumesValue = ["-n", "-p", "-i", "-l", "-s", "-e", "-I", "-L", "-P", "-E"].contains(next)
-                    working.removeFirst()
-                    if consumesValue, !working.isEmpty {
-                        working.removeFirst()
-                    }
-                }
-                continue
-            }
-            if first.contains("="), !first.hasPrefix("="), !first.hasSuffix("=") {
-                working.removeFirst()
-                continue
+            if isAssignment(first) {
+                working = working.dropFirst(); continue
             }
             break
         }
-        return working
+        return (Array(working), false)
+    }
+
+    private static func skipOptions(_ working: inout ArraySlice<String>, _ options: WrapperOptions) -> Bool {
+        while let arg = working.first {
+            if options.refused.contains(where: { arg.hasPrefix($0) }) { return false }
+            if arg == "--" { working = working.dropFirst(); break }
+            if options.words.contains(arg) { working = working.dropFirst(); continue }
+            if options.valueWords.contains(arg) { working = working.dropFirst(2); continue }
+            if options.assignments, isAssignment(arg) { working = working.dropFirst(); continue }
+            guard arg.hasPrefix("-"), arg != "-" else { break }
+            if arg.hasPrefix("--") {
+                let name = String(arg.prefix { $0 != "=" })
+                if options.longFlags.contains(name) {
+                    working = working.dropFirst(); continue
+                }
+                guard options.longValues.contains(name) else { return false }
+                working = working.dropFirst(name == arg ? 2 : 1); continue
+            }
+            let letters = Array(arg.dropFirst())
+            if options.numeric, letters.allSatisfy(\.isNumber) { working = working.dropFirst(); continue }
+            var consumed = 1
+            for (offset, letter) in letters.enumerated() {
+                if options.flags.contains(letter) { continue }
+                guard options.values.contains(letter) else { return false }
+                if offset == letters.count - 1 { consumed = 2 }
+                break
+            }
+            working = working.dropFirst(consumed)
+        }
+        for _ in 0..<options.operands {
+            guard let operand = working.first, !operand.hasPrefix("-") else { break }
+            working = working.dropFirst()
+        }
+        return true
+    }
+
+    private static func isAssignment(_ word: String) -> Bool {
+        word.contains("=") && !word.hasPrefix("=") && !word.hasSuffix("=")
+    }
+
+    private static func stripWrappersRaw(_ tokens: [String], preservePrivilege: Bool = false) -> [String] {
+        unwrap(tokens, preservePrivilege: preservePrivilege).words
+    }
+
+    /// The executable and its arguments, normalized (lowercased basenames).
+    private static func stripWrappers(words: [String]) -> [String] {
+        normalizedTokens(words: stripWrappersRaw(words))
     }
 
     private static func positionalArguments(

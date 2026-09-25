@@ -329,6 +329,22 @@ enum CLIRunner {
             printAvailableIDs(state: state, for: action, output: output)
             return 1
         }
+        // Remote-script and unparseable updates are refused on one path, with
+        // or without --yes, whatever gate or loop shape put them there.
+        if action == .update, item.status == .gated || action.matches(item),
+           ActionCommandPolicy.isRemoteScriptInstaller(item.updateCommand) {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This update runs a remote script and must be confirmed in the app.")
+            return 2
+        }
         if action == .update, item.status == .gated, GatePolicy.canRunScopedUpdateWithYes(item), !confirmed {
             printDryRunPlan(entries: [
                 DryRunEntry(
@@ -375,20 +391,6 @@ enum CLIRunner {
                 )
             ], output: output)
             output("This install runs a remote script and must be confirmed in the app.")
-            return 2
-        }
-
-        if case .update = action, ActionCommandPolicy.isRemoteScriptInstaller(item.updateCommand), !confirmed {
-            printDryRunPlan(entries: [
-                DryRunEntry(
-                    id: item.id,
-                    name: item.name,
-                    command: item.updateCommand,
-                    action: item.actionLabel,
-                    category: item.category
-                )
-            ], output: output)
-            output("This update command runs a remote script. Re-run with --yes to allow it.")
             return 2
         }
 

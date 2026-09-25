@@ -11,7 +11,9 @@ struct ShellToken: Hashable {
     let value: String
     let kind: Kind
     var hasUnquotedGlob = false
-    var hasUnquotedBraceExpansion = false
+    /// Any unquoted `{` or `}` inside the word: a `{a,b}` list, a `{x..y}`
+    /// range, or a zsh `{cmd …}` group whose `{` has no space after it.
+    var hasUnquotedBrace = false
     /// Offset (in `value`) just past the first unquoted `)`, if any.
     var caseTerminatorEnd: Int?
     var hasUnquotedCaseTerminator: Bool { caseTerminatorEnd != nil }
@@ -27,6 +29,8 @@ enum ShellLexer {
     }
 
     static func lex(_ command: String) -> [ShellToken] { scan(Array(command)).tokens }
+    /// True for text this lexer does not model: unbalanced quotes, heredocs,
+    /// ANSI-C escapes, and a `(` attached to the word before it.
     static func hasUnbalancedQuotes(_ command: String) -> Bool { scan(Array(command)).invalid }
     static func nestedCommands(in command: String) -> [String] { scan(Array(command)).nested }
     static func words(from tokens: [ShellToken]) -> [String] { tokens.filter(\.isWord).map(\.value) }
@@ -46,7 +50,7 @@ enum ShellLexer {
         func flush() {
             if started {
                 result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob || brace,
-                    hasUnquotedBraceExpansion: brace, caseTerminatorEnd: caseTerminatorEnd))
+                    hasUnquotedBrace: brace, caseTerminatorEnd: caseTerminatorEnd))
             }
             word = ""; started = false; glob = false; brace = false; caseTerminatorEnd = nil
         }
@@ -119,6 +123,9 @@ enum ShellLexer {
                     index += hereString ? 3 : 2; continue
                 }
                 if char == "(" || (char == "{" && !started && (next.isWhitespace || next == "\0")) {
+                    // zsh reads `(` attached to a word as a glob group (`br(e)w`,
+                    // `sud(o|x)`). Only an empty `()` ending a function name is modelled.
+                    if char == "(", started, !endsFunctionName(chars, at: index) { result.invalid = true }
                     flush()
                     let closing: Character = char == "(" ? ")" : "}"
                     let body = scan(chars, start: index + 1, until: closing)
@@ -139,11 +146,22 @@ enum ShellLexer {
                     flush(); result.tokens.append(ShellToken(value: String(char), kind: .op(op))); index += 1; continue
                 }
                 if ["*", "?", "["].contains(char) { glob = true }
-                // zsh expands both `{a,b}` lists and `{x..y}` ranges.
-                if char == "{", let closing = chars[(index + 1)...].firstIndex(of: "}") {
-                    let body = String(chars[(index + 1)..<closing])
-                    if body.contains(",") || body.contains("..") { brace = true }
+                if char == "$", next == "{" {
+                    // `${…}` is parameter expansion, not a brace list or group.
+                    var depth = 0
+                    while index < chars.count {
+                        let part = chars[index]
+                        word.append(part); index += 1
+                        if part == "{" { depth += 1 }
+                        if part == "}" { depth -= 1; if depth == 0 { break } }
+                    }
+                    if depth != 0 { result.invalid = true }
+                    started = true; continue
                 }
+                // An empty `{}` stays literal (`xargs -I{}`, `find -exec … {}`).
+                if char == "{", next == "}" { word += "{}"; started = true; index += 2; continue }
+                // zsh expands `{a,b}` and `{x..y}`, and runs `{cmd …}` as a group.
+                if char == "{" || char == "}" { brace = true }
                 if char == ")", caseTerminatorEnd == nil { caseTerminatorEnd = word.count + 1 }
             }
             word.append(char); started = true; index += 1
@@ -152,6 +170,13 @@ enum ShellLexer {
         result.invalid = result.invalid || single || double || until != nil
         result.end = index
         return result
+    }
+
+    private static func endsFunctionName(_ chars: [Character], at index: Int) -> Bool {
+        guard index + 1 < chars.count, chars[index + 1] == ")" else { return false }
+        guard index + 2 < chars.count else { return true }
+        let after = chars[index + 2]
+        return after.isWhitespace || ["{", ";", "&", "|"].contains(after)
     }
 
     static func split(_ tokens: [ShellToken], by operators: Set<ShellOperator>) -> [[ShellToken]] {

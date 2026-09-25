@@ -47,8 +47,12 @@ enum ActionCommandPolicy {
         CommandShapeClassifier.classify(command).risks.contains(.chained)
     }
 
+    /// Also true for an unparseable command: the classifier cannot show that
+    /// it does not fetch and run a script, so it is refused the same way.
     static func isRemoteScriptInstaller(_ command: String) -> Bool {
-        CommandShapeClassifier.classify(command).isRemoteScript
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let risks = CommandShapeClassifier.classify(command).risks
+        return risks.contains(.remoteScript) || risks.contains(.unparseable)
     }
 
     static func shouldAutoSelectForInstall(_ item: UpdateItem) -> Bool {

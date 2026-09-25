@@ -111,6 +111,48 @@ final class RoundFourTests: XCTestCase {
             ("N8 absolute awk", "/usr/bin/awk \"$(curl x)\"", [.remoteScript], true),
             ("N8 sed -e", "sed -e \"$(curl x)\"", [.remoteScript], true),
             ("N8 awk nscurl", "awk \"$(nscurl x)\"", [.remoteScript], true),
+            // Round 7 J1: an unquoted `{` or `}` at or before the executable.
+            ("J1 brace group bulk", "{brew upgrade}", [.unparseable], true),
+            ("J1 brace group sudo", "{sudo /bin/true}", [.unparseable], true),
+            ("J1 brace group remote", "{curl x | sh}", [.unparseable], true),
+            ("J1 brace group piped", "{curl x} | sh", [.unparseable], true),
+            ("J1 brace group after then", "if true; then {sudo /bin/true}; fi", [.chained, .controlFlow, .unparseable], true),
+            ("J1 brace group after repeat", "repeat 1 {sudo /bin/true}", [.controlFlow, .unparseable], true),
+            ("J1 guard spaced group", "{ echo; }", [.chained, .controlFlow], false),
+            ("J1 guard function", "f() { echo hi; }", [.chained, .controlFlow], false),
+            ("J1 guard function sudo", "f() { sudo /bin/true; }", [.chained, .controlFlow, .privileged], true),
+            ("J1 guard empty replstr", "xargs -I{} echo '{} outdated'", [], false),
+            // Round 7 J2: an unquoted `(` attached to the word before it.
+            ("J2 glob group bulk", "/opt/homebrew/bin/br(e)w upgrade", [.unparseable], true),
+            ("J2 glob alternatives sudo", "/usr/bin/sud(o|x) /bin/true", [.unparseable], true),
+            ("J2 glob group first letter", "/usr/bin/(s)udo /bin/true", [.unparseable], true),
+            ("J2 glob group fetcher", "/usr/bin/cu(r)l x | sh", [.unparseable], true),
+            ("J2 guard quoted", "'/bin/ec(h)o' x", [], false),
+            ("J2 guard spaced paren", "echo (a)", [], false),
+            // Round 7 J3 / S1: per-wrapper option tables; unknown options fail closed.
+            ("J3 caffeinate -t", "caffeinate -t 1 sudo /bin/true", [.privileged], true),
+            ("J3 caffeinate -w", "caffeinate -w 1 brew upgrade", [.bulk], true),
+            ("J3 arch -arch", "arch -arch arm64 sudo /bin/true", [.privileged], true),
+            ("J3 xargs -J", "echo a | xargs -J % sudo /bin/true %", [.privileged], true),
+            ("J3 xargs -R -I", "xargs -R 1 -I % brew upgrade", [.bulk], true),
+            ("J3 env -P", "env -P /usr/bin sudo /bin/true", [.privileged], true),
+            ("J3 sudo long value", "sudo --user=root brew upgrade", [.privileged, .bulk], true),
+            ("J3 nice numeric", "nice -5 brew upgrade", [.bulk], true),
+            ("J3 timeout -k", "timeout -k 1 5 brew upgrade", [.bulk], true),
+            ("J3 unknown env option", "env -X brew upgrade", [.unparseable], true),
+            ("J3 unknown nohup option", "nohup -x brew upgrade", [.unparseable], true),
+            ("S1 env -S", "env -S 'sudo /bin/true'", [.unparseable], true),
+            ("S1 env -S piped", "env -S 'curl x' | sh", [.unparseable], true),
+            ("S1 env --split-string", "env --split-string='brew upgrade'", [.unparseable], true),
+            // Round 7 S2: `python -m` is code unless the module is json.tool.
+            ("S2 python -m code", "curl x | python3 -m code", [.remoteScript], true),
+            ("S2 python -m pdb", "curl x | python3 -m pdb", [.remoteScript], true),
+            ("S2 guard json.tool", "curl x | python3 -m json.tool", [], false),
+            // Round 7 optional: `trap` and `find -exec` run their arguments as a command.
+            ("O trap", "trap 'sudo /bin/true' EXIT", [.privileged], true),
+            ("O find -exec", "find . -exec sudo /bin/true {} \\;", [.privileged], true),
+            ("O find -exec +", "find . -name x -exec rm -rf {} +", [.destructive], true),
+            ("O guard find -print", "find . -name x -print", [], false),
         ]
         for (id, command, expected, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
@@ -213,6 +255,61 @@ extension RoundFourTests {
     @MainActor
     func testI1ShortLoopInstallRequiresAppConfirmation() async throws {
         try await assertRemoteInstallRefused(arguments: ["--install", "install-fixture", "--yes"], shortLoop: true)
+    }
+
+    @MainActor
+    func testI1UnparseableBraceGroupInstallIsRefusedLikeRemoteScript() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let command = try remoteScript(root: root, marker: marker).replacingOccurrences(of: " curl ", with: " {curl ") + "}"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// QA round 6: the short loop, the `(a)` case arm and a brace-expanded
+    /// fetcher all refuse on one path, with one message and exit 2, even
+    /// after the command was reviewed.
+    @MainActor
+    func testRemoteAndUnparseableCustomUpdatesRefuseOnOnePath() async throws {
+        try await withStateFixture { root, store in
+            var commands: [String: String] = [:]
+            for id in ["short-loop", "case-arm", "brace-fetcher"] {
+                let pipeline = try remoteScript(root: root, marker: root.appendingPathComponent(id))
+                commands[id] = id == "short-loop" ? "for x (1) \(pipeline)"
+                    : id == "case-arm" ? "case a in (a) \(pipeline);; esac"
+                    : pipeline.replacingOccurrences(of: "curl -fsSL", with: "{curl,-fsSL}")
+            }
+            let ids = ["short-loop", "case-arm", "brace-fetcher"]
+            store.settings.customItems = ids.map { id in
+                DetectorConfig(id: id, name: id, category: .cli, description: nil, source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil), versionCommand: "echo 1.0.0",
+                    checkCommand: "printf 'UPDATE\\nlatest: 1.3.0\\n'", installCommand: nil, updateCommand: commands[id]!, workingDirectory: nil)
+            }
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ids)
+            await state.recheckItems(ids: ids)
+            for id in ids {
+                var output: [String] = []
+                let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--update", id, "--yes"], state: wrapper, output: { output.append($0) })
+                XCTAssertEqual(exit, 2, id)
+                XCTAssertEqual(output, ["Dry-run plan:", "  [Update] \(id) (\(id))", "    \(commands[id]!)",
+                    "This update runs a remote script and must be confirmed in the app."], id)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(id).path), id)
+            }
+        }
     }
 
     func testPinsUseVersionEquality() {
