@@ -47,6 +47,8 @@ enum ShellLexer {
         var caseTerminatorEnd: Int?
         var single = false
         var double = false
+        // `${…}` depth inside `"…"`: zsh reads a `"` there as a nested quote.
+        var doubleParameterDepth = 0
         func flush() {
             if started {
                 result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob || brace,
@@ -70,7 +72,13 @@ enum ShellLexer {
                 word.append(char); started = true; index += 1; continue
             }
             if char == "'", !double { single = true; started = true; index += 1; continue }
-            if char == "\"" { double.toggle(); started = true; index += 1; continue }
+            if char == "\"" {
+                // This lexer does not model nested quotes, so fail closed.
+                if double, doubleParameterDepth > 0 { result.invalid = true }
+                double.toggle(); doubleParameterDepth = 0; started = true; index += 1; continue
+            }
+            if double, char == "$", next == "{" { doubleParameterDepth += 1 }
+            if double, char == "}", doubleParameterDepth > 0 { doubleParameterDepth -= 1 }
             if !double, char == "#", !started {
                 while index < chars.count, chars[index] != "\n" { index += 1 }
                 continue
@@ -159,7 +167,8 @@ enum ShellLexer {
                             word += "${"; index += 2; depth += 1; continue
                         }
                         if part == "}" { word.append(part); index += 1; depth -= 1; if depth == 0 { break }; continue }
-                        guard isParameterCharacter(part) else { break }
+                        // `index` stays on the rejected character for the outer loop.
+                    guard isParameterCharacter(part) else { break }
                         word.append(part); index += 1
                     }
                     if depth != 0 { result.invalid = true }

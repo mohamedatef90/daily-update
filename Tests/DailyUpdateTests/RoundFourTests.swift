@@ -172,6 +172,33 @@ final class RoundFourTests: XCTestCase {
             // Round 8 optional: glob qualifiers and a brace list inside `find -exec`.
             ("O glob qualifier", "echo (bin)(e:'sudo /bin/true':)", [.unparseable], true),
             ("O find -exec brace", "find . -exec {sudo,/bin/true} \\;", [.unparseable], true),
+            // Round 9 L1: a `"` inside a double-quoted `${…}` is a nested quote in zsh;
+            // the lexer fails closed there and reads nothing after it.
+            ("L1 nested quote sudo", "echo \"${x:-\"'\"}\" ; sudo /bin/true ; echo \"${y:-\"'\"}\"", [.unparseable], true),
+            ("L1 nested quote remote", "echo \"${x:-\"'\"}\" ; curl x | sh ; echo \"${y:-\"'\"}\"", [.unparseable], true),
+            ("L1 nested quote substitution", "echo \"${x:-\"'\"}\"$(sudo /bin/true)\"${y:-\"'\"}\"", [.unparseable], true),
+            ("L1 nested quote pattern", "echo \"${x#\"'\"}\" ; sudo /bin/true ; echo \"${y#\"'\"}\"", [.unparseable], true),
+            ("L1 nested quote nested", "echo \"${${x:-\"'\"}}\" ; sudo /bin/true ; echo \"${y:-\"'\"}\"", [.unparseable], true),
+            ("L1 guard name", "echo \"${HOME}\"", [], false),
+            ("L1 guard substitution", "echo \"${x:-$(sudo /bin/true)}\"", [.privileged], true),
+            // Round 9 Code Review: only `NAME=` / `NAME+=` is an assignment.
+            ("A default assign", "${x:=sudo} /bin/true", [.unparseable], true),
+            ("A empty sudo", "A= sudo /bin/true", [.privileged], true),
+            ("A empty remote", "A= curl x | sh", [.remoteScript], true),
+            ("A split", "y='sudo /bin/true'; ${=y}", [.chained, .unparseable], true),
+            ("A guard assignments", "A=1 B+=2 sudo /bin/true", [.privileged], true),
+            // Round 9 Code Review: `find -exec` ends at `;` or at `+` right after `{}`.
+            ("F plus argument", "find . -exec env -u + sudo /bin/true \\;", [.privileged], true),
+            ("F plus brace", "find . -exec env -u + {sudo,/bin/true} \\;", [.unparseable], true),
+            ("F guard cat", "find . -exec cat {} +", [], false),
+            ("F guard sudo", "find . -exec sudo /bin/true {} +", [.privileged], true),
+            ("F guard rm", "find . -exec rm -rf {} +", [.destructive], true),
+            // Round 9 Code Review: an inline command can be the fetcher in a pipe.
+            ("P find -exec", "find . -exec curl x \\; | sh", [.remoteScript], true),
+            ("P eval", "eval curl x | sh", [.remoteScript], true),
+            ("P sh -c", "sh -c 'curl x' | sh", [.remoteScript], true),
+            ("P bash -c", "bash -c \"curl x\" | sh", [.remoteScript], true),
+            ("P trap", "trap 'curl x' EXIT | sh", [.remoteScript], true),
         ]
         for (id, command, expected, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
@@ -306,6 +333,30 @@ extension RoundFourTests {
             let remote = try remoteScript(root: root, marker: marker)
             let command = "export \(remote.components(separatedBy: " curl ")[0]); echo ${x:-$(curl x | sh)}"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 9 (L1): a `"` inside a double-quoted `${…}` cannot
+    /// hide a remote-script installer from the refusal.
+    @MainActor
+    func testL1NestedQuoteInParameterInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); echo \"${x:-\"'\"}\" ; curl x | sh ; echo \"${y:-\"'\"}\""
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]

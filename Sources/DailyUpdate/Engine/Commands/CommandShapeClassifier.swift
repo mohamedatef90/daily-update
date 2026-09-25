@@ -349,6 +349,8 @@ enum CommandShapeClassifier {
             let words = commandWords(command)
             if let executable = stripWrappers(words: words).first,
                fetchers.contains(executable) { return true }
+            // `find -exec curl …`, `eval curl …` and `sh -c 'curl …'` fetch too.
+            if inlineShellCommands(in: words).contains(where: nestedCommandStartsWithFetcher) { return true }
             for word in words {
                 for nested in ShellLexer.nestedCommands(in: word) {
                     if nestedCommandStartsWithFetcher(nested) { return true }
@@ -600,8 +602,10 @@ enum CommandShapeClassifier {
     private static func findExecBodyHasUnquotedBrace(_ tokens: [ShellToken]) -> Bool {
         guard let first = tokens.first, normalizedExecutableName(first.value) == "find" else { return false }
         var inBody = false
+        var previous = ""
         for token in tokens.dropFirst() {
-            if inBody, token.value == ";" || token.value == "+" { inBody = false; continue }
+            defer { previous = token.value }
+            if inBody, token.value == ";" || (token.value == "+" && previous == "{}") { inBody = false; continue }
             if inBody, token.hasUnquotedBrace { return true }
             if ["-exec", "-execdir", "-ok", "-okdir"].contains(token.value) { inBody = true }
         }
@@ -614,9 +618,11 @@ enum CommandShapeClassifier {
         while index < args.count {
             defer { index += 1 }
             guard ["-exec", "-execdir", "-ok", "-okdir"].contains(args[index]) else { continue }
-            let body = args[(index + 1)...].prefix { $0 != ";" && $0 != "+" }
-            commands.append(body.map(ShellEscaping.quote).joined(separator: " "))
-            index += body.count + 1
+            // `+` ends the body only right after `{}`; elsewhere it is an argument.
+            var end = index + 1
+            while end < args.count, args[end] != ";", !(args[end] == "+" && args[end - 1] == "{}") { end += 1 }
+            commands.append(args[(index + 1)..<end].map(ShellEscaping.quote).joined(separator: " "))
+            index = end
         }
         return commands
     }
@@ -780,8 +786,13 @@ enum CommandShapeClassifier {
         return true
     }
 
+    /// `NAME=value` or `NAME+=value`, `NAME` a shell identifier; `NAME=` is empty, not a command.
     private static func isAssignment(_ word: String) -> Bool {
-        word.contains("=") && !word.hasPrefix("=") && !word.hasSuffix("=")
+        guard let equals = word.firstIndex(of: "=") else { return false }
+        var name = word[..<equals]
+        if name.hasSuffix("+") { name = name.dropLast() }
+        guard let first = name.first, first == "_" || (first.isASCII && first.isLetter) else { return false }
+        return name.allSatisfy { $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }
     }
 
     private static func stripWrappersRaw(_ tokens: [String], preservePrivilege: Bool = false) -> [String] {
