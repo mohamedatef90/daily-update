@@ -589,30 +589,47 @@ enum CommandShapeClassifier {
             return []
         }
 
-        return shellCommandFlagIndices(stripped).compactMap { index in
-            index + 1 < stripped.count ? stripped[index + 1] : nil
-        }
+        if case .script(let script) = shellScript(stripped) { return [script] }
+        return []
     }
 
-    /// `sh -c -- 'x'`, `sh -c -e 'x'`, `sh -c +x 'x'`: the shell keeps parsing options
-    /// after `-c`, so the script is not the next word. Not modelled, so fail closed.
+    /// Fails closed when the shell's script flag is not a modelled `-c` cluster, or when
+    /// the word after it is an option (`sh -c -- 'x'`, `sh -c +x 'x'`).
     private static func shellScriptFollowsOption(_ words: [String]) -> Bool {
         let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first.map(normalizedExecutableName),
               shellExecutables.contains(executable) else { return false }
-        return shellCommandFlagIndices(stripped).contains { index in
-            guard index + 1 < stripped.count else { return false }
-            let script = stripped[index + 1]
-            return script.hasPrefix("-") || script.hasPrefix("+")
-        }
+        if case .unparseable = shellScript(stripped) { return true }
+        return false
     }
 
-    /// Indices of `-…c…` flags, whose next word `sh`/`bash`/`zsh` would run as a script.
-    private static func shellCommandFlagIndices(_ stripped: [String]) -> [Int] {
-        stripped.indices.filter { index in
-            let lowered = stripped[index].lowercased()
-            return lowered.hasPrefix("-") && !lowered.hasPrefix("--") && lowered.dropFirst().contains("c")
+    private enum ShellScript {
+        case none
+        case script(String)
+        case unparseable
+    }
+
+    /// Clusters that take no value, so the script is the word right after the cluster.
+    private static let shellScriptFlagLetters = Set("cefilnuvx")
+
+    /// The script `sh`/`bash`/`zsh`/`fish` would run. The flag is the first `-…c…`/`+…c…`
+    /// word or `--command`/`--init-command`. Every word up to it must be a `-` cluster of
+    /// `c e f i l n u v x`: `-co errexit`, `-O extglob`, `+c` and `--command` are not modelled.
+    private static func shellScript(_ stripped: [String]) -> ShellScript {
+        let arguments = stripped.dropFirst()
+        guard let flag = arguments.firstIndex(where: { word in
+            let lowered = word.lowercased()
+            if lowered.hasPrefix("--command") || lowered.hasPrefix("--init-command") { return true }
+            return (lowered.hasPrefix("-") || lowered.hasPrefix("+")) && !lowered.hasPrefix("--")
+                && !lowered.hasPrefix("++") && lowered.dropFirst().contains("c")
+        }) else { return .none }
+        let modelled = arguments[...flag].allSatisfy { word in
+            word.count > 1 && word.hasPrefix("-") && word.dropFirst().allSatisfy(shellScriptFlagLetters.contains)
         }
+        guard modelled else { return .unparseable }
+        guard flag + 1 < stripped.count else { return .none }
+        let script = stripped[flag + 1]
+        return script.hasPrefix("-") || script.hasPrefix("+") ? .unparseable : .script(script)
     }
 
     /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.

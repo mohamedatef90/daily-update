@@ -223,6 +223,36 @@ final class RoundFourTests: XCTestCase {
             ("M2 guard sh -c", "sh -c 'sudo /bin/true'", [.privileged], true),
             ("M2 guard sh -ec", "sh -ec 'sudo /bin/true'", [.privileged], true),
             ("M2 guard zsh -fc", "zsh -fc 'sudo /bin/true'", [.privileged], true),
+            // Round 11 N1: between the shell and its script flag only `-` clusters of
+            // `c e f i l n u v x` are modelled; `-o name`, `-O`, `+c` and `--command` fail closed.
+            ("N1 sh -co remote", "sh -co errexit 'curl x | sh'", [.unparseable], true),
+            ("N1 sh -co sudo", "sh -co errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 sh -co fetcher", "sh -co errexit 'curl x' | sh", [.unparseable], true),
+            ("N1 sh -ceo", "sh -ceo errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 sh -xco", "sh -xco errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 bash -oc", "bash -oc errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 bash -Oc", "bash -Oc extglob 'curl x | sh'", [.unparseable], true),
+            ("N1 bash -cO", "bash -cO extglob 'sudo /bin/true'", [.unparseable], true),
+            ("N1 zsh -co bulk", "zsh -co errexit 'brew upgrade'", [.unparseable], true),
+            ("N1 zsh -co sudo", "zsh -co errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 sh +c remote", "sh +c 'curl x | sh'", [.unparseable], true),
+            ("N1 sh +c sudo", "sh +c 'sudo /bin/true'", [.unparseable], true),
+            ("N1 sh +c fetcher", "sh +c 'curl x' | sh", [.unparseable], true),
+            ("N1 env sh +c", "env sh +c 'sudo /bin/true'", [.unparseable], true),
+            ("N1 bash +c", "bash +c 'curl x | sh'", [.unparseable], true),
+            ("N1 bash +oc", "bash +oc errexit 'sudo /bin/true'", [.unparseable], true),
+            ("N1 zsh +c", "zsh +c 'brew upgrade'", [.unparseable], true),
+            ("N1 fish --command=", "fish --command='sudo /bin/true'", [.unparseable], true),
+            ("N1 fish --command", "fish --command 'curl x | sh'", [.unparseable], true),
+            ("N1 fish --init-command=", "fish --init-command='sudo /bin/true'", [.unparseable], true),
+            ("N1 fish -C", "fish -C 'sudo /bin/true'", [.unparseable], true),
+            ("N1 sh -o -c over-flag", "sh -o errexit -c 'sudo /bin/true'", [.unparseable], true),
+            ("N1 guard sh -c", "sh -c 'sudo /bin/true'", [.privileged], true),
+            ("N1 guard sh -ec", "sh -ec 'sudo /bin/true'", [.privileged], true),
+            ("N1 guard sh -xc", "sh -xc 'sudo /bin/true'", [.privileged], true),
+            ("N1 guard zsh -fc", "zsh -fc 'sudo /bin/true'", [.privileged], true),
+            ("N1 guard bash -lc", "bash -lc 'sudo /bin/true'", [.privileged], true),
+            ("N1 guard fish -c", "fish -c 'sudo /bin/true'", [.privileged], true),
             // Round 10 Code Review: zsh takes a non-ASCII name like `é=1` as an assignment.
             ("A non-ASCII sudo", "é=1 sudo /bin/true", [.privileged], true),
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
@@ -433,6 +463,54 @@ extension RoundFourTests {
             let marker = root.appendingPathComponent("installed")
             let remote = try remoteScript(root: root, marker: marker)
             let command = "export \(remote.components(separatedBy: " curl ")[0]); sh -c -- 'curl x | sh'"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 11 (N1): `sh -co errexit` cannot hide a remote-script
+    /// installer from the refusal.
+    @MainActor
+    func testN1ClusteredOptionBeforeDashCInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); sh -co errexit 'curl x | sh'"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 11 (N1): `sh +c` cannot hide a remote-script
+    /// installer from the refusal.
+    @MainActor
+    func testN1PlusCInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); sh +c 'curl x | sh'"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
