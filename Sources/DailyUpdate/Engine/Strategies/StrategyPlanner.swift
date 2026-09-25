@@ -11,6 +11,35 @@ struct StrategyPlan {
 }
 
 enum StrategyPlanner {
+    typealias ProcessRunner = (CommandSpec) async -> ShellRunner.Result
+
+    /// `/usr/bin/curl` is SIP-protected, so a `curl` planted earlier on PATH
+    /// never runs. `-q` must come first to skip `~/.curlrc`, and
+    /// `--proto =https` refuses every other scheme, redirects included.
+    static let claudeDistTagsRequest = CommandSpec(
+        executablePath: "/usr/bin/curl",
+        arguments: ["-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
+            "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"]
+    )
+
+    private static var claudeDistTagsFetcherOverride: (() async -> String?)?
+
+    static func fetchClaudeDistTags(run: ProcessRunner = { spec in
+        await ShellRunner.runProcess(executablePath: spec.executablePath, arguments: spec.arguments,
+            environment: ["PATH": ShellRunner.defaultPath], timeout: 25)
+    }) async -> String? {
+        let result = await run(claudeDistTagsRequest)
+        return result.succeeded ? result.stdout : nil
+    }
+
+    static func setClaudeDistTagsFetcherForTesting(_ fetcher: (() async -> String?)?) {
+#if DEBUG
+        claudeDistTagsFetcherOverride = fetcher
+#else
+        _ = fetcher
+#endif
+    }
+
     static func usesTypedEngine(config: DetectorConfig) -> Bool {
         config.source == .bundled && config.hasTypedEngineFields
     }
@@ -334,7 +363,8 @@ enum StrategyPlanner {
             guard PathTrust.isTrustedExecutable(active.commandPath) else {
                 return .unknownOwner("Untrusted Claude executable path")
             }
-            return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath))
+            return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
+                fetchDistTags: claudeDistTagsFetcherOverride ?? { await fetchClaudeDistTags() }))
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
         case .unknown:
@@ -629,6 +659,7 @@ private struct NpmPackageStrategy: Strategy {
 private struct ClaudeNativeStrategy: Strategy {
     let executable: String
     let resolvedPath: String
+    let fetchDistTags: () async -> String?
     let requiresLatestVersion = true
     let requiresTargetVersion = false
 
@@ -648,7 +679,7 @@ private struct ClaudeNativeStrategy: Strategy {
             )
         }
 
-        guard let payload = await fetchRegistryPayload(),
+        guard let payload = await fetchDistTags(),
               let distTags = StrategyPlanner.parseClaudeDistTags(from: payload),
               let latest = distTags[channel]?.nilIfEmpty else {
             return LatestVersionOutcome(latestVersion: nil)
@@ -682,18 +713,6 @@ private struct ClaudeNativeStrategy: Strategy {
         guard ["latest", "stable"].contains(channel) else { return nil }
         return channel
     }
-
-    private func fetchRegistryPayload() async -> String? {
-        let result = await ShellRunner.runProcess(
-            executablePath: "/usr/bin/env",
-            arguments: ["curl", "--fail", "--silent", "--show-error", "--max-time", "20",
-                "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"],
-            environment: ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? ShellRunner.defaultPath],
-            timeout: 25
-        )
-        return result.succeeded ? result.stdout : nil
-    }
-
 }
 
 private extension String {

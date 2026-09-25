@@ -1545,13 +1545,15 @@ final class PartThreeRegressionTests: XCTestCase {
         XCTAssertTrue(PathTrust.isTrustedExecutable(npm.path))
         let check = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
         XCTAssertEqual(check.status, .updateAvailable)
-        XCTAssertTrue(try XCTUnwrap(check.ownerFingerprint).contains("|executor:\(target.path)"))
+        let command = fixture.install.commandPath
+        let owner = "\(command.path)|\(command.resolvingSymlinksInPath().path)|npm:\(fixture.install.prefix.path):@openai/codex"
+        XCTAssertEqual(check.ownerFingerprint, "\(owner)|executor:\(target.path)")
         let replacement = fixture.install.prefix.appendingPathComponent("lib/npm-next.js")
         try FileManager.default.copyItem(at: target, to: replacement)
         try FileManager.default.removeItem(at: npm)
         try FileManager.default.createSymbolicLink(atPath: npm.path, withDestinationPath: replacement.path)
         let changed = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
-        XCTAssertNotEqual(changed.ownerFingerprint, check.ownerFingerprint)
+        XCTAssertEqual(changed.ownerFingerprint, "\(owner)|executor:\(replacement.path)")
         try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: replacement.path)
         XCTAssertFalse(PathTrust.isTrustedExecutable(npm.path))
     }
@@ -1580,11 +1582,8 @@ final class PartThreeRegressionTests: XCTestCase {
         try createExecutable(at: target)
         try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
-        let stub = root.appendingPathComponent("bin/curl")
-        try createExecutable(at: stub, contents: "#!/bin/sh\nprintf '%s' '{\"latest\":\"2.1.281\",\"stable\":\"2.1.281\"}'\n")
-        let oldPath = ProcessInfo.processInfo.environment["PATH"]
-        setenv("PATH", stub.deletingLastPathComponent().path + ":/usr/bin:/bin", 1)
-        defer { if let oldPath { setenv("PATH", oldPath, 1) } else { unsetenv("PATH") } }
+        StrategyPlanner.setClaudeDistTagsFetcherForTesting { #"{"latest":"2.1.281","stable":"2.1.281"}"# }
+        defer { StrategyPlanner.setClaudeDistTagsFetcherForTesting(nil) }
         var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
         config.selfUpdater = "claudeCode"
         let lookup = CommandPathLookup(candidatesByName: ["claude": [link.path]], layout: .fixture(home: root.path))
@@ -1596,6 +1595,20 @@ final class PartThreeRegressionTests: XCTestCase {
         let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
         XCTAssertEqual(untrusted.status, .blocked)
         XCTAssertEqual(untrusted.message, "Untrusted Claude executable path")
+    }
+
+    func testClaudeDistTagsFetchRunsPinnedCurlWithExactArgv() async {
+        var requests: [CommandSpec] = []
+        let payload = await StrategyPlanner.fetchClaudeDistTags { spec in
+            requests.append(spec)
+            return ShellRunner.Result(exitCode: 0, stdout: "{}", stderr: "")
+        }
+        XCTAssertEqual(payload, "{}")
+        XCTAssertEqual(requests, [CommandSpec(executablePath: "/usr/bin/curl", arguments: [
+            "-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
+            "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"])])
+        let failed = await StrategyPlanner.fetchClaudeDistTags { _ in ShellRunner.Result(exitCode: 22, stdout: "{}", stderr: "") }
+        XCTAssertNil(failed)
     }
 
     func testP2MissingTypedCurrentFailsWithoutLegacyFallback() async throws {
@@ -1650,6 +1663,26 @@ final class PartThreeRegressionTests: XCTestCase {
         XCTAssertEqual(failure.status, .checkFailed)
         XCTAssertEqual(failure.message, "Could not read installed version")
         XCTAssertNil(failure.currentVersion)
+    }
+
+    func testP5BrewRevisionLinkedKegIsUpToDate() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appendingPathComponent("opt/homebrew")
+        let binary = prefix.appendingPathComponent("Cellar/gh/2.102.0_1/bin/gh")
+        try createExecutable(at: binary)
+        let data = try fixture(named: "brew-info-gh.json")
+            .replacingOccurrences(of: "\"stable\": \"2.101.0\"", with: "\"stable\": \"2.102.0\"")
+            .replacingOccurrences(of: "\"revision\": 0", with: "\"revision\": 1")
+            .replacingOccurrences(of: "\"linked_keg\": \"2.101.0\"", with: "\"linked_keg\": \"2.102.0_1\"")
+        try createExecutable(at: prefix.appendingPathComponent("bin/brew"), contents: "#!/bin/sh\nprintf '%s' \(ShellEscaping.quote(data))\n")
+        var config = typedConfig(id: "formula", commandName: "gh", packageName: "unused", brew: "gh")
+        config.packages?.npm = nil
+        let lookup = CommandPathLookup(candidatesByName: ["gh": [binary.path]], layout: .fixture(home: root.path))
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(check.status, .upToDate)
+        XCTAssertEqual(check.currentVersion, "2.102.0_1")
+        XCTAssertEqual(check.latestVersion, "2.102.0_1")
     }
 
     func testP2CaskroomBinaryVersionDoesNotRequireAppBundle() async throws {
