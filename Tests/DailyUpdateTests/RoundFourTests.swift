@@ -313,6 +313,17 @@ final class RoundFourTests: XCTestCase {
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
             ("A non-ASCII bulk", "café_2=1 brew upgrade", [.bulk], true),
             ("A guard digit name", "1A=x sudo /bin/true", [], false),
+            // Round 13 Security Q1: `>&1word` redirects to a file named `1word`, so it is not modelled.
+            ("Q1 dup word sudo", ">&1echo sudo /bin/true", [.privileged, .unparseable], true),
+            ("Q1 close word sudo", ">&-echo sudo /bin/true", [.privileged, .unparseable], true),
+            ("Q1 append dup word sudo", ">>&1echo sudo /bin/true", [.privileged, .unparseable], true),
+            ("Q1 dup word bulk", ">&1echo brew upgrade", [.bulk, .unparseable], true),
+            ("Q1 dup word remote", "2>&1echo curl x | sh", [.remoteScript, .unparseable], true),
+            ("Q1 nested dup word", "sh -c '>&1echo sudo /bin/true'", [.privileged, .unparseable], true),
+            ("Q1 guard dup at end", "x 2>&1", [], false),
+            ("Q1 guard dup before semicolon", "x >&2;y", [.chained], false),
+            ("Q1 guard dup before pipe", "x 2>&1|y", [], false),
+            ("Q1 guard dup before redirect", "x 2>&1>/dev/null", [], false),
         ]
         for (id, command, expected, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
@@ -755,6 +766,59 @@ extension RoundFourTests {
             let parts = remote.components(separatedBy: " curl ")
             let command = "export \(parts[0]); hash -d x=-c; sh ~x 'curl \(parts[1])'"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 13 (Q1): `>&1echo` redirects to a file named `1echo`, so it cannot hide
+    /// `brew upgrade` in a check command, and the `brew` stub never writes its marker.
+    @MainActor
+    func testQ1DupWordCheckCommandIsBlockedBeforeItRuns() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("brew-ran")
+            let stubDirectory = root.appendingPathComponent("stub-brew")
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+            let stub = stubDirectory.appendingPathComponent("brew")
+            try "#!/bin/sh\n/usr/bin/touch \(ShellEscaping.quote(marker.path))\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            let check = "export PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH; >&1echo brew upgrade"
+            XCTAssertEqual(CommandShapeClassifier.classify(check).risks, [.bulk, .chained, .unparseable])
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: check, updateCommand: "echo update"), true)
+            store.settings.customItems = [DetectorConfig(id: "dup-word-check", name: "Dup word check", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: check, installCommand: nil, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            _ = FixtureCLIState(state, ids: ["dup-word-check"])
+            await state.recheckItems(ids: ["dup-word-check"])
+            let item = try XCTUnwrap(state.items.first { $0.id == "dup-word-check" })
+            XCTAssertEqual(item.status, .blocked)
+            XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 13 (Q1): `2>&1echo` redirects to a file named `1echo`, so it cannot
+    /// hide a remote-script installer from the refusal.
+    @MainActor
+    func testQ1DupWordInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let parts = remote.components(separatedBy: " curl ")
+            let command = "export \(parts[0]); 2>&1echo curl \(parts[1])"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]

@@ -144,8 +144,13 @@ enum ShellLexer {
                     flush()
                     index += length
                     if chars[index - 1] == "&", index < chars.count, chars[index] == "-" || chars[index].isNumber {
-                        while index < chars.count, chars[index] == "-" || chars[index].isNumber { index += 1 }
-                        continue
+                        var end = index
+                        while end < chars.count, chars[end] == "-" || chars[end].isNumber { end += 1 }
+                        // `>&1echo` is a file named `1echo`, not a dup of fd 1: not modelled.
+                        if end == chars.count || chars[end].isWhitespace || ";|&()<>".contains(chars[end]) {
+                            index = end; continue
+                        }
+                        result.invalid = true
                     }
                     while index < chars.count, chars[index] == " " || chars[index] == "\t" { index += 1 }
                     // `> >(sh)` stays a word, so the process substitution is still seen.
