@@ -11,7 +11,10 @@ struct ShellToken: Hashable {
     let value: String
     let kind: Kind
     var hasUnquotedGlob = false
-    var hasUnquotedCaseTerminator = false
+    var hasUnquotedBraceExpansion = false
+    /// Offset (in `value`) just past the first unquoted `)`, if any.
+    var caseTerminatorEnd: Int?
+    var hasUnquotedCaseTerminator: Bool { caseTerminatorEnd != nil }
     var isWord: Bool { if case .word = kind { return true }; return false }
 }
 
@@ -36,12 +39,16 @@ enum ShellLexer {
         var word = ""
         var started = false
         var glob = false
-        var caseTerminator = false
+        var brace = false
+        var caseTerminatorEnd: Int?
         var single = false
         var double = false
         func flush() {
-            if started { result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob, hasUnquotedCaseTerminator: caseTerminator)) }
-            word = ""; started = false; glob = false; caseTerminator = false
+            if started {
+                result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob || brace,
+                    hasUnquotedBraceExpansion: brace, caseTerminatorEnd: caseTerminatorEnd))
+            }
+            word = ""; started = false; glob = false; brace = false; caseTerminatorEnd = nil
         }
         while index < chars.count {
             let char = chars[index]
@@ -132,9 +139,12 @@ enum ShellLexer {
                     flush(); result.tokens.append(ShellToken(value: String(char), kind: .op(op))); index += 1; continue
                 }
                 if ["*", "?", "["].contains(char) { glob = true }
-                if char == "{", let closing = chars[(index + 1)...].firstIndex(of: "}"),
-                   chars[(index + 1)..<closing].contains(",") { glob = true }
-                if char == ")" { caseTerminator = true }
+                // zsh expands both `{a,b}` lists and `{x..y}` ranges.
+                if char == "{", let closing = chars[(index + 1)...].firstIndex(of: "}") {
+                    let body = String(chars[(index + 1)..<closing])
+                    if body.contains(",") || body.contains("..") { brace = true }
+                }
+                if char == ")", caseTerminatorEnd == nil { caseTerminatorEnd = word.count + 1 }
             }
             word.append(char); started = true; index += 1
         }

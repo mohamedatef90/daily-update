@@ -32,8 +32,19 @@ enum CommandShapeClassifier {
     private static let shellExecutables: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish"]
     private static let privilegeCommands: Set<String> = ["sudo", "doas", "pkexec", "su"]
     private static let controlFlowKeywords: Set<String> = [
-        "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until", "coproc", "repeat"
+        "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until", "coproc", "repeat",
+        "foreach", "select", "end", "esac"
     ]
+    private static let groupOperators: Set<ShellOperator> = [.leftParen, .rightParen, .leftBrace, .rightBrace]
+    private static let commandSeparators: Set<ShellOperator> = [.and, .or, .semicolon, .newline, .background, .pipe, .pipeAnd]
+
+    /// One simple command. `failsClosed` marks shapes this model does not
+    /// interpret: brace expansion at or before the executable, a loop or
+    /// `case` header outside the modelled grammar, or a stray `)`.
+    private struct SimpleCommand {
+        var words: [String]
+        var failsClosed: Bool
+    }
 
     static func classify(_ command: String) -> CommandClassification {
         let risks = classify(command, depth: 0, visited: Set())
@@ -91,7 +102,11 @@ enum CommandShapeClassifier {
             risks.insert(.controlFlow)
         }
 
-        let simpleCommands = allSimpleCommands(trimmed)
+        let parsedCommands = simpleCommands(trimmed)
+        let simpleCommands = parsedCommands.map(\.words)
+        if parsedCommands.contains(where: \.failsClosed) {
+            risks.insert(.unparseable)
+        }
         for words in simpleCommands {
             if startsWithDynamicExecutable(words) {
                 risks.insert(.unparseable)
@@ -119,7 +134,11 @@ enum CommandShapeClassifier {
     }
 
     private static func allSimpleCommands(_ command: String) -> [[String]] {
-        var segments: [[String]] = []
+        simpleCommands(command).map(\.words)
+    }
+
+    private static func simpleCommands(_ command: String) -> [SimpleCommand] {
+        var segments: [SimpleCommand] = []
         var queue = [command]
         var visited = Set<String>()
 
@@ -127,36 +146,95 @@ enum CommandShapeClassifier {
             let trimmed = next.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, visited.insert(trimmed).inserted else { continue }
 
-            let tokens = ShellLexer.lex(trimmed).filter {
-                ![ShellToken.Kind.op(.leftParen), .op(.rightParen), .op(.leftBrace), .op(.rightBrace)].contains($0.kind)
-            }
-            let logical = ShellLexer.split(tokens, by: [.and, .or, .semicolon, .newline, .background])
-            for segment in logical {
-                let pipelineStages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
-                for stage in pipelineStages {
-                    var words = commandWords(stage)
-                    if let executable = stripWrappersRaw(words).first, executable != "[",
-                       stage.contains(where: { $0.value == executable && $0.hasUnquotedGlob }),
-                       let index = words.firstIndex(of: executable) {
-                        words[index] = "$glob"
-                    }
-                    guard !words.isEmpty else { continue }
-                    segments.append(words)
-                    queue.append(contentsOf: inlineShellCommands(in: words))
+            // Group delimiters end a simple command, like any separator: in
+            // `for x (1) sudo …` and `case a in (a) sudo …` the words after
+            // `)` are a new command, not arguments of the header.
+            for (stage, terminator) in splitSimpleCommands(ShellLexer.lex(trimmed)) {
+                let wordTokens = stage.filter(\.isWord)
+                let raw = wordTokens.map(\.value)
+                var failsClosed = headerFailsClosed(raw, terminator: terminator)
+                let armTokens = commandTokens(wordTokens)
+                if let arm = wordTokens.firstIndex(where: \.hasUnquotedCaseTerminator), arm != 0,
+                   !(arm == 3 && isCaseHeader(raw)) {
+                    failsClosed = true
                 }
+                var words = armTokens.map(\.value)
+                let executableIndex = words.count - stripWrappersRaw(words).count
+                if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBraceExpansion) {
+                    failsClosed = true
+                }
+                if executableIndex < words.count, words[executableIndex] != "[",
+                   armTokens[executableIndex].hasUnquotedGlob {
+                    words[executableIndex] = "$glob"
+                }
+                guard !words.isEmpty || failsClosed else { continue }
+                segments.append(SimpleCommand(words: words, failsClosed: failsClosed))
+                queue.append(contentsOf: inlineShellCommands(in: words))
             }
             queue.append(contentsOf: ShellLexer.nestedCommands(in: trimmed))
         }
         return segments
     }
 
-    private static func commandWords(_ tokens: [ShellToken]) -> [String] {
-        // A case arm's unquoted closing parenthesis introduces a new command.
-        // Quoted parentheses remain ordinary arguments.
-        if let arm = tokens.firstIndex(where: { $0.hasUnquotedCaseTerminator }) {
-            return ShellLexer.words(from: Array(tokens.dropFirst(arm + 1)))
+    private static func splitSimpleCommands(_ tokens: [ShellToken]) -> [([ShellToken], ShellOperator?)] {
+        var stages: [([ShellToken], ShellOperator?)] = []
+        var current: [ShellToken] = []
+        for token in tokens {
+            if case .op(let op) = token.kind {
+                if !current.isEmpty { stages.append((current, op)) }
+                current = []
+            } else {
+                current.append(token)
+            }
         }
-        return ShellLexer.words(from: tokens)
+        if !current.isEmpty { stages.append((current, nil)) }
+        return stages
+    }
+
+    /// After wrapper stripping, `for`/`foreach`/`select` must be exactly
+    /// `NAME [in WORDS…]` and `case` exactly `case WORD in`. zsh short loops
+    /// (`for x (1) cmd`, `for ((…)) cmd`) and anything else fail closed.
+    private static func headerFailsClosed(_ words: [String], terminator: ShellOperator?) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let keyword = stripped.first.map(normalizedExecutableName) else { return false }
+        switch keyword {
+        case "for", "foreach", "select":
+            if let terminator, groupOperators.contains(terminator) { return true }
+            guard stripped.count >= 2, matches(#"^[A-Za-z_][A-Za-z0-9_]*$"#, in: stripped[1]) else { return true }
+            return stripped.count > 2 && stripped[2] != "in"
+        case "case":
+            guard isCaseHeader(stripped) else { return true }
+            // Words after `in` must open an arm: `pat)`, `pat)cmd`, or the
+            // first alternative of `pat|pat)`.
+            guard stripped.count > 3, !stripped[3].contains(")") else { return false }
+            return !(stripped.count == 4 && terminator == .pipe)
+        default:
+            return false
+        }
+    }
+
+    private static func isCaseHeader(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        return stripped.count >= 3 && normalizedExecutableName(stripped[0]) == "case" && stripped[2] == "in"
+    }
+
+    private static func commandTokens(_ tokens: [ShellToken]) -> [ShellToken] {
+        // A case arm's unquoted closing parenthesis introduces a new command.
+        // Text attached after it (`a)curl`) is that command's first word.
+        // Quoted parentheses remain ordinary arguments.
+        guard let arm = tokens.firstIndex(where: { $0.hasUnquotedCaseTerminator }),
+              let end = tokens[arm].caseTerminatorEnd else { return tokens }
+        var rest = Array(tokens.dropFirst(arm + 1))
+        let attached = String(tokens[arm].value.dropFirst(end))
+        if !attached.isEmpty {
+            rest.insert(ShellToken(value: attached, kind: .word, hasUnquotedGlob: tokens[arm].hasUnquotedGlob,
+                hasUnquotedBraceExpansion: tokens[arm].hasUnquotedBraceExpansion), at: 0)
+        }
+        return rest
+    }
+
+    private static func commandWords(_ tokens: [ShellToken]) -> [String] {
+        commandTokens(tokens.filter(\.isWord)).map(\.value)
     }
 
     private static func containsControlFlow(_ tokens: [ShellToken]) -> Bool {
@@ -231,12 +309,10 @@ enum CommandShapeClassifier {
             let args = Array(strippedRaw.dropFirst())
 
             if argumentsContainFetcherSubstitution(args) {
-                let dataCommands: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum", "echo", "printf", "test", "["]
-                // awk/sed -f consume a program file, not input data.
-                let programFile = ["awk", "sed"].contains(executable) && args.contains {
-                    $0 == "-f" || $0.hasPrefix("-f") || $0 == "--file" || $0.hasPrefix("--file=")
-                }
-                if !dataCommands.contains(executable) || programFile { return true }
+                // awk and sed treat an operand as a program, so a fetched
+                // argument is code for them, not data.
+                let dataCommands: Set<String> = ["grep", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum", "echo", "printf", "test", "["]
+                if !dataCommands.contains(executable) { return true }
             }
         }
 
@@ -264,10 +340,7 @@ enum CommandShapeClassifier {
 
     private static func stageContainsFetcher(_ tokens: [ShellToken]) -> Bool {
         // Groups remain intact until the surrounding pipeline has been split.
-        let commands = ShellLexer.split(tokens.filter {
-            ![ShellToken.Kind.op(.leftParen), .op(.rightParen), .op(.leftBrace), .op(.rightBrace)].contains($0.kind)
-        }, by: [.and, .or, .semicolon, .newline, .background, .pipe, .pipeAnd])
-        for command in commands {
+        for (command, _) in splitSimpleCommands(tokens) {
             let words = commandWords(command)
             if let executable = stripWrappers(normalizedTokens(words: words)).first,
                fetchers.contains(executable) { return true }
@@ -286,35 +359,53 @@ enum CommandShapeClassifier {
         let args = Array(stripped.dropFirst())
         let filters: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum"]
         if filters.contains(executable) { return false }
-        if ["python", "python2", "python3"].contains(executable) {
-            return !containsInlineFlag(args, allowedShortOptions: ["c", "m"], valueOptions: ["W", "X"])
-        }
-        if ["node", "perl", "ruby"].contains(executable) {
-            return !containsInlineFlag(args, allowedShortOptions: ["e"], valueOptions: executable == "perl" ? ["I", "M", "m", "F"] : ["I", "r", "C", "E"])
-        }
-        return true
+        guard let flags = inlineProgramFlags[executable] else { return true }
+        return !containsInlineProgram(args, flags: flags)
     }
 
-    private static func containsInlineFlag(
-        _ arguments: [String], allowedShortOptions: Set<Character>, valueOptions: Set<Character>
-    ) -> Bool {
+    private struct InlineProgramFlags {
+        /// Letters that introduce an inline program argument.
+        let program: Set<Character>
+        /// Letters known to take no argument. Anything unlisted fails closed.
+        let noArgument: Set<Character>
+        /// Letters that take a value, attached or as the next argument.
+        let value: Set<Character>
+    }
+
+    // `-i` is excluded everywhere: python and node read stdin interactively
+    // after the inline program, and perl/ruby `-i` takes an attached suffix.
+    private static let inlineProgramFlags: [String: InlineProgramFlags] = {
+        let python = InlineProgramFlags(program: ["c", "m"], noArgument: Set("BEIOPqsSub"), value: ["W", "X"])
+        return [
+            "python": python, "python2": python, "python3": python,
+            "perl": InlineProgramFlags(program: ["e"], noArgument: Set("anlpstTwWX"), value: ["I", "M", "m"]),
+            "ruby": InlineProgramFlags(program: ["e"], noArgument: Set("anlpsvw"), value: ["I", "r", "C", "E"]),
+            "node": InlineProgramFlags(program: ["e"], noArgument: [], value: ["r"]),
+        ]
+    }()
+
+    /// True only for an allow-listed option prefix that ends in a cluster
+    /// whose last letter is the program flag, followed by a program argument.
+    /// A `-`, `--`, long option or script operand before that is not inline.
+    private static func containsInlineProgram(_ arguments: [String], flags: InlineProgramFlags) -> Bool {
         var index = 0
         while index < arguments.count {
             let arg = arguments[index]
-            guard arg != "-", arg != "--", arg.hasPrefix("-") else { return false }
-            // Unknown long options can consume a value; don't guess past them.
-            guard !arg.hasPrefix("--") else { return false }
+            guard arg != "-", !arg.hasPrefix("--"), arg.hasPrefix("-") else { return false }
             let letters = Array(arg.dropFirst())
-            for (offset, letter) in letters.enumerated() {
-                if valueOptions.contains(letter) {
-                    if offset == letters.count - 1 { index += 1 }
-                    break
-                }
-                if allowedShortOptions.contains(letter) {
-                    return offset == letters.count - 1 && index + 1 < arguments.count
-                }
+            guard let first = letters.first else { return false }
+            if flags.value.contains(first) {
+                // `-W ignore` consumes the next argument; `-Wignore` is attached.
+                index += letters.count == 1 ? 2 : 1
+                continue
             }
-            index += 1
+            guard let last = letters.last, flags.program.contains(last),
+                  letters.dropLast().allSatisfy(flags.noArgument.contains) else {
+                guard letters.allSatisfy(flags.noArgument.contains) else { return false }
+                index += 1
+                continue
+            }
+            return index + 1 < arguments.count
         }
         return false
     }
