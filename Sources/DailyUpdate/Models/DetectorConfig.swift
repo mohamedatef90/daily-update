@@ -121,7 +121,8 @@ extension DetectorConfig {
             updateCommand: updateCommand,
             workingDirectory: workingDirectory,
             detectedPaths: detect?.paths ?? [],
-            needsReview: needsReview ?? false
+            needsReview: needsReview ?? false,
+            detectRule: detect
         )
     }
 }

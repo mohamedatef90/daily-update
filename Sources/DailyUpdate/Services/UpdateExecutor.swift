@@ -19,12 +19,19 @@ enum UpdateExecutor {
         _ item: UpdateItem,
         installing: Bool = false,
         stashRepos: Bool = true,
-        runner: Runner = .live
+        runner: Runner = .live,
+        config: DetectorConfig? = nil,
+        pathLookup: CommandPathLookup? = nil,
+        reviewedCommandHash: String? = nil
     ) async -> UpdateResult {
-        if installing || !item.isInstalled {
+        if installing {
             return await performInstall(item, using: runner)
         }
-        return await performUpdate(item, stashRepos: stashRepos, using: runner)
+        guard item.isInstalled else {
+            return .failed(reason: "Cannot update an item that is not installed", current: nil, latest: item.latestVersion)
+        }
+        return await performUpdate(item, stashRepos: stashRepos, using: runner,
+            config: config ?? detectorConfig(from: item), pathLookup: pathLookup, reviewedCommandHash: reviewedCommandHash)
     }
 
     private static func performInstall(_ item: UpdateItem, using runner: Runner) async -> UpdateResult {
@@ -42,7 +49,10 @@ enum UpdateExecutor {
     private static func performUpdate(
         _ item: UpdateItem,
         stashRepos: Bool,
-        using runner: Runner
+        using runner: Runner,
+        config: DetectorConfig,
+        pathLookup: CommandPathLookup?,
+        reviewedCommandHash: String?
     ) async -> UpdateResult {
         var notes: [String] = []
 
@@ -59,8 +69,9 @@ enum UpdateExecutor {
             }
         }
 
-        let config = detectorConfig(from: item)
-        let beforeVersion = await DetectionService.getVersion(config)
+        let typed = StrategyPlanner.usesTypedEngine(config: config)
+        let before = typed ? await StrategyPlanner.currentVersion(config: config, pathLookup: pathLookup) : nil
+        let beforeVersion = typed ? before?.version : await DetectionService.getVersion(config)
         let targetLatest = item.latestVersion
         let command = item.updateCommand
         let result: ShellRunner.Result
@@ -97,8 +108,19 @@ enum UpdateExecutor {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
         }
 
-        let afterVersion = await DetectionService.getVersion(config)
-        let check = await UpdateCheckService.check(config, installed: true)
+        let check = await UpdateCheckService.check(config, installed: true,
+            reviewedCommandHash: reviewedCommandHash, pathLookup: pathLookup)
+        let afterVersion = typed ? check.currentVersion : await DetectionService.getVersion(config)
+        if typed {
+            let afterOwner = await OwnerResolver.resolve(commandName: config.command ?? "", lookup: pathLookup,
+                layout: pathLookup?.layout ?? .live()).active
+            guard let beforeOwner = before?.owner, let afterOwner,
+                  beforeOwner.owner == afterOwner.owner, beforeOwner.commandPath == afterOwner.commandPath,
+                  check.status == .upToDate else {
+                return .failedVerification(current: afterVersion, latest: check.latestVersion,
+                    reason: check.message ?? "Could not verify the same owner at the latest version")
+            }
+        }
         let latest = resolvedLatest(
             afterVersion: afterVersion,
             checkLatest: check.latestVersion,
@@ -154,7 +176,7 @@ enum UpdateExecutor {
             selfUpdater: item.selfUpdater,
             appcastURL: item.appcastURL,
             autoUpdates: item.autoUpdates,
-            detect: nil,
+            detect: item.detectRule,
             versionCommand: item.versionCommand,
             versionPattern: item.versionPattern,
             checkCommand: item.checkCommand,

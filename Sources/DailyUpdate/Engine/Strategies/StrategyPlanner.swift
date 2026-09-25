@@ -34,6 +34,7 @@ enum StrategyPlanner {
             )
         }
 
+        let layout = pathLookup?.layout ?? layout
         let resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
         return await checkPlan(
             config: config,
@@ -71,7 +72,11 @@ enum StrategyPlanner {
                 failureMessage: message
             )
         case .ready(let strategy):
-            let typedCurrent = await strategy.currentVersion() ?? currentVersion
+            guard let typedCurrent = await strategy.currentVersion() else {
+                return StrategyPlan(ownerResolution: resolution, currentVersion: nil, latestVersion: nil,
+                    updateCommandSpec: nil, gateReasons: [], blockReason: nil,
+                    failureMessage: "Could not read installed version")
+            }
             let latestOutcome = await strategy.latestVersion(currentVersion: typedCurrent)
             if let blockReason = latestOutcome.blockReason {
                 return StrategyPlan(
@@ -149,8 +154,34 @@ enum StrategyPlanner {
         }
     }
 
+    static func currentVersion(
+        config: DetectorConfig, pathLookup: CommandPathLookup?
+    ) async -> (version: String?, owner: OwnerCandidate?) {
+        guard let name = config.command else { return (nil, nil) }
+        let layout = pathLookup?.layout ?? .live()
+        let resolution = await OwnerResolver.resolve(commandName: name, lookup: pathLookup, layout: layout)
+        guard case .ready(let strategy) = prepare(config: config, resolution: resolution, layout: layout) else { return (nil, nil) }
+        return (await strategy.currentVersion(), resolution.active)
+    }
+
     static func ownershipFingerprint(for config: DetectorConfig, resolution: OwnerResolution) -> String? {
-        guard let baseFingerprint = resolution.fingerprint else { return nil }
+        guard var baseFingerprint = resolution.fingerprint else { return nil }
+        if let active = resolution.active {
+            let tool: String?
+            switch active.owner {
+            case .npm(let prefix, _): tool = "\(prefix)/bin/npm"
+            case .nativeInstaller: tool = active.commandPath
+            case .brewFormula, .brewCask:
+                let components = active.resolvedPath.components(separatedBy: "/")
+                if let marker = components.firstIndex(where: { $0 == "Cellar" || $0 == "Caskroom" }) {
+                    tool = components[..<marker].joined(separator: "/") + "/bin/brew"
+                } else { tool = nil }
+            default: tool = nil
+            }
+            if let tool, let resolved = PathTrust.resolvedExecutable(tool) {
+                baseFingerprint += "|executor:\(resolved)"
+            }
+        }
         guard let workingDirectory = config.workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
               !workingDirectory.isEmpty else {
             return baseFingerprint
@@ -171,6 +202,7 @@ enum StrategyPlanner {
             return nil
         }
 
+        let layout = pathLookup?.layout ?? layout
         let resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
         switch prepare(config: config, resolution: resolution, layout: layout) {
         case .ready(let strategy):
@@ -299,7 +331,10 @@ enum StrategyPlanner {
             guard installer == .claudeCode, config.selfUpdater == "claudeCode" else {
                 return .noStrategy("Unsupported native self-updater")
             }
-            return .strategy(ClaudeNativeStrategy(executable: active.commandPath))
+            guard PathTrust.isTrustedExecutable(active.commandPath) else {
+                return .unknownOwner("Untrusted Claude executable path")
+            }
+            return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath))
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
         case .unknown:
@@ -352,7 +387,7 @@ enum StrategyPlanner {
         return nil
     }
 
-    static func parseBrewFormulaInfo(from output: String) -> BrewFormulaInfo? {
+    static func parseBrewFormulaInfo(from output: String, cellar: String = "/opt/homebrew/Cellar") -> BrewFormulaInfo? {
         guard let data = output.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let formulas = root["formulae"] as? [[String: Any]],
@@ -369,14 +404,11 @@ enum StrategyPlanner {
         let revision = (first["revision"] as? Int) ?? 0
         let pinned = (first["pinned"] as? Bool) ?? false
 
-        var linkedVersion: String?
-        var linkedCellarPath: String?
-        if let installed = first["installed"] as? [[String: Any]] {
-            if let linked = installed.first(where: { ($0["linked_keg"] as? String)?.isEmpty == false }) ?? installed.first {
-                linkedVersion = linked["version"] as? String
-                linkedCellarPath = linked["path"] as? String
-            }
-        }
+        let linkedVersion = (first["linked_keg"] as? String)?.nilIfEmpty
+        let linkedCellarPath: String?
+        if let version = linkedVersion, let name = first["name"] as? String {
+            linkedCellarPath = "\(cellar)/\(name)/\(version)"
+        } else { linkedCellarPath = nil }
 
         let latestVersion = revision > 0 ? "\(stable)_\(revision)" : stable
         return BrewFormulaInfo(
@@ -400,11 +432,8 @@ enum StrategyPlanner {
 
     static func parseClaudeDistTags(from output: String) -> [String: String]? {
         guard let data = output.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tags = root["dist-tags"] as? [String: String] else {
-            return nil
-        }
-        return tags
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (root["dist-tags"] as? [String: String]) ?? (root as? [String: String])
     }
 }
 
@@ -430,7 +459,14 @@ struct BrewFormulaInfo {
     let pinned: Bool
 }
 
-private struct BrewFormulaStrategy: Strategy {
+private final class BrewFormulaStrategy: Strategy {
+    private var cachedInfo: BrewFormulaInfo?
+    private var loadedInfo = false
+
+    init(formula: String, brewExecutable: String) {
+        self.formula = formula
+        self.brewExecutable = brewExecutable
+    }
     let formula: String
     let brewExecutable: String
     let requiresLatestVersion = true
@@ -462,16 +498,20 @@ private struct BrewFormulaStrategy: Strategy {
     }
 
     func updateCommand(targetVersion: String?) -> CommandSpec? {
-        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", formula])
+        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--formula", formula])
     }
 
     private func info() async -> BrewFormulaInfo? {
+        if loadedInfo { return cachedInfo }
+        loadedInfo = true
         let result = await ShellRunner.run(
             CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", formula]),
             timeout: 30
         )
         guard result.succeeded else { return nil }
-        return StrategyPlanner.parseBrewFormulaInfo(from: result.stdout)
+        let prefix = URL(fileURLWithPath: brewExecutable).deletingLastPathComponent().deletingLastPathComponent().path
+        cachedInfo = StrategyPlanner.parseBrewFormulaInfo(from: result.stdout, cellar: "\(prefix)/Cellar")
+        return cachedInfo
     }
 }
 
@@ -483,7 +523,10 @@ private struct BrewCaskStrategy: Strategy {
     let requiresTargetVersion = false
 
     func currentVersion() async -> String? {
-        bundleVersion(from: resolvedAppPath)
+        if let bundle = bundleVersion(from: resolvedAppPath) { return bundle }
+        let parts = resolvedAppPath.components(separatedBy: "/")
+        guard let index = parts.firstIndex(of: "Caskroom"), parts.count > index + 2 else { return nil }
+        return parts[index + 2].nilIfEmpty
     }
 
     func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
@@ -577,7 +620,7 @@ private struct NpmPackageStrategy: Strategy {
 
     private func isStrictSemVer(_ value: String) -> Bool {
         value.range(
-            of: #"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
+            of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
             options: .regularExpression
         ) != nil
     }
@@ -585,13 +628,14 @@ private struct NpmPackageStrategy: Strategy {
 
 private struct ClaudeNativeStrategy: Strategy {
     let executable: String
+    let resolvedPath: String
     let requiresLatestVersion = true
     let requiresTargetVersion = false
 
     func currentVersion() async -> String? {
         let marker = "/versions/"
-        guard let markerRange = executable.range(of: marker) else { return nil }
-        let suffix = executable[markerRange.upperBound...]
+        guard let markerRange = resolvedPath.range(of: marker) else { return nil }
+        let suffix = resolvedPath[markerRange.upperBound...]
         guard let versionComponent = suffix.split(separator: "/").first else { return nil }
         return String(versionComponent)
     }
@@ -611,7 +655,7 @@ private struct ClaudeNativeStrategy: Strategy {
         }
 
         guard latest.range(
-            of: #"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
+            of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
             options: .regularExpression
         ) != nil else {
             return LatestVersionOutcome(
@@ -640,23 +684,16 @@ private struct ClaudeNativeStrategy: Strategy {
     }
 
     private func fetchRegistryPayload() async -> String? {
-        guard let url = URL(string: "https://registry.npmjs.org/@anthropic-ai/claude-code") else {
-            return nil
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-                return nil
-            }
-            return String(data: data, encoding: .utf8)
-        } catch {
-            return nil
-        }
+        let result = await ShellRunner.runProcess(
+            executablePath: "/usr/bin/env",
+            arguments: ["curl", "--fail", "--silent", "--show-error", "--max-time", "20",
+                "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"],
+            environment: ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? ShellRunner.defaultPath],
+            timeout: 25
+        )
+        return result.succeeded ? result.stdout : nil
     }
+
 }
 
 private extension String {

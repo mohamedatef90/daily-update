@@ -9,42 +9,47 @@ enum GatePolicy {
         return lhs == rhs
     }
 
-    static func reviewedCommandHash(
-        detectCommand: String?,
-        versionCommand: String?,
-        checkCommand: String?,
-        updateCommand: String,
-        installCommand: String
-    ) -> String {
-        let payload = [
-            "detect:\(detectCommand ?? "")",
-            "version:\(versionCommand ?? "")",
-            "check:\(checkCommand ?? "")",
-            "update:\(updateCommand)",
-            "install:\(installCommand)",
-        ].joined(separator: "\n--\n")
-        let digest = SHA256.hash(data: Data(payload.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+    private struct ReviewContext: Encodable {
+        let detect: DetectRule?
+        let versionCommand: String?
+        let versionPattern: String?
+        let checkCommand: String?
+        let updateCommand: String
+        let installCommand: String
+        let workingDirectory: String?
+        let command: String?
+        let packages: PackageIdentifiers?
+        let selfUpdater: String?
+        let appcastURL: String?
+        let autoUpdates: Bool?
     }
 
-    static func reviewedCommandHash(updateCommand: String, installCommand: String) -> String {
-        reviewedCommandHash(
-            detectCommand: nil,
-            versionCommand: nil,
-            checkCommand: nil,
-            updateCommand: updateCommand,
-            installCommand: installCommand
-        )
+    static func reviewedCommandHash(
+        detectCommand: String? = nil, versionCommand: String? = nil,
+        checkCommand: String? = nil, updateCommand: String, installCommand: String,
+        detectRule: DetectRule? = nil, versionPattern: String? = nil,
+        workingDirectory: String? = nil, command: String? = nil,
+        packages: PackageIdentifiers? = nil, selfUpdater: String? = nil,
+        appcastURL: String? = nil, autoUpdates: Bool? = nil
+    ) -> String {
+        let context = ReviewContext(
+            detect: detectRule ?? detectCommand.map { DetectRule(type: .command, paths: nil, command: $0, appName: nil) },
+            versionCommand: versionCommand, versionPattern: versionPattern, checkCommand: checkCommand,
+            updateCommand: updateCommand, installCommand: installCommand, workingDirectory: workingDirectory,
+            command: command, packages: packages, selfUpdater: selfUpdater, appcastURL: appcastURL, autoUpdates: autoUpdates)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        // This context contains only infallibly encodable strings, booleans and enums.
+        let payload = try! encoder.encode(context)
+        return SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
     }
 
     static func reviewedCommandHash(for config: DetectorConfig) -> String {
-        reviewedCommandHash(
-            detectCommand: config.detect?.command,
-            versionCommand: config.versionCommand,
-            checkCommand: config.checkCommand,
-            updateCommand: config.updateCommand,
-            installCommand: config.installCommand ?? ""
-        )
+        reviewedCommandHash(versionCommand: config.versionCommand, checkCommand: config.checkCommand,
+            updateCommand: config.updateCommand, installCommand: config.installCommand ?? "",
+            detectRule: config.detect, versionPattern: config.versionPattern, workingDirectory: config.workingDirectory,
+            command: config.command, packages: config.packages, selfUpdater: config.selfUpdater,
+            appcastURL: config.appcastURL, autoUpdates: config.autoUpdates)
     }
 
     static func isReviewSatisfied(for config: DetectorConfig, reviewedHash: String?) -> Bool {
@@ -85,6 +90,7 @@ enum GatePolicy {
 
     static func canRunScopedUpdateWithYes(_ item: UpdateItem) -> Bool {
         guard item.status == .gated else { return false }
+        guard !item.isAwaitingAutomationReview else { return false }
         guard item.blockReason == nil else { return false }
         let reasons = Set(item.gateReasons)
         guard !reasons.isEmpty else { return false }

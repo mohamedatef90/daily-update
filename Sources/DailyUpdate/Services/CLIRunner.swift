@@ -329,6 +329,10 @@ enum CLIRunner {
             printAvailableIDs(state: state, for: action, output: output)
             return 1
         }
+        if item.isAwaitingAutomationReview {
+            output("Review this item in the app first: \(itemID)")
+            return 2
+        }
         // Remote-script and unparseable updates are refused on one path, with
         // or without --yes, whatever gate or loop shape put them there.
         if action == .update, item.status == .gated || action.matches(item),

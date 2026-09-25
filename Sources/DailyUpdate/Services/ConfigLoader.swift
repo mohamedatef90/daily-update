@@ -323,27 +323,42 @@ enum ConfigLoader {
     }
 
     private static func decode(_ data: Data, validateBundled: Bool) -> [DetectorConfig]? {
+        if validateBundled { return decodeBundledConfigs(data) }
         let decoder = JSONDecoder()
-        guard let file = try? decoder.decode(DetectorConfigFile.self, from: data) else { return nil }
-        if validateBundled {
-            return validateBundledConfigs(file.items)
-        }
-        return file.items
+        return (try? decoder.decode(DetectorConfigFile.self, from: data))?.items
     }
 
-    private static func validateBundledConfigs(_ items: [DetectorConfig]) -> [DetectorConfig]? {
-        for item in items {
-            if item.hasTypedEngineFields {
-                guard item.schemaVersion == 2 else { return nil }
+    static func decodeBundledConfigs(_ data: Data) -> [DetectorConfig]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["items"] as? [[String: Any]] else { return nil }
+        let decoded = rows.compactMap { row -> DetectorConfig? in
+            guard let encoded = try? JSONSerialization.data(withJSONObject: row),
+                  let item = try? JSONDecoder().decode(DetectorConfig.self, from: encoded) else {
+                NSLog("DailyUpdate: dropping malformed bundled detector %@", row["id"] as? String ?? "<missing id>")
+                return nil
             }
-            if item.schemaVersion == 2 {
-                guard let command = item.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
-                    return nil
-                }
-            }
+            return item
         }
-        return items
+        return validateBundledConfigs(decoded)
     }
+
+    static func validateBundledConfigs(_ items: [DetectorConfig]) -> [DetectorConfig] {
+        items.filter { item in
+            let valid: Bool
+            if item.hasTypedEngineFields && item.schemaVersion != 2 {
+                valid = false
+            } else if item.schemaVersion == 2 {
+                let hasCommand = !(item.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let packages = item.packages
+                let hasPackage = [packages?.brew, packages?.brewCask, packages?.npm, packages?.pipx,
+                    packages?.uv, packages?.cargo, packages?.gem, packages?.masAdamID].contains { !($0?.isEmpty ?? true) }
+                valid = hasCommand && (hasPackage || !(item.selfUpdater?.isEmpty ?? true))
+            } else { valid = true }
+            if !valid { NSLog("DailyUpdate: dropping invalid bundled detector %@", item.id) }
+            return valid
+        }
+    }
+
 }
 
 private extension String {

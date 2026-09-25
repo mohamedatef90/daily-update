@@ -62,7 +62,7 @@ struct OwnerResolution: Equatable {
     }
 }
 
-struct EcosystemLayout: Equatable {
+struct EcosystemLayout: Equatable, Sendable {
     let homeDirectory: String
     let brewPrefixes: [String]
     let brewCellars: [String]
@@ -92,8 +92,17 @@ struct EcosystemLayout: Equatable {
         )
     }
 
-    static func live(home: String = NSHomeDirectory()) -> EcosystemLayout {
-        let brewPrefixes = ["/opt/homebrew", "/usr/local"]
+    static func discover() async -> EcosystemLayout {
+        if ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] != nil { return .live() }
+        let result = await ShellRunner.run("brew --prefix", timeout: 10)
+        let prefix = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.succeeded, prefix.hasPrefix("/"), !prefix.contains("\n") else { return .live() }
+        return live(brewPrefix: prefix)
+    }
+
+    static func live(home: String = NSHomeDirectory(), brewPrefix: String? = nil) -> EcosystemLayout {
+        let configured = brewPrefix ?? ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"]
+        let brewPrefixes = configured.map { [$0] } ?? ["/opt/homebrew", "/usr/local"]
         return EcosystemLayout(
             homeDirectory: home,
             brewPrefixes: brewPrefixes,
@@ -112,6 +121,8 @@ struct EcosystemLayout: Equatable {
 
 struct CommandPathLookup: Equatable, Sendable {
     let candidatesByName: [String: [String]]
+    var failureMessage: String? = nil
+    var layout: EcosystemLayout? = nil
 
     func candidates(for commandName: String) -> [String] {
         candidatesByName[commandName] ?? []
@@ -148,10 +159,10 @@ enum OwnerResolver {
             timeout: 20
         )
         guard result.succeeded else {
-            return CommandPathLookup(candidatesByName: [:])
+            return CommandPathLookup(candidatesByName: [:], failureMessage: "Command lookup failed (exit \(result.exitCode)): \(result.stderr)")
         }
 
-        return CommandPathLookup(candidatesByName: parseWhenceOutput(result.stdout))
+        return CommandPathLookup(candidatesByName: parseWhenceOutput(result.stdout), layout: await EcosystemLayout.discover())
     }
 
     static func resolve(
@@ -165,12 +176,15 @@ enum OwnerResolver {
         }
 
         if let lookup {
+            if let failure = lookup.failureMessage {
+                return OwnerResolution(commandName: trimmedName, active: nil, competing: [], resolveError: .lookupFailed(failure))
+            }
             let candidates = lookup.candidates(for: trimmedName)
             return resolve(commandName: trimmedName, candidatePaths: candidates, layout: layout)
         }
 
         let oneShotLookup = await Self.lookup(commandNames: [trimmedName])
-        return resolve(commandName: trimmedName, candidatePaths: oneShotLookup.candidates(for: trimmedName), layout: layout)
+        return await resolve(commandName: trimmedName, lookup: oneShotLookup, layout: layout)
     }
 
     static func resolve(
@@ -244,14 +258,14 @@ enum OwnerResolver {
     }
 
     private static func classify(resolvedPath: String, layout: EcosystemLayout) -> ResolvedOwner {
+        if let npmOwner = npmOwner(for: resolvedPath, layout: layout) {
+            return npmOwner
+        }
         if let formula = capture(path: resolvedPath, roots: layout.brewCellars) {
             return .brewFormula(formula)
         }
         if let cask = capture(path: resolvedPath, roots: layout.brewCaskrooms) {
             return .brewCask(cask)
-        }
-        if let npmOwner = npmOwner(for: resolvedPath, layout: layout) {
-            return npmOwner
         }
         if isPath(resolvedPath, within: layout.claudeNativeRoot) {
             return .nativeInstaller(.claudeCode)

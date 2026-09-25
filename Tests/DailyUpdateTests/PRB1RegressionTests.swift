@@ -143,7 +143,7 @@ final class PRB1ProvenanceAndSecurityTests: XCTestCase {
 }
 
 final class PRB1OwnerMatrixTests: XCTestCase {
-    func testOwnerRowO1RelativeSymlinkResolvesAndBuildsPinnedSpec() throws {
+    func testOwnerRowO2RelativeSymlinkResolvesAndBuildsPinnedSpec() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -215,7 +215,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         )
     }
 
-    func testOwnerRowO3RejectsMalformedScopedPackagePath() throws {
+    func testOwnerRowRejectsMalformedScopedPackagePath() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let prefix = root.appendingPathComponent(".nvm/versions/node/v20.0.0", isDirectory: true)
@@ -232,7 +232,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .unknown)
     }
 
-    func testOwnerRowO4RejectsLeadingDashPackageNames() throws {
+    func testOwnerRowRejectsLeadingDashPackageNames() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let prefix = root.appendingPathComponent(".nvm/versions/node/v20.0.0", isDirectory: true)
@@ -254,7 +254,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .unknown)
     }
 
-    func testOwnerRowO5RejectsPackageJSONNameMismatch() throws {
+    func testOwnerRowRejectsPackageJSONNameMismatch() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let install = try createNpmInstallation(
@@ -280,7 +280,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .unknown)
     }
 
-    func testOwnerRowO6RejectsPrefixesOutsideAllowlist() throws {
+    func testOwnerRowRejectsPrefixesOutsideAllowlist() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -302,7 +302,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .unknown)
     }
 
-    func testOwnerRowO7RejectsNpmPrefixWithoutNodeBinary() throws {
+    func testOwnerRowRejectsNpmPrefixWithoutNodeBinary() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -325,7 +325,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .unknown)
     }
 
-    func testOwnerRowO8OwnerMismatchBlocksPlan() async {
+    func testOwnerRowO19OwnerMismatchBlocksPlan() async {
         let owner = OwnerCandidate(
             commandPath: "/tmp/node/bin/codex",
             resolvedPath: "/tmp/node/lib/node_modules/@openai/codex/bin/codex.js",
@@ -347,7 +347,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(plan.blockReason, .ownerMismatch)
     }
 
-    func testOwnerRowO9PathTrustRejectsGroupWritableNpmExecutable() async throws {
+    func testOwnerRowO16PathTrustRejectsGroupWritableNpmExecutable() async throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -380,7 +380,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(plan.failureMessage, "Untrusted npm executable path")
     }
 
-    func testOwnerRowO10UnscopedPackageIsAccepted() throws {
+    func testOwnerRowUnscopedPackageIsAccepted() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -425,7 +425,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(resolution.active?.owner, .pipx(package: "httpie"))
     }
 
-    func testOwnerRowO12DanglingSymlinkProducesResolveError() throws {
+    func testOwnerRowO15DanglingSymlinkProducesResolveError() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -447,7 +447,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         }
     }
 
-    func testOwnerRowO13SymlinkLoopProducesResolveError() throws {
+    func testOwnerRowO15SymlinkLoopProducesResolveError() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -471,7 +471,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         }
     }
 
-    func testOwnerRowO14LookupIgnoresInvalidCommandNames() async {
+    func testOwnerRowLookupIgnoresInvalidCommandNames() async {
         let lookup = await OwnerResolver.lookup(commandNames: ["sh", "bad name", "$(oops)", "sh"])
         XCTAssertFalse(lookup.candidates(for: "sh").isEmpty)
         XCTAssertTrue(lookup.candidates(for: "bad name").isEmpty)
@@ -497,7 +497,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertTrue(result.message?.contains("Could not resolve command path") == true)
     }
 
-    func testOwnerRowO16DeduplicatesIdenticalResolvedTargets() throws {
+    func testOwnerRowO14DeduplicatesIdenticalResolvedTargets() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -520,7 +520,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertTrue(resolution.competing.isEmpty)
     }
 
-    func testOwnerRowO17TracksCompetingInstallsByCandidateOrder() throws {
+    func testOwnerRowO4TracksCompetingInstallsByCandidateOrder() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -559,7 +559,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(normalizedPath(secondPrefix), normalizedPath(second.prefix.path))
     }
 
-    func testOwnerRowO18InvalidCommandNameIsRejected() async {
+    func testOwnerRowInvalidCommandNameIsRejected() async {
         let resolution = await OwnerResolver.resolve(
             commandName: "bad name",
             lookup: CommandPathLookup(candidatesByName: [:]),
@@ -570,7 +570,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertNil(resolution.active)
     }
 
-    func testOwnerRowO19NvmPrefixIsAllowed() throws {
+    func testOwnerRowO2NvmPrefixIsAllowed() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let install = try createNpmInstallation(
@@ -595,7 +595,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(package, "@openai/codex")
     }
 
-    func testOwnerRowO20VoltaPrefixIsAllowed() throws {
+    func testOwnerRowVoltaPrefixIsAllowed() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let install = try createNpmInstallation(
@@ -620,7 +620,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
         XCTAssertEqual(package, "@openai/codex")
     }
 
-    func testOwnerRowO21FnmPrefixIsAllowed() throws {
+    func testOwnerRowFnmPrefixIsAllowed() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let install = try createNpmInstallation(
@@ -881,7 +881,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
         XCTAssertTrue(reasons.contains(.remoteScript))
     }
 
-    func testL1UpdateExecutorUsesInjectedSpecRunnerForPlannedCommands() async {
+    func testUpdateExecutorUsesInjectedSpecRunnerForPlannedCommands() async {
         let probe = RunnerProbe()
         let item = makeUpdateItem(
             id: "l1",
@@ -909,7 +909,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
         XCTAssertEqual(specCount, 1)
     }
 
-    func testL2UpdateExecutorUsesInjectedCommandRunnerWhenNoPlannedSpec() async {
+    func testUpdateExecutorUsesInjectedCommandRunnerWhenNoPlannedSpec() async {
         let probe = RunnerProbe()
         let item = makeUpdateItem(id: "l2", plannedSpec: nil, workingDirectory: "~/workspace")
 
@@ -934,7 +934,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
         XCTAssertEqual(specCount, 0)
     }
 
-    func testL7UpdateExecutorInstallPathUsesInjectedCommandRunner() async {
+    func testExplicitInstallUsesInjectedCommandRunner() async {
         let probe = RunnerProbe()
         var item = makeUpdateItem(id: "l7", plannedSpec: nil)
         item.isInstalled = false
@@ -942,6 +942,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
 
         let result = await UpdateExecutor.update(
             item,
+            installing: true,
             runner: UpdateExecutor.Runner(
                 runCommand: { command, directory, timeout in
                     await probe.recordCommand(command: command, directory: directory, timeout: timeout)
@@ -1011,6 +1012,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
             competing: []
         )
 
+        try createExecutable(at: root.appendingPathComponent(".local/share/claude/versions/2.1.281/bin/claude"))
         let nativeResolution = OwnerResolution(
             commandName: "claude",
             active: OwnerCandidate(
@@ -1082,7 +1084,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
     func testSection7Point1ParsesBrewFormulaFixture() throws {
         let payload = try fixture(named: "brew-info-gh.json")
         let info = StrategyPlanner.parseBrewFormulaInfo(from: payload)
-        XCTAssertEqual(info?.latestVersion, "2.102.0_1")
+        XCTAssertEqual(info?.latestVersion, "2.101.0")
         XCTAssertEqual(info?.linkedVersion, "2.101.0")
         XCTAssertEqual(info?.linkedCellarPath, "/opt/homebrew/Cellar/gh/2.101.0")
     }
@@ -1148,6 +1150,7 @@ final class PRB1FlowAndExecutionTests: XCTestCase {
             updateCommand: "echo update",
             workingDirectory: nil
         )
+        try createExecutable(at: tempHome.appendingPathComponent(".local/share/claude/versions/2.1.280/bin/claude"))
         let resolution = OwnerResolution(
             commandName: "claude",
             active: OwnerCandidate(
@@ -1529,4 +1532,303 @@ private func fixture(named filename: String) throws -> String {
         .appendingPathComponent("Fixtures", isDirectory: true)
         .appendingPathComponent(filename)
     return try String(contentsOf: path, encoding: .utf8)
+}
+
+final class PartThreeRegressionTests: XCTestCase {
+    func testP1SymlinkedNpmIsTrustedAndFingerprintTracksTarget() async throws {
+        let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: "\"1.1.0\"")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let npm = fixture.install.prefix.appendingPathComponent("bin/npm")
+        let target = fixture.install.prefix.appendingPathComponent("lib/npm-cli.js")
+        try FileManager.default.moveItem(at: npm, to: target)
+        try FileManager.default.createSymbolicLink(atPath: npm.path, withDestinationPath: "../lib/npm-cli.js")
+        XCTAssertTrue(PathTrust.isTrustedExecutable(npm.path))
+        let check = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
+        XCTAssertEqual(check.status, .updateAvailable)
+        XCTAssertTrue(try XCTUnwrap(check.ownerFingerprint).contains("|executor:\(target.path)"))
+        let replacement = fixture.install.prefix.appendingPathComponent("lib/npm-next.js")
+        try FileManager.default.copyItem(at: target, to: replacement)
+        try FileManager.default.removeItem(at: npm)
+        try FileManager.default.createSymbolicLink(atPath: npm.path, withDestinationPath: replacement.path)
+        let changed = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
+        XCTAssertNotEqual(changed.ownerFingerprint, check.ownerFingerprint)
+        try FileManager.default.setAttributes([.posixPermissions: 0o775], ofItemAtPath: replacement.path)
+        XCTAssertFalse(PathTrust.isTrustedExecutable(npm.path))
+    }
+
+    func testP1RejectsWritableAncestorsOfLinkAndTarget() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target/tool")
+        let link = root.appendingPathComponent("link/tool")
+        try createExecutable(at: target)
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
+        for directory in [link.deletingLastPathComponent(), target.deletingLastPathComponent()] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: directory.path)
+            XCTAssertFalse(PathTrust.isTrustedExecutable(link.path), directory.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        }
+        XCTAssertTrue(PathTrust.isTrustedExecutable(link.path))
+    }
+
+    func testP2SymlinkedNativeClaudeUsesResolvedVersionAndIsCurrent() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent(".local/share/claude/versions/2.1.281")
+        let link = root.appendingPathComponent(".local/bin/claude")
+        try createExecutable(at: target)
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
+        let stub = root.appendingPathComponent("bin/curl")
+        try createExecutable(at: stub, contents: "#!/bin/sh\nprintf '%s' '{\"latest\":\"2.1.281\",\"stable\":\"2.1.281\"}'\n")
+        let oldPath = ProcessInfo.processInfo.environment["PATH"]
+        setenv("PATH", stub.deletingLastPathComponent().path + ":/usr/bin:/bin", 1)
+        defer { if let oldPath { setenv("PATH", oldPath, 1) } else { unsetenv("PATH") } }
+        var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
+        config.selfUpdater = "claudeCode"
+        let lookup = CommandPathLookup(candidatesByName: ["claude": [link.path]], layout: .fixture(home: root.path))
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(check.status, .upToDate)
+        XCTAssertEqual(check.currentVersion, "2.1.281")
+        XCTAssertEqual(check.latestVersion, "2.1.281")
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: target.path)
+        let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(untrusted.status, .blocked)
+        XCTAssertEqual(untrusted.message, "Untrusted Claude executable path")
+    }
+
+    func testP2MissingTypedCurrentFailsWithoutLegacyFallback() async throws {
+        let fixture = try makeTypedCheckFixture(installedVersion: "", latestOutput: "\"1.1.0\"")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let check = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
+        XCTAssertEqual(check.status, .checkFailed)
+        XCTAssertNil(check.currentVersion)
+        XCTAssertNil(check.plannedUpdateCommandSpec)
+        XCTAssertEqual(check.message, "Could not read installed version")
+    }
+
+    func testP4KegNodeGlobalPackageIsNpmOwner() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let install = try createNpmInstallation(root: root, prefixPath: "opt/homebrew/Cellar/node@22/22.0.0",
+            commandName: "codex", packageName: "@openai/codex", installedVersion: "1.0.0", latestOutput: "1.1.0")
+        let result = OwnerResolver.resolve(commandName: "codex", candidatePaths: [install.commandPath.path], layout: .fixture(home: root.path))
+        XCTAssertEqual(result.active?.owner, .npm(prefix: install.prefix.path, package: "@openai/codex"))
+    }
+
+    func testOwnerRowO20ComponentPrefixCellar2IsNotCellar() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binary = root.appendingPathComponent("opt/homebrew/Cellar2/gh/1.0.0/bin/gh")
+        try createExecutable(at: binary)
+        let result = OwnerResolver.resolve(commandName: "gh", candidatePaths: [binary.path], layout: .fixture(home: root.path))
+        XCTAssertEqual(result.active?.owner, .unknown)
+    }
+
+    func testP5FormulaUsesLinkedKegAndOneInfoCallPerPlan() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appendingPathComponent("opt/homebrew")
+        let binary = prefix.appendingPathComponent("Cellar/gh/2.101.0/bin/gh")
+        try createExecutable(at: binary)
+        let count = root.appendingPathComponent("calls")
+        let data = try fixture(named: "brew-info-gh.json")
+        try createExecutable(at: prefix.appendingPathComponent("bin/brew"), contents:
+            "#!/bin/sh\necho info >> \(ShellEscaping.quote(count.path))\nprintf '%s' \(ShellEscaping.quote(data))\n")
+        var config = typedConfig(id: "formula", commandName: "gh", packageName: "unused", brew: "gh")
+        config.packages?.npm = nil
+        let lookup = CommandPathLookup(candidatesByName: ["gh": [binary.path]], layout: .fixture(home: root.path))
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(check.status, .upToDate)
+        XCTAssertEqual(check.currentVersion, "2.101.0")
+        XCTAssertEqual(check.plannedUpdateCommandSpec?.arguments, ["upgrade", "--formula", "gh"])
+        XCTAssertEqual(try String(contentsOf: count), "info\n")
+        let unlinked = data.replacingOccurrences(of: "\"linked_keg\": \"2.101.0\"", with: "\"linked_keg\": null")
+        try createExecutable(at: prefix.appendingPathComponent("bin/brew"), contents: "#!/bin/sh\nprintf '%s' \(ShellEscaping.quote(unlinked))\n")
+        let failure = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(failure.status, .checkFailed)
+        XCTAssertEqual(failure.message, "Could not read installed version")
+        XCTAssertNil(failure.currentVersion)
+    }
+
+    func testP2CaskroomBinaryVersionDoesNotRequireAppBundle() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let prefix = root.appendingPathComponent("opt/homebrew")
+        let binary = prefix.appendingPathComponent("Caskroom/claude-code/2.1.281/claude")
+        try createExecutable(at: binary)
+        try createExecutable(at: prefix.appendingPathComponent("bin/brew"), contents: "#!/bin/sh\necho '{\"casks\":[{\"version\":\"2.1.281\"}]}'\n")
+        let config = typedConfig(id: "cask", commandName: "claude", packageName: "unused", brewCask: "claude-code")
+        let lookup = CommandPathLookup(candidatesByName: ["claude": [binary.path]], layout: .fixture(home: root.path))
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(check.currentVersion, "2.1.281")
+        XCTAssertEqual(check.status, .upToDate)
+    }
+
+    func testM5LookupFailureBecomesCheckFailed() async {
+        let config = typedConfig(id: "lookup", commandName: "codex", packageName: "@openai/codex")
+        let lookup = CommandPathLookup(candidatesByName: [:], failureMessage: "lookup fixture failed")
+        let resolution = await OwnerResolver.resolve(commandName: "codex", lookup: lookup)
+        XCTAssertEqual(resolution.resolveError, .lookupFailed("lookup fixture failed"))
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        XCTAssertEqual(check.status, .checkFailed)
+        XCTAssertEqual(check.message, "lookup fixture failed")
+        XCTAssertNil(check.blockReason)
+    }
+
+    func testT7HomebrewPrefixEnvironmentDefinesLayout() async throws {
+        let previous = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"]
+        setenv("HOMEBREW_PREFIX", "/custom/brew", 1)
+        defer { if let previous { setenv("HOMEBREW_PREFIX", previous, 1) } else { unsetenv("HOMEBREW_PREFIX") } }
+        let layout = await EcosystemLayout.discover()
+        XCTAssertEqual(layout.brewPrefixes, ["/custom/brew"])
+        XCTAssertEqual(layout.brewCellars, ["/custom/brew/Cellar"])
+    }
+
+    func testCatalogV2MigrationAndInvalidEntryIsolation() {
+        let items = ConfigLoader.loadConfigs(settings: .defaults).filter { $0.source == .bundled }
+        // cursor-agent and opencode stay legacy until PR-B2: both are usually
+        // installed by their own native installer, which has no typed strategy yet.
+        let migrated = Set(["codex-cli", "claude-code", "cline-cli", "gemini-cli", "qwen-code", "gh-cli"])
+        XCTAssertEqual(Set(items.filter { $0.schemaVersion == 2 }.map(\.id)), migrated)
+        XCTAssertEqual(ConfigLoader.validateBundledConfigs(items).map(\.id), items.map(\.id))
+        var invalid = typedConfig(id: "bad", commandName: "bad", packageName: "unused")
+        invalid.packages = nil
+        XCTAssertEqual(ConfigLoader.validateBundledConfigs([invalid] + items).map(\.id), items.map(\.id))
+        invalid.packages = PackageIdentifiers(npm: "unused")
+        invalid.command = " "
+        XCTAssertEqual(ConfigLoader.validateBundledConfigs([invalid]).map(\.id), [])
+    }
+
+    func testUpdateDoesNotInstallMissingItem() async {
+        let probe = RunnerProbe()
+        var item = makeUpdateItem(id: "missing", plannedSpec: nil)
+        item.isInstalled = false
+        let result = await UpdateExecutor.update(item, runner: .init(
+            runCommand: { command, directory, timeout in
+                await probe.recordCommand(command: command, directory: directory, timeout: timeout)
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }, runSpec: { spec, timeout in
+                await probe.recordSpec(spec: spec, timeout: timeout)
+                return .init(exitCode: 0, stdout: "", stderr: "")
+            }))
+        XCTAssertEqual(result.status, .error)
+        let count = await probe.commandCount
+        XCTAssertEqual(count, 0)
+    }
+
+    func testP6TypedVerificationUsesOwnerVersionAndBatchedLookup() async throws {
+        let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: "\"1.1.0\"")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var item = fixture.config.toUpdateItem()
+        item.isInstalled = true
+        item.currentVersion = "1.0.0"
+        item.latestVersion = "1.1.0"
+        let spec = CommandSpec(executablePath: fixture.install.prefix.appendingPathComponent("bin/npm").path,
+            arguments: ["install", "-g", "--prefix", fixture.install.prefix.path, "@openai/codex@1.1.0"])
+        item.plannedUpdateCommandSpec = spec
+        let json = fixture.install.prefix.appendingPathComponent("lib/node_modules/@openai/codex/package.json")
+        try createExecutable(at: fixture.install.prefix.appendingPathComponent("bin/npm"), contents: """
+        #!/bin/sh
+        if [ "$1" = view ]; then echo '"1.1.0"'; exit 0; fi
+        if [ "$1" = install ]; then printf '%s' '{"name":"@openai/codex","version":"1.1.0"}' > \(ShellEscaping.quote(json.path)); exit 0; fi
+        exit 2
+        """)
+        let result = await UpdateExecutor.update(item, config: fixture.config, pathLookup: fixture.lookup,
+            reviewedCommandHash: GatePolicy.reviewedCommandHash(for: fixture.config))
+        XCTAssertEqual(result.status, .updated)
+        XCTAssertEqual(result.currentVersion, "1.1.0")
+    }
+
+    @MainActor
+    func testL7ChangedTypedSpecBetweenDryRunAndConfirmDoesNotRun() async throws {
+        try await withTemporaryAppSupportDirectory { root in
+            let marker = root.appendingPathComponent("must-not-run")
+            let initial = CommandSpec(executablePath: "/usr/bin/touch", arguments: [marker.path])
+            let replacement = CommandSpec(executablePath: "/bin/echo", arguments: ["changed"])
+            let store = UserSettingsStore()
+            let state = AppState(settingsStore: store, plannedCommandResolver: { _, _, _ in (replacement, "same-owner") })
+            state.notificationsEnabled = false
+            let index = try XCTUnwrap(state.items.firstIndex { $0.id == "codex-cli" })
+            state.items[index].isInstalled = true
+            state.items[index].status = .updateAvailable
+            state.items[index].plannedUpdateCommandSpec = initial
+            state.items[index].ownerFingerprint = "same-owner"
+            state.items[index].latestVersion = "1.1.0"
+            let plan = AppState.PlannedExecutionItem(id: "codex-cli", action: "Update", command: initial.displayString,
+                workingDirectory: nil, ownerFingerprint: "same-owner")
+            await state.updateSelected(skipDryRun: true, explicitTargetIDs: ["codex-cli"], explicitPlan: ["codex-cli": plan])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            XCTAssertTrue(state.logLines.contains { $0.contains("Nothing run: all items changed since you confirmed") })
+        }
+    }
+}
+
+
+extension PartThreeRegressionTests {
+    func testMalformedBundledEntryDoesNotDropValidEntries() throws {
+        let config = typedConfig(id: "valid", commandName: "codex", packageName: "@openai/codex")
+        let valid = try JSONSerialization.jsonObject(with: JSONEncoder().encode(config))
+        let data = try JSONSerialization.data(withJSONObject: ["items": [["id": "malformed", "command": 5], valid]])
+        XCTAssertEqual(ConfigLoader.decodeBundledConfigs(data)?.map(\.id), ["valid"])
+    }
+
+    @MainActor
+    func testChangedOwnerFingerprintAtConfirmationDoesNotRun() async throws {
+        try await withTemporaryAppSupportDirectory { root in
+            let marker = root.appendingPathComponent("wrong-owner")
+            let spec = CommandSpec(executablePath: "/usr/bin/touch", arguments: [marker.path])
+            let store = UserSettingsStore()
+            let state = AppState(settingsStore: store, plannedCommandResolver: { _, _, _ in (spec, "new-owner") })
+            state.notificationsEnabled = false
+            let index = try XCTUnwrap(state.items.firstIndex { $0.id == "codex-cli" })
+            state.items[index].isInstalled = true
+            state.items[index].status = .updateAvailable
+            state.items[index].plannedUpdateCommandSpec = spec
+            state.items[index].ownerFingerprint = "old-owner"
+            state.items[index].latestVersion = "1.1.0"
+            let plan = AppState.PlannedExecutionItem(id: "codex-cli", action: "Update", command: spec.displayString,
+                workingDirectory: nil, ownerFingerprint: "old-owner")
+            await state.updateSelected(skipDryRun: true, explicitTargetIDs: ["codex-cli"], explicitPlan: ["codex-cli": plan])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            XCTAssertTrue(state.logLines.contains { $0.contains("Nothing run: all items changed since you confirmed") })
+        }
+    }
+
+    func testP6VerificationRejectsOwnerChangedByUpdate() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try createNpmInstallation(root: root, prefixPath: ".nvm/versions/node/first", commandName: "codex",
+            packageName: "@openai/codex", installedVersion: "1.0.0", latestOutput: "1.1.0")
+        let second = try createNpmInstallation(root: root, prefixPath: ".nvm/versions/node/second", commandName: "codex",
+            packageName: "@openai/codex", installedVersion: "1.1.0", latestOutput: "1.1.0")
+        let config = typedConfig(id: "changed-owner", commandName: "codex", packageName: "@openai/codex")
+        let lookup = CommandPathLookup(candidatesByName: ["codex": [first.commandPath.path]], layout: .fixture(home: root.path))
+        let stub = root.appendingPathComponent("change-owner")
+        try createExecutable(at: stub, contents: "#!/bin/sh\n/bin/ln -sf \(ShellEscaping.quote(second.resolvedPath.path)) \(ShellEscaping.quote(first.commandPath.path))\n")
+        var item = config.toUpdateItem()
+        item.isInstalled = true
+        item.latestVersion = "1.1.0"
+        item.plannedUpdateCommandSpec = CommandSpec(executablePath: stub.path, arguments: [])
+        let result = await UpdateExecutor.update(item, config: config, pathLookup: lookup)
+        XCTAssertEqual(result.status, .failedVerification)
+        XCTAssertEqual(result.currentVersion, "1.1.0")
+    }
+
+    func testP6VerificationPassesReviewHashToLegacyCheck() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("verified")
+        let config = DetectorConfig(id: "reviewed-verification", name: "Reviewed", category: .cli, description: nil,
+            source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+            versionCommand: "echo 1.1.0", checkCommand: "touch \(ShellEscaping.quote(marker.path)); echo OK",
+            installCommand: nil, updateCommand: "echo updated", workingDirectory: nil, needsReview: true)
+        var item = config.toUpdateItem()
+        item.isInstalled = true
+        item.latestVersion = "1.1.0"
+        let result = await UpdateExecutor.update(item, config: config, reviewedCommandHash: GatePolicy.reviewedCommandHash(for: config))
+        XCTAssertEqual(result.status, .updated)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
 }

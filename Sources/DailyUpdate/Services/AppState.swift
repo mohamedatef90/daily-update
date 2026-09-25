@@ -398,6 +398,7 @@ final class AppState: ObservableObject {
 
     func markCommandReviewed(id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let needsRecheck = items[index].isAwaitingAutomationReview
         let hash = configs
             .first(where: { $0.id == id })
             .map(GatePolicy.reviewedCommandHash(for:))
@@ -405,7 +406,12 @@ final class AppState: ObservableObject {
         settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
         items[index].needsReview = false
         items[index].gateReasons.removeAll { $0 == .needsReview }
-        if items[index].status == .gated {
+        if needsRecheck {
+            items[index].status = .checking
+            items[index].isSelected = false
+            items[index].statusMessage = "Checking reviewed item"
+            Task { await recheckItems(ids: [id]) }
+        } else if items[index].status == .gated {
             if items[index].gateReasons.isEmpty {
                 items[index].status = .updateAvailable
                 items[index].statusMessage = nil
@@ -801,7 +807,7 @@ final class AppState: ObservableObject {
             }
 
             if let config = configs.first(where: { $0.id == target.id }),
-               items[initialIndex].plannedUpdateCommandSpec != nil {
+               StrategyPlanner.usesTypedEngine(config: config) {
                 guard let expectedFingerprint = initialPlan.ownerFingerprint,
                       let replanned = await plannedCommandResolver(
                           config,
@@ -851,7 +857,10 @@ final class AppState: ObservableObject {
             let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
-                stashRepos: stashReposBeforeUpdate
+                stashRepos: stashReposBeforeUpdate,
+                config: configs.first { $0.id == target.id },
+                pathLookup: pathLookup,
+                reviewedCommandHash: settingsStore.preference(for: target.id).reviewedCommandHash
             )
             items[index].status = result.status
             items[index].gateReasons = []

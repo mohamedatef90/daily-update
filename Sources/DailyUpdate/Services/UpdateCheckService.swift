@@ -424,7 +424,7 @@ enum UpdateCheckService {
         }
 
         let fingerprint = StrategyPlanner.ownershipFingerprint(for: config, resolution: plan.ownerResolution)
-        let resolvedCurrent = plan.currentVersion ?? current
+        let resolvedCurrent = plan.currentVersion
         let competingMessage = plan.ownerResolution.competing.isEmpty
             ? nil
             : "Multiple installs detected; updating the active path only."
@@ -516,21 +516,9 @@ enum UpdateCheckService {
             }
         }
 
-        var result = gatedOrUpdatableResult(
-            config: config,
-            current: resolvedCurrent,
-            currentRaw: currentRaw,
-            latest: latest,
-            reviewedCommandHash: reviewedCommandHash,
-            commandOverride: plan.updateCommandSpec?.displayString,
-            additionalGateReasons: plan.gateReasons
-        )
-        if result.message == nil {
-            result.message = competingMessage
-        }
-        result.plannedUpdateCommandSpec = plan.updateCommandSpec
-        result.ownerFingerprint = fingerprint
-        return result
+        return CheckResult(status: .checkFailed, currentVersion: nil, currentVersionRaw: currentRaw,
+            latestVersion: latest, message: "Could not read installed version", gateReasons: [], blockReason: nil)
+
     }
 }
 

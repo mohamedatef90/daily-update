@@ -156,6 +156,7 @@ struct UpdateItem: Identifiable, Hashable {
     var ownerFingerprint: String? = nil
     var detectedPaths: [String] = []
     var needsReview: Bool = false
+    var detectRule: DetectRule? = nil
 
     var isSnoozed: Bool {
         guard let snoozedUntil else { return false }
@@ -169,7 +170,7 @@ struct UpdateItem: Identifiable, Hashable {
               !targetVersion.isEmpty else {
             return false
         }
-        return targetVersion != pinnedVersion
+        return !GatePolicy.versionsMatch(targetVersion, pinnedVersion)
     }
 
     var displayVersion: String {
@@ -228,8 +229,15 @@ struct UpdateItem: Identifiable, Hashable {
             versionCommand: versionCommand,
             checkCommand: checkCommand,
             updateCommand: updateCommand,
-            installCommand: installCommand
+            installCommand: installCommand,
+            detectRule: detectRule, versionPattern: versionPattern, workingDirectory: workingDirectory,
+            command: command, packages: packages, selfUpdater: selfUpdater,
+            appcastURL: appcastURL, autoUpdates: autoUpdates
         )
+    }
+
+    var isAwaitingAutomationReview: Bool {
+        source != .bundled && needsReview && gateReasons.contains(.needsReview)
     }
 
     var requiresCommandReview: Bool {
