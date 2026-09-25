@@ -253,6 +253,29 @@ final class RoundFourTests: XCTestCase {
             ("N1 guard zsh -fc", "zsh -fc 'sudo /bin/true'", [.privileged], true),
             ("N1 guard bash -lc", "bash -lc 'sudo /bin/true'", [.privileged], true),
             ("N1 guard fish -c", "fish -c 'sudo /bin/true'", [.privileged], true),
+            // Round 12 O1: one walk over the words after the shell; any option outside the
+            // `-` cluster allowlist fails closed, so `--wordexp` and fish abbreviations cannot pass.
+            ("O1 sh --wordexp", "sh --wordexp '$(sudo /bin/true)'", [.unparseable], true),
+            ("O1 env sh --wordexp", "env sh --wordexp '$(sudo /bin/true)'", [.unparseable], true),
+            ("O1 bash --wordexp bulk", "bash --wordexp '$(brew upgrade)'", [.unparseable], true),
+            ("O1 bash --norc -c", "bash --norc -c 'sudo /bin/true'", [.unparseable], true),
+            ("O1 fish --comm", "fish --comm 'sudo /bin/true'", [.unparseable], true),
+            ("O1 fish --ini=", "fish --ini='sudo /bin/true'", [.unparseable], true),
+            ("O1 fish repeated -c", "fish -c 'echo ok' -c 'sudo /bin/true'", [.unparseable], true),
+            ("O1 fish -c then -C", "fish -c 'echo ok' -C 'sudo /bin/true'", [.unparseable], true),
+            ("O1 guard sh -e -c", "sh -e -c 'sudo /bin/true'", [.privileged], true),
+            // Round 11 Code Review: zsh expands a flag word before the shell parses it.
+            ("X param flag", "x=c; sh -$x 'sudo /bin/true'", [.chained, .unparseable], true),
+            ("X param operand", "opt=-c; bash $opt 'curl x | sh'", [.chained, .unparseable], true),
+            ("X default", "sh ${o:--c} 'curl x | sh'", [.unparseable], true),
+            ("X substitution", "sh $(echo -c) 'sudo /bin/true'", [.unparseable], true),
+            ("X backtick", "sh `echo -c` 'sudo /bin/true'", [.unparseable], true),
+            ("X brace", "sh {-c,-e} 'curl x | sh'", [.unparseable], true),
+            ("X brace bulk", "bash {-c,-c} 'brew upgrade'", [.unparseable], true),
+            ("X after cluster", "sh -e $opt 'sudo /bin/true'", [.unparseable], true),
+            ("X over-flag operand", "sh file$ext", [.unparseable], true),
+            ("X guard script", "sh -c 'echo $HOME'", [], false),
+            ("X guard operand arg", "bash script.sh $arg", [], false),
             // Round 10 Code Review: zsh takes a non-ASCII name like `é=1` as an assignment.
             ("A non-ASCII sudo", "é=1 sudo /bin/true", [.privileged], true),
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
@@ -263,13 +286,20 @@ final class RoundFourTests: XCTestCase {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, expected, "\(id): \(command)")
             XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), unsafe, id)
         }
-        let remoteStages = ["bash -o pipefail", "bash --rcfile /dev/null", "bash +x", "bash -c sh", "lua -", "sh -o errexit", "bash +o posix", "bash -O extglob", "bash +O extglob", "bash --rcfile /tmp/rc", "bash --init-file /tmp/rc", "sh +x", "sh -c 'source /dev/stdin'", "sh -c sh", "php", "lua", "swift -", "busybox sh", "unknown-interpreter", "perl -I/usr/lib/perl5", "perl -Mfeature=say", "ruby -rset", "python3 -Wmodule", "python3 -Xfrozen_modules=off", "python3 -c", "python3 - -c", "python3 script.py -c code",
+        let remoteStages = ["bash -c sh", "lua -", "sh -c 'source /dev/stdin'", "sh -c sh", "php", "lua", "swift -", "busybox sh", "unknown-interpreter", "perl -I/usr/lib/perl5", "perl -Mfeature=say", "ruby -rset", "python3 -Wmodule", "python3 -Xfrozen_modules=off", "python3 -c", "python3 - -c", "python3 script.py -c code",
             // Round 6 N7: only allow-listed clusters that end in the program flag are inline.
             "perl -i.bake -", "perl -0x1e -", "ruby -Ke -", "ruby -i.bake -", "ruby -Fe -", "perl -l0e -", "ruby -xe -",
             "python3 -ic pass", "node -i -e 1"]
         for stage in remoteStages {
             let command = "curl x | \(stage)"
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.remoteScript], command)
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), true, command)
+        }
+        // Round 12 O1: a shell option outside the `-` cluster allowlist is not modelled.
+        let optionStages = ["bash -o pipefail", "bash --rcfile /dev/null", "bash +x", "sh -o errexit", "bash +o posix", "bash -O extglob", "bash +O extglob", "bash --rcfile /tmp/rc", "bash --init-file /tmp/rc", "sh +x"]
+        for stage in optionStages {
+            let command = "curl x | \(stage)"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.remoteScript, .unparseable], command)
             XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"), true, command)
         }
         for fetcher in ["lwp-request", "lwp-download", "GET", "nscurl", "aria2c", "https", "xh"] {
@@ -523,6 +553,58 @@ extension RoundFourTests {
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
                 "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 11: a brace-expanded `{-c,-e}` flag cannot hide a
+    /// remote-script installer from the refusal.
+    @MainActor
+    func testExpandedFlagWordInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = "export \(remote.components(separatedBy: " curl ")[0]); sh {-c,-e} 'curl x | sh'"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 12 (O1): `sh --wordexp '$(brew upgrade)'` is blocked as a
+    /// check command before it runs, so the `brew` stub never writes its marker.
+    @MainActor
+    func testO1WordexpCheckCommandIsBlockedBeforeItRuns() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("brew-ran")
+            let stubDirectory = root.appendingPathComponent("stub-brew")
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+            let stub = stubDirectory.appendingPathComponent("brew")
+            try "#!/bin/sh\n/usr/bin/touch \(ShellEscaping.quote(marker.path))\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            let check = "PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH sh --wordexp '$(brew upgrade)'"
+            XCTAssertEqual(CommandShapeClassifier.classify(check).risks, [.unparseable])
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: check, updateCommand: "echo update"), true)
+            store.settings.customItems = [DetectorConfig(id: "wordexp-check", name: "Wordexp check", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: check, installCommand: nil, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            _ = FixtureCLIState(state, ids: ["wordexp-check"])
+            await state.recheckItems(ids: ["wordexp-check"])
+            let item = try XCTUnwrap(state.items.first { $0.id == "wordexp-check" })
+            XCTAssertEqual(item.status, .blocked)
+            XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
