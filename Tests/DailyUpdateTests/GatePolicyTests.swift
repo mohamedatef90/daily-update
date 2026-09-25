@@ -53,19 +53,19 @@ final class GatePolicyTests: XCTestCase {
                 return
             }
 
+            state.items[index].isInstalled = true
             state.items[index].status = .error
             state.items[index].statusMessage = "Update failed"
-            await state.recheckItems(ids: ["retry-custom"])
+            await state.retryUpdate(for: "retry-custom")
             XCTAssertEqual(state.items[index].status, .upToDate)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: runMarker.path))
 
             FileManager.default.createFile(atPath: updateMarker.path, contents: Data())
             state.items[index].status = .error
             state.items[index].statusMessage = "Update failed"
-            await state.recheckItems(ids: ["retry-custom"])
+            await state.retryUpdate(for: "retry-custom")
             XCTAssertEqual(state.items[index].status, .updateAvailable)
-            state.items[index].isSelected = true
-
-            await state.requestUpdateSelected()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: runMarker.path))
             XCTAssertTrue(state.showDryRun)
             XCTAssertEqual(state.dryRunEntries.map(\.id), ["retry-custom"])
         }

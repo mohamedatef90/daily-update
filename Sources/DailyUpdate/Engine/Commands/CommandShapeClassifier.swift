@@ -111,7 +111,7 @@ enum CommandShapeClassifier {
             risks.insert(.remoteScript)
         }
 
-        for nested in nestedCommands(in: trimmed, words: ShellLexer.words(from: tokens)) {
+        for nested in ShellLexer.nestedCommands(in: trimmed) + simpleCommands.flatMap({ inlineShellCommands(in: $0) }) {
             risks.formUnion(classify(nested, depth: depth + 1, visited: nextVisited))
         }
 
@@ -127,12 +127,19 @@ enum CommandShapeClassifier {
             let trimmed = next.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, visited.insert(trimmed).inserted else { continue }
 
-            let tokens = ShellLexer.lex(trimmed)
+            let tokens = ShellLexer.lex(trimmed).filter {
+                ![ShellToken.Kind.op(.leftParen), .op(.rightParen), .op(.leftBrace), .op(.rightBrace)].contains($0.kind)
+            }
             let logical = ShellLexer.split(tokens, by: [.and, .or, .semicolon, .newline, .background])
             for segment in logical {
                 let pipelineStages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
                 for stage in pipelineStages {
-                    let words = ShellLexer.words(from: stage)
+                    var words = ShellLexer.words(from: stage)
+                    if let executable = stripWrappersRaw(words).first, executable != "[",
+                       stage.contains(where: { $0.value == executable && $0.hasUnquotedGlob }),
+                       let index = words.firstIndex(of: executable) {
+                        words[index] = "$glob"
+                    }
                     guard !words.isEmpty else { continue }
                     segments.append(words)
                     queue.append(contentsOf: inlineShellCommands(in: words))
@@ -152,13 +159,8 @@ enum CommandShapeClassifier {
     }
 
     private static func containsPrivilegeEscalation(words: [String]) -> Bool {
-        let normalizedWords = normalizedTokens(words: words)
-        if normalizedWords.contains(where: { privilegeCommands.contains($0) }) {
-            return true
-        }
-        let stripped = stripWrappers(normalizedWords)
-        guard let executable = stripped.first else { return false }
-        return executable == "osascript"
+        guard let executable = stripWrappersRaw(words, preservePrivilege: true).first.map(normalizedExecutableName) else { return false }
+        return privilegeCommands.contains(executable) || executable == "osascript"
     }
 
     private static func containsDestructiveOperation(words: [String]) -> Bool {
@@ -200,7 +202,7 @@ enum CommandShapeClassifier {
             if arg == "--recursive" || arg == "--force" {
                 return true
             }
-            guard arg.hasPrefix("-") else { continue }
+            guard arg.hasPrefix("-"), !arg.hasPrefix("--") else { continue }
             if arg.contains("r") || arg.contains("R") || arg.contains("f") {
                 return true
             }
@@ -232,83 +234,57 @@ enum CommandShapeClassifier {
 
         for logicalSegment in ShellLexer.split(tokens, by: [.and, .or, .semicolon, .newline, .background]) {
             let stages = ShellLexer.split(logicalSegment, by: [.pipe, .pipeAnd])
-            let stageWords = stages.map { ShellLexer.words(from: $0) }
-
-            for (index, words) in stageWords.enumerated() where isFetcherStage(words) {
-                guard index + 1 < stageWords.count else { continue }
-                if stageWords[(index + 1)...].contains(where: executesPipelineInput) {
-                    return true
+            var downloadFed = false
+            for stage in stages {
+                let words = ShellLexer.words(from: stage)
+                if downloadFed {
+                    let grouped = stage.contains { $0.kind == .op(.leftBrace) || $0.kind == .op(.leftParen) }
+                    if grouped || executesPipelineInput(words) { return true }
+                }
+                if stageContainsFetcher(stage) {
+                    downloadFed = true
+                    for word in words where word.hasPrefix(">(") {
+                        for nested in ShellLexer.nestedCommands(in: word) {
+                            if allSimpleCommands(nested).contains(where: executesPipelineInput) { return true }
+                        }
+                    }
                 }
             }
         }
         return false
     }
 
-    private static func isFetcherStage(_ words: [String]) -> Bool {
-        let normalized = stripWrappers(normalizedTokens(words: words))
-        guard let executable = normalized.first else { return false }
-        return fetchers.contains(executable)
+    private static func stageContainsFetcher(_ tokens: [ShellToken]) -> Bool {
+        // Groups remain intact until the surrounding pipeline has been split.
+        let commands = ShellLexer.split(tokens.filter {
+            ![ShellToken.Kind.op(.leftParen), .op(.rightParen), .op(.leftBrace), .op(.rightBrace)].contains($0.kind)
+        }, by: [.and, .or, .semicolon, .newline, .background, .pipe, .pipeAnd])
+        for command in commands {
+            let words = ShellLexer.words(from: command)
+            if let executable = stripWrappers(normalizedTokens(words: words)).first,
+               fetchers.contains(executable) { return true }
+            for word in words {
+                for nested in ShellLexer.nestedCommands(in: word) {
+                    if nestedCommandStartsWithFetcher(nested) { return true }
+                }
+            }
+        }
+        return false
     }
 
     private static func executesPipelineInput(_ words: [String]) -> Bool {
-        if startsWithDynamicExecutable(words) {
-            return true
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return true }
+        let args = Array(stripped.dropFirst())
+        let filters: Set<String> = ["grep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq", "wc", "shasum"]
+        if filters.contains(executable) { return false }
+        if ["python", "python2", "python3"].contains(executable) {
+            return !containsInlineFlag(args, allowedShortOptions: ["c", "m"])
         }
-
-        let strippedRaw = stripWrappersRaw(words)
-        guard let executableToken = strippedRaw.first else { return false }
-        let executable = normalizedExecutableName(executableToken)
-        let args = Array(strippedRaw.dropFirst()).map { $0.lowercased() }
-
-        if shellExecutables.contains(executable) {
-            return shellConsumesStdin(args)
+        if ["node", "perl", "ruby"].contains(executable) {
+            return !containsInlineFlag(args, allowedShortOptions: ["e"])
         }
-
-        if executable == "perl" || executable == "ruby" || executable == "node" {
-            if containsInlineFlag(args, allowedShortOptions: ["e", "p"]) {
-                return false
-            }
-            if hasScriptPathArgument(args) {
-                return false
-            }
-            return true
-        }
-
-        if executable == "python" || executable == "python2" || executable == "python3" {
-            if containsInlineFlag(args, allowedShortOptions: ["c", "m"]) {
-                return false
-            }
-            if hasScriptPathArgument(args) {
-                return false
-            }
-            return true
-        }
-
-        if interpreters.contains(executable) {
-            if hasScriptPathArgument(args) {
-                return false
-            }
-            return true
-        }
-
-        return looksLikeInterpreter(executable)
-    }
-
-    private static func shellConsumesStdin(_ arguments: [String]) -> Bool {
-        if containsShortOptionCluster(arguments, containing: "c") {
-            return false
-        }
-        if containsShortOptionCluster(arguments, containing: "s") {
-            return true
-        }
-
-        guard let script = firstPositionalArgument(arguments) else {
-            return true
-        }
-        if script == "-" || script == "/dev/stdin" {
-            return true
-        }
-        return false
+        return true
     }
 
     private static func containsInlineFlag(_ arguments: [String], allowedShortOptions: Set<Character>) -> Bool {
@@ -319,46 +295,6 @@ enum CommandShapeClassifier {
             guard arg.hasPrefix("-"), !arg.hasPrefix("--") else { continue }
             let letters = arg.dropFirst()
             if letters.contains(where: { allowedShortOptions.contains($0) }) {
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func hasScriptPathArgument(_ arguments: [String]) -> Bool {
-        guard let first = firstPositionalArgument(arguments) else { return false }
-        return first != "-" && first != "/dev/stdin"
-    }
-
-    private static func firstPositionalArgument(_ arguments: [String]) -> String? {
-        var index = 0
-        var stopOptions = false
-        while index < arguments.count {
-            let arg = arguments[index]
-            if stopOptions {
-                return arg
-            }
-            if arg == "--" {
-                stopOptions = true
-                index += 1
-                continue
-            }
-            if arg.hasPrefix("-"), arg != "-" {
-                index += 1
-                continue
-            }
-            return arg
-        }
-        return nil
-    }
-
-    private static func containsShortOptionCluster(_ arguments: [String], containing character: Character) -> Bool {
-        for arg in arguments {
-            if arg == "--" {
-                break
-            }
-            guard arg.hasPrefix("-"), !arg.hasPrefix("--"), arg.count > 1 else { continue }
-            if arg.dropFirst().contains(character) {
                 return true
             }
         }
@@ -396,19 +332,6 @@ enum CommandShapeClassifier {
             if fetchers.contains(executable) {
                 return true
             }
-        }
-        return false
-    }
-
-    private static func looksLikeInterpreter(_ executable: String) -> Bool {
-        if executable == "source" || executable == "." || executable == "eval" {
-            return true
-        }
-        if executable.hasSuffix("sh") {
-            return true
-        }
-        if executable.contains("python") || executable.contains("perl") || executable.contains("ruby") || executable.contains("node") {
-            return true
         }
         return false
     }
@@ -528,12 +451,6 @@ enum CommandShapeClassifier {
         }
     }
 
-    private static func nestedCommands(in command: String, words: [String]) -> [String] {
-        var nested = ShellLexer.nestedCommands(in: command)
-        nested.append(contentsOf: inlineShellCommands(in: words))
-        return nested
-    }
-
     private static func isBulkNpm(_ args: [String]) -> Bool {
         guard let commandIndex = args.firstIndex(where: { ["update", "up", "upgrade"].contains($0) }) else {
             return false
@@ -554,7 +471,9 @@ enum CommandShapeClassifier {
 
     private static func inlineShellCommands(in words: [String]) -> [String] {
         let stripped = stripWrappersRaw(words)
-        guard let executable = stripped.first.map(normalizedExecutableName), shellExecutables.contains(executable) else {
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return [] }
+        if executable == "eval" { return [stripped.dropFirst().joined(separator: " ")] }
+        guard shellExecutables.contains(executable) else {
             return []
         }
 
@@ -600,7 +519,8 @@ enum CommandShapeClassifier {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
-        let lower = trimmed.lowercased()
+        let lower = (trimmed.hasPrefix("=") ? String(trimmed.dropFirst()) : trimmed).lowercased()
+        if matches(#"^[a-z_][a-z0-9_]*="#, in: lower) { return lower }
         if lower.contains("/") {
             return (lower as NSString).lastPathComponent
         }
@@ -633,10 +553,15 @@ enum CommandShapeClassifier {
         }
 
         while let first = working.first {
+            if ["then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(first) {
+                working.removeFirst(); continue
+            }
             if ["env", "command", "exec", "nohup", "time"].contains(first) {
                 working.removeFirst()
                 if first == "env" {
                     removeLeadingOptions(optionValueFlags: ["-u"], allowAssignments: true)
+                } else if first == "exec" || first == "command" {
+                    removeLeadingOptions(optionValueFlags: ["-a"])
                 }
                 continue
             }
@@ -701,19 +626,22 @@ enum CommandShapeClassifier {
         return false
     }
 
-    private static func stripWrappersRaw(_ tokens: [String]) -> [String] {
+    private static func stripWrappersRaw(_ tokens: [String], preservePrivilege: Bool = false) -> [String] {
         var working = tokens
         while let first = working.first {
             let lowered = normalizedExecutableName(first)
+            if ["then", "do", "else", "elif", "!", "noglob", "nocorrect", "builtin", "-"].contains(lowered) {
+                working.removeFirst(); continue
+            }
             if ["env", "command", "exec", "nohup", "time"].contains(lowered) {
                 working.removeFirst()
-                if lowered == "env" {
+                if ["env", "exec", "command"].contains(lowered) {
                     while let next = working.first {
                         if next == "--" {
                             working.removeFirst()
                             break
                         }
-                        if next == "-u", working.count > 1 {
+                        if (next == "-u" || next == "-a"), working.count > 1 {
                             working.removeFirst(2)
                             continue
                         }
@@ -731,6 +659,7 @@ enum CommandShapeClassifier {
                 continue
             }
             if lowered == "sudo" || lowered == "doas" {
+                if preservePrivilege { return working }
                 working.removeFirst()
                 while let next = working.first, next.hasPrefix("-") {
                     let consumesValue = ["-u", "-g", "-h", "-p", "-r", "-t", "-C", "-T"].contains(next)
@@ -830,9 +759,9 @@ enum CommandShapeClassifier {
     }
 
     private static func startsWithDynamicExecutable(_ words: [String]) -> Bool {
-        let stripped = stripWrappers(normalizedTokens(words: words))
+        let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first else { return false }
-        return executable.hasPrefix("$")
+        return executable.hasPrefix("$") || executable.hasPrefix("`")
     }
 
     private static func matches(_ pattern: String, in value: String) -> Bool {

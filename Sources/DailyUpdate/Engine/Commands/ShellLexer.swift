@@ -1,526 +1,160 @@
 import Foundation
 
 enum ShellOperator: String, Hashable {
-    case pipe = "|"
-    case pipeAnd = "|&"
-    case or = "||"
-    case and = "&&"
-    case background = "&"
-    case semicolon = ";"
-    case newline = "\n"
-    case leftParen = "("
-    case rightParen = ")"
-    case leftBrace = "{"
-    case rightBrace = "}"
+    case pipe = "|", pipeAnd = "|&", or = "||", and = "&&", background = "&"
+    case semicolon = ";", newline = "\n"
+    case leftParen = "(", rightParen = ")", leftBrace = "{", rightBrace = "}"
 }
 
 struct ShellToken: Hashable {
-    enum Kind: Hashable {
-        case word
-        case op(ShellOperator)
-    }
-
+    enum Kind: Hashable { case word, op(ShellOperator) }
     let value: String
     let kind: Kind
-
-    var isWord: Bool {
-        if case .word = kind { return true }
-        return false
-    }
+    var hasUnquotedGlob = false
+    var isWord: Bool { if case .word = kind { return true }; return false }
 }
 
 enum ShellLexer {
-    static func lex(_ command: String) -> [ShellToken] {
+    private struct Scan {
         var tokens: [ShellToken] = []
-        var current = ""
-        var inSingleQuotes = false
-        var inDoubleQuotes = false
-
-        func flushCurrent() {
-            let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                tokens.append(ShellToken(value: trimmed, kind: .word))
-            }
-            current = ""
-        }
-
-        let characters = Array(command)
-        var index = 0
-        while index < characters.count {
-            let char = characters[index]
-
-            if char == "'" && !inDoubleQuotes {
-                inSingleQuotes.toggle()
-                index += 1
-                continue
-            }
-
-            if char == "\"" && !inSingleQuotes {
-                inDoubleQuotes.toggle()
-                index += 1
-                continue
-            }
-
-            if char == "\\", inSingleQuotes {
-                current.append(char)
-                index += 1
-                continue
-            }
-
-            if char == "\\", inDoubleQuotes {
-                let next = index + 1 < characters.count ? characters[index + 1] : Character("\0")
-                if next == "\n" {
-                    index += 2
-                    continue
-                }
-                if next == "$" || next == "`" || next == "\"" || next == "\\" {
-                    current.append(next)
-                    index += 2
-                    continue
-                }
-                current.append(char)
-                index += 1
-                continue
-            }
-
-            if char == "\\", !inSingleQuotes, !inDoubleQuotes {
-                guard index + 1 < characters.count else {
-                    current.append(char)
-                    index += 1
-                    continue
-                }
-                current.append(characters[index + 1])
-                index += 2
-                continue
-            }
-
-            let quoted = inSingleQuotes || inDoubleQuotes
-            if !quoted {
-                if char == "$",
-                   index + 1 < characters.count,
-                   characters[index + 1] == "'" {
-                    let parseStart = index + 2
-                    if let parsed = parseAnsiCString(characters: characters, start: parseStart) {
-                        current.append(parsed.value)
-                        index = parsed.endIndex + 1
-                        continue
-                    }
-                }
-
-                if char == "\n" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: "\n", kind: .op(.newline)))
-                    index += 1
-                    continue
-                }
-                if char.isWhitespace {
-                    flushCurrent()
-                    index += 1
-                    continue
-                }
-
-                if char == "|" || char == "&" {
-                    let next = index + 1 < characters.count ? characters[index + 1] : Character("\0")
-                    if char == "|" && next == "|" {
-                        flushCurrent()
-                        tokens.append(ShellToken(value: "||", kind: .op(.or)))
-                        index += 2
-                        continue
-                    }
-                    if char == "|" && next == "&" {
-                        flushCurrent()
-                        tokens.append(ShellToken(value: "|&", kind: .op(.pipeAnd)))
-                        index += 2
-                        continue
-                    }
-                    if char == "&" && next == "&" {
-                        flushCurrent()
-                        tokens.append(ShellToken(value: "&&", kind: .op(.and)))
-                        index += 2
-                        continue
-                    }
-                    if char == "|" {
-                        flushCurrent()
-                        tokens.append(ShellToken(value: "|", kind: .op(.pipe)))
-                        index += 1
-                        continue
-                    }
-                    if char == "&" {
-                        flushCurrent()
-                        tokens.append(ShellToken(value: "&", kind: .op(.background)))
-                        index += 1
-                        continue
-                    }
-                }
-
-                if char == ";" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: ";", kind: .op(.semicolon)))
-                    index += 1
-                    continue
-                }
-
-                if char == "(" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: "(", kind: .op(.leftParen)))
-                    index += 1
-                    continue
-                }
-
-                if char == ")" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: ")", kind: .op(.rightParen)))
-                    index += 1
-                    continue
-                }
-
-                if char == "{" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: "{", kind: .op(.leftBrace)))
-                    index += 1
-                    continue
-                }
-
-                if char == "}" {
-                    flushCurrent()
-                    tokens.append(ShellToken(value: "}", kind: .op(.rightBrace)))
-                    index += 1
-                    continue
-                }
-            }
-
-            current.append(char)
-            index += 1
-        }
-
-        flushCurrent()
-        return tokens
+        var nested: [String] = []
+        var invalid = false
+        var end = 0
     }
 
-    static func words(from tokens: [ShellToken]) -> [String] {
-        tokens.compactMap { token in
-            guard token.isWord else { return nil }
-            return token.value
+    static func lex(_ command: String) -> [ShellToken] { scan(Array(command)).tokens }
+    static func hasUnbalancedQuotes(_ command: String) -> Bool { scan(Array(command)).invalid }
+    static func nestedCommands(in command: String) -> [String] { scan(Array(command)).nested }
+    static func words(from tokens: [ShellToken]) -> [String] { tokens.filter(\.isWord).map(\.value) }
+
+    // All consumers share this quote/comment/substitution state machine. Nested
+    // shell bodies start a fresh quote context; their raw text remains in the word.
+    private static func scan(_ chars: [Character], start: Int = 0, until: Character? = nil) -> Scan {
+        var result = Scan()
+        var index = start
+        var word = ""
+        var started = false
+        var glob = false
+        var single = false
+        var double = false
+        func flush() {
+            if started { result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob)) }
+            word = ""; started = false; glob = false
         }
+        while index < chars.count {
+            let char = chars[index]
+            let next: Character = index + 1 < chars.count ? chars[index + 1] : "\0"
+            if single {
+                if char == "'" { single = false } else { word.append(char) }
+                index += 1; continue
+            }
+            if char == "\\" {
+                if next == "\0" { result.invalid = true; index += 1; continue }
+                if !double || ["$", "`", "\"", "\\", "\n"].contains(next) {
+                    if next != "\n" { word.append(next); started = true }
+                    index += 2; continue
+                }
+                word.append(char); started = true; index += 1; continue
+            }
+            if char == "'", !double { single = true; started = true; index += 1; continue }
+            if char == "\"" { double.toggle(); started = true; index += 1; continue }
+            if !double, char == "#", !started {
+                while index < chars.count, chars[index] != "\n" { index += 1 }
+                continue
+            }
+            if !double, char == "$", next == "'" {
+                started = true
+                index += 2
+                var closed = false
+                while index < chars.count {
+                    if chars[index] == "'" { closed = true; index += 1; break }
+                    if chars[index] == "\\" {
+                        // ANSI-C escape decoding is intentionally unsupported.
+                        result.invalid = true
+                        word.append(chars[index])
+                        index += 1
+                        if index < chars.count { word.append(chars[index]); index += 1 }
+                    } else { word.append(chars[index]); index += 1 }
+                }
+                if !closed { result.invalid = true }
+                continue
+            }
+            if char == "`" {
+                let begin = index
+                index += 1
+                let body = index
+                while index < chars.count, chars[index] != "`" {
+                    if chars[index] == "\\", index + 1 < chars.count { index += 1 }
+                    index += 1
+                }
+                if index == chars.count { result.invalid = true }
+                result.nested.append(String(chars[body..<index]))
+                if index < chars.count { index += 1 }
+                word += String(chars[begin..<index]); started = true
+                continue
+            }
+            if next == "(", char == "$" || (!double && (char == "<" || char == ">")) {
+                let body = scan(chars, start: index + 2, until: ")")
+                result.nested.append(String(chars[(index + 2)..<body.end]))
+                result.invalid = result.invalid || body.invalid
+                let end = min(body.end + 1, chars.count)
+                word += String(chars[index..<end]); started = true
+                index = end; continue
+            }
+            if !double {
+                if char == until, char != "}" || !started { flush(); result.end = index; return result }
+                if char == "<", next == "<" {
+                    let hereString = index + 2 < chars.count && chars[index + 2] == "<"
+                    if !hereString { result.invalid = true }
+                    word += hereString ? "<<<" : "<<"; started = true
+                    index += hereString ? 3 : 2; continue
+                }
+                if char == "(" || (char == "{" && !started && (next.isWhitespace || next == "\0")) {
+                    flush()
+                    let closing: Character = char == "(" ? ")" : "}"
+                    let body = scan(chars, start: index + 1, until: closing)
+                    result.tokens.append(ShellToken(value: String(char), kind: .op(char == "(" ? .leftParen : .leftBrace)))
+                    result.tokens += body.tokens
+                    result.tokens.append(ShellToken(value: String(closing), kind: .op(char == "(" ? .rightParen : .rightBrace)))
+                    result.nested.append(String(chars[(index + 1)..<body.end]))
+                    result.invalid = result.invalid || body.invalid
+                    index = min(body.end + 1, chars.count); continue
+                }
+                if char == "\n" { flush(); result.tokens.append(ShellToken(value: "\n", kind: .op(.newline))); index += 1; continue }
+                if char.isWhitespace { flush(); index += 1; continue }
+                let pair = String([char, next])
+                if let op = ShellOperator(rawValue: pair), [.and, .or, .pipeAnd].contains(op) {
+                    flush(); result.tokens.append(ShellToken(value: pair, kind: .op(op))); index += 2; continue
+                }
+                if let op = ShellOperator(rawValue: String(char)), [.pipe, .background, .semicolon].contains(op) {
+                    flush(); result.tokens.append(ShellToken(value: String(char), kind: .op(op))); index += 1; continue
+                }
+                if ["*", "?", "["].contains(char) { glob = true }
+            }
+            word.append(char); started = true; index += 1
+        }
+        flush()
+        result.invalid = result.invalid || single || double || until != nil
+        result.end = index
+        return result
     }
 
     static func split(_ tokens: [ShellToken], by operators: Set<ShellOperator>) -> [[ShellToken]] {
         var groups: [[ShellToken]] = []
         var current: [ShellToken] = []
-
+        var depth = 0
         for token in tokens {
-            if case .op(let op) = token.kind, operators.contains(op) {
-                if !current.isEmpty {
-                    groups.append(current)
-                    current = []
+            if case .op(let op) = token.kind {
+                if depth == 0, operators.contains(op) {
+                    if !current.isEmpty { groups.append(current); current = [] }
+                    continue
                 }
-                continue
+                if op == .leftParen || op == .leftBrace { depth += 1 }
+                if op == .rightParen || op == .rightBrace { depth -= 1 }
             }
             current.append(token)
         }
-
-        if !current.isEmpty {
-            groups.append(current)
-        }
+        if !current.isEmpty { groups.append(current) }
         return groups
-    }
-
-    static func hasUnbalancedQuotes(_ command: String) -> Bool {
-        let characters = Array(command)
-        var single = false
-        var double = false
-        var ansi = false
-        var escapedOutside = false
-        var escapedInDouble = false
-
-        var index = 0
-        while index < characters.count {
-            let char = characters[index]
-
-            if ansi {
-                if char == "\\" {
-                    index += 2
-                    continue
-                }
-                if char == "'" {
-                    ansi = false
-                }
-                index += 1
-                continue
-            }
-
-            if single {
-                if char == "'" {
-                    single = false
-                }
-                index += 1
-                continue
-            }
-
-            if double {
-                if escapedInDouble {
-                    escapedInDouble = false
-                    index += 1
-                    continue
-                }
-                if char == "\\" {
-                    let next = index + 1 < characters.count ? characters[index + 1] : Character("\0")
-                    if next == "$" || next == "`" || next == "\"" || next == "\\" || next == "\n" {
-                        escapedInDouble = true
-                    }
-                    index += 1
-                    continue
-                }
-                if char == "\"" {
-                    double = false
-                }
-                index += 1
-                continue
-            }
-
-            if escapedOutside {
-                escapedOutside = false
-                index += 1
-                continue
-            }
-
-            if char == "\\" {
-                escapedOutside = true
-                index += 1
-                continue
-            }
-
-            if char == "$",
-               index + 1 < characters.count,
-               characters[index + 1] == "'" {
-                ansi = true
-                index += 2
-                continue
-            }
-
-            if char == "'" {
-                single = true
-                index += 1
-                continue
-            }
-
-            if char == "\"" {
-                double = true
-            }
-            index += 1
-        }
-
-        return single || double || ansi || escapedOutside
-    }
-
-    static func nestedCommands(in command: String) -> [String] {
-        let characters = Array(command)
-        var nested: [String] = []
-        var index = 0
-        var inSingle = false
-        var inDouble = false
-        var escaped = false
-        var inAnsi = false
-
-        while index < characters.count {
-            let char = characters[index]
-
-            if inAnsi {
-                if char == "\\" {
-                    index += 2
-                    continue
-                }
-                if char == "'" {
-                    inAnsi = false
-                }
-                index += 1
-                continue
-            }
-
-            if escaped {
-                escaped = false
-                index += 1
-                continue
-            }
-
-            if char == "\\", !inSingle {
-                escaped = true
-                index += 1
-                continue
-            }
-
-            if char == "$",
-               !inSingle,
-               index + 1 < characters.count,
-               characters[index + 1] == "'" {
-                inAnsi = true
-                index += 2
-                continue
-            }
-
-            if char == "'" && !inDouble {
-                inSingle.toggle()
-                index += 1
-                continue
-            }
-
-            if char == "\"" && !inSingle {
-                inDouble.toggle()
-                index += 1
-                continue
-            }
-
-            if inSingle {
-                index += 1
-                continue
-            }
-
-            if char == "`", let captured = captureBacktickCommand(characters: characters, start: index + 1) {
-                nested.append(captured.value)
-                index = captured.endIndex + 1
-                continue
-            }
-
-            if (char == "$" || char == "<"),
-               index + 1 < characters.count,
-               characters[index + 1] == "(",
-               let captured = captureParenthesizedCommand(characters: characters, start: index + 2) {
-                nested.append(captured.value)
-                index = captured.endIndex + 1
-                continue
-            }
-
-            index += 1
-        }
-
-        return nested
-    }
-
-    private static func parseAnsiCString(characters: [Character], start: Int) -> (value: String, endIndex: Int)? {
-        guard start <= characters.count else { return nil }
-        var index = start
-        var value = ""
-
-        while index < characters.count {
-            let char = characters[index]
-            if char == "'" {
-                return (value, index)
-            }
-            if char == "\\", index + 1 < characters.count {
-                let escaped = characters[index + 1]
-                switch escaped {
-                case "n": value.append("\n")
-                case "t": value.append("\t")
-                case "r": value.append("\r")
-                case "a": value.append("\u{07}")
-                case "b": value.append("\u{08}")
-                case "f": value.append("\u{0C}")
-                case "v": value.append("\u{0B}")
-                case "\\": value.append("\\")
-                case "'": value.append("'")
-                case "\"": value.append("\"")
-                case "0": value.append("\0")
-                case "\n":
-                    break
-                default:
-                    value.append(escaped)
-                }
-                index += 2
-                continue
-            }
-            value.append(char)
-            index += 1
-        }
-        return nil
-    }
-
-    private static func captureBacktickCommand(characters: [Character], start: Int) -> (value: String, endIndex: Int)? {
-        var index = start
-        var value = ""
-        var escaped = false
-        while index < characters.count {
-            let char = characters[index]
-            if escaped {
-                value.append(char)
-                escaped = false
-                index += 1
-                continue
-            }
-            if char == "\\" {
-                escaped = true
-                index += 1
-                continue
-            }
-            if char == "`" {
-                return (value, index)
-            }
-            value.append(char)
-            index += 1
-        }
-        return nil
-    }
-
-    private static func captureParenthesizedCommand(characters: [Character], start: Int) -> (value: String, endIndex: Int)? {
-        var index = start
-        var depth = 1
-        var value = ""
-        var inSingle = false
-        var inDouble = false
-        var escaped = false
-
-        while index < characters.count {
-            let char = characters[index]
-
-            if escaped {
-                value.append(char)
-                escaped = false
-                index += 1
-                continue
-            }
-
-            if char == "\\", !inSingle {
-                escaped = true
-                value.append(char)
-                index += 1
-                continue
-            }
-
-            if char == "'" && !inDouble {
-                inSingle.toggle()
-                value.append(char)
-                index += 1
-                continue
-            }
-
-            if char == "\"" && !inSingle {
-                inDouble.toggle()
-                value.append(char)
-                index += 1
-                continue
-            }
-
-            if !inSingle, !inDouble {
-                if char == "(" {
-                    depth += 1
-                    value.append(char)
-                    index += 1
-                    continue
-                }
-                if char == ")" {
-                    depth -= 1
-                    if depth == 0 {
-                        return (value, index)
-                    }
-                    value.append(char)
-                    index += 1
-                    continue
-                }
-            }
-
-            value.append(char)
-            index += 1
-        }
-
-        return nil
     }
 }

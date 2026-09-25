@@ -140,6 +140,10 @@ enum CLIRunner {
             return state.items.contains(where: { $0.status == .checkFailed }) ? 1 : 0
         case .installAll:
             await state.checkAll()
+            if state.items.contains(where: { $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand) }) {
+                output("Remote-script installs must be confirmed in the app.")
+                return 2
+            }
             state.selectAllInstallable()
             return await runSelectedActions(
                 state: state,
@@ -351,7 +355,7 @@ enum CLIRunner {
             return 2
         }
 
-        if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand), !confirmed {
+        if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand) {
             printDryRunPlan(entries: [
                 DryRunEntry(
                     id: item.id,
@@ -361,7 +365,7 @@ enum CLIRunner {
                     category: item.category
                 )
             ], output: output)
-            output("This install command runs a remote script. Re-run with --yes to allow it.")
+            output("This install runs a remote script and must be confirmed in the app.")
             return 2
         }
 

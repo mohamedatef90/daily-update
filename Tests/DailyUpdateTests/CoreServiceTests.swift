@@ -775,7 +775,7 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testCLIInstallAllExcludesRemoteScriptInstallers() async {
+    func testCLIInstallAllRefusesRemoteScriptInstallers() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
             items: [
@@ -789,8 +789,8 @@ final class CoreServiceTests: XCTestCase {
             state: state
         )
 
-        XCTAssertEqual(code, 0)
-        XCTAssertEqual(state.executedSelectionSnapshots, [["safe-install"]])
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.executedSelectionSnapshots, [])
     }
 
     @MainActor
@@ -815,7 +815,7 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testCLIScopedRemoteInstallAllowsYes() async {
+    func testCLIScopedRemoteInstallRefusesYes() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
             items: [
@@ -828,8 +828,8 @@ final class CoreServiceTests: XCTestCase {
             state: state
         )
 
-        XCTAssertEqual(code, 0)
-        XCTAssertEqual(state.executedSelectionSnapshots, [["remote-install"]])
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(state.executedSelectionSnapshots, [])
     }
 
     @MainActor
