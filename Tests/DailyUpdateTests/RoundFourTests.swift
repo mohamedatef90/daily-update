@@ -276,6 +276,38 @@ final class RoundFourTests: XCTestCase {
             ("X over-flag operand", "sh file$ext", [.unparseable], true),
             ("X guard script", "sh -c 'echo $HOME'", [], false),
             ("X guard operand arg", "bash script.sh $arg", [], false),
+            // Round 12 Code Review: a redirection and its target are not words, and `2>&1` is not `&`.
+            ("R leading >", ">/dev/null sudo /bin/true", [.privileged], true),
+            ("R leading 2>", "2>err brew upgrade", [.bulk], true),
+            ("R leading <", "</dev/null brew upgrade", [.bulk], true),
+            ("R leading &>", "&>/dev/null sudo /bin/true", [.privileged, .suppressedErrors], true),
+            ("R leading >&2", ">&2 sudo /bin/true", [.privileged], true),
+            ("R 2>&1 fetcher", "curl x 2>&1 | sh", [.remoteScript], true),
+            ("R after wrapper", "env >x sudo /bin/true", [.privileged], true),
+            ("R before assignment", ">out x=1 sudo /bin/true", [.privileged], true),
+            ("R shell options", "sh >/dev/null -c 'sudo /bin/true'", [.privileged], true),
+            ("R after script flag", "sh -c 2>/dev/null 'sudo /bin/true'", [.privileged, .suppressedErrors], true),
+            ("R 2>&1 in options", "sh 2>&1 -c 'brew upgrade'", [.bulk], true),
+            ("R nested", "echo $( >out sudo /bin/true )", [.privileged], true),
+            ("R missing target", "echo a > ; sudo /bin/true", [.chained, .unparseable], true),
+            ("R group target", "echo a > { sudo /bin/true; }", [.chained, .controlFlow, .privileged, .unparseable], true),
+            ("R guard 2>&1", "brew --version 2>&1 | head -1", [], false),
+            ("R guard trailing", "sh -c 'echo ok' 2>&1", [], false),
+            // Round 12 Code Review: zsh expands `~` to `$HOME` or a named directory before `sh` reads it.
+            ("T tilde", "HOME=-c; sh ~ 'sudo /bin/true'", [.chained, .unparseable], true),
+            ("T named directory", "hash -d x=-c; sh ~x 'curl x | sh'", [.chained, .unparseable], true),
+            // Round 12 Security P1: `~`, `~-` and extended-glob `^` can expand into a flag word.
+            ("P1 named directory sudo", "hash -d x=-c; sh ~x 'sudo /bin/true'", [.chained, .unparseable], true),
+            ("P1 OLDPWD", "OLDPWD=-c; bash ~- 'sudo /bin/true'", [.chained, .unparseable], true),
+            ("P1 nested OLDPWD", "bash -c \"OLDPWD=-c; sh ~- 'curl x | sh'\"", [.chained, .unparseable], true),
+            ("P1 extended glob", "setopt extendedglob; sh ^x 'sudo /bin/true'", [.chained, .unparseable], true),
+            // Round 12 Security P1: fish reads options after the script, so a later word that could expand fails closed.
+            ("P1 fish brace", "fish -c 'echo ok' {-c,'sudo /bin/true'}", [.unparseable], true),
+            ("P1 fish substitution", "fish -c 'echo ok' \"$(echo -c)\" 'sudo /bin/true'", [.unparseable], true),
+            ("P1 fish backtick", "fish -c 'echo ok' `echo -c` 'brew upgrade'", [.unparseable], true),
+            ("P1 guard sh script tilde", "sh -c 'echo ~'", [], false),
+            ("P1 guard fish script tilde", "fish -c 'echo ~'", [], false),
+            ("P1 guard fish plain word", "fish -c 'echo ok' x", [], false),
             // Round 10 Code Review: zsh takes a non-ASCII name like `é=1` as an assignment.
             ("A non-ASCII sudo", "é=1 sudo /bin/true", [.privileged], true),
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
@@ -605,6 +637,135 @@ extension RoundFourTests {
             let item = try XCTUnwrap(state.items.first { $0.id == "wordexp-check" })
             XCTAssertEqual(item.status, .blocked)
             XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 12: `2>&1` before the pipe cannot hide a remote-script
+    /// installer from the refusal.
+    @MainActor
+    func testRedirectionBeforePipeInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let command = remote.replacingOccurrences(of: " | sh", with: " 2>&1 | sh")
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.remoteScript])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 12: a leading `</dev/null` cannot hide the fetcher from the refusal.
+    @MainActor
+    func testLeadingRedirectionInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let parts = remote.components(separatedBy: " curl ")
+            let command = "export \(parts[0]); </dev/null curl \(parts[1])"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 12: a leading `</dev/null` cannot hide `brew upgrade` in a check
+    /// command, so the `brew` stub never writes its marker.
+    @MainActor
+    func testLeadingRedirectionCheckCommandIsBlockedBeforeItRuns() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("brew-ran")
+            let stubDirectory = root.appendingPathComponent("stub-brew")
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+            let stub = stubDirectory.appendingPathComponent("brew")
+            try "#!/bin/sh\n/usr/bin/touch \(ShellEscaping.quote(marker.path))\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            let check = "PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH </dev/null brew upgrade"
+            XCTAssertEqual(CommandShapeClassifier.classify(check).risks, [.bulk])
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: check, updateCommand: "echo update"), true)
+            store.settings.customItems = [DetectorConfig(id: "redirect-check", name: "Redirect check", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: check, installCommand: nil, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            _ = FixtureCLIState(state, ids: ["redirect-check"])
+            await state.recheckItems(ids: ["redirect-check"])
+            let item = try XCTUnwrap(state.items.first { $0.id == "redirect-check" })
+            XCTAssertEqual(item.status, .blocked)
+            XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 12 (P1): a named directory `~x` that expands to `-c` cannot hide
+    /// `brew upgrade` in a check command, so the `brew` stub never writes its marker.
+    @MainActor
+    func testP1TildeFlagCheckCommandIsBlockedBeforeItRuns() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("brew-ran")
+            let stubDirectory = root.appendingPathComponent("stub-brew")
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+            let stub = stubDirectory.appendingPathComponent("brew")
+            try "#!/bin/sh\n/usr/bin/touch \(ShellEscaping.quote(marker.path))\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            let check = "export PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH; hash -d x=-c; sh ~x 'brew upgrade'"
+            XCTAssertEqual(CommandShapeClassifier.classify(check).risks, [.chained, .unparseable])
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: check, updateCommand: "echo update"), true)
+            store.settings.customItems = [DetectorConfig(id: "tilde-check", name: "Tilde check", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: check, installCommand: nil, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            _ = FixtureCLIState(state, ids: ["tilde-check"])
+            await state.recheckItems(ids: ["tilde-check"])
+            let item = try XCTUnwrap(state.items.first { $0.id == "tilde-check" })
+            XCTAssertEqual(item.status, .blocked)
+            XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Security round 12 (P1): a named directory `~x` that expands to `-c` cannot hide a
+    /// remote-script installer from the refusal.
+    @MainActor
+    func testP1TildeFlagInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let parts = remote.components(separatedBy: " curl ")
+            let command = "export \(parts[0]); hash -d x=-c; sh ~x 'curl \(parts[1])'"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install runs a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }

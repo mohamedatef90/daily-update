@@ -614,8 +614,9 @@ enum CommandShapeClassifier {
     /// fish reads `-f` as `--features`, which takes a value.
     private static let fishScriptFlagLetters = Set("ceilnuvx")
 
-    /// zsh can expand a word with these into a different option: `-$x`, `$(echo -c)`, `{-c,-e}`.
-    private static let shellOptionExpansionCharacters = Set("$`{*?[")
+    /// zsh can expand a word with these into a different option: `-$x`, `$(echo -c)`, `{-c,-e}`,
+    /// `~x` after `hash -d x=-c;`, and `^x` / `x#` under `setopt extendedglob`.
+    private static let shellOptionExpansionCharacters = Set("$`{*?[~^#")
 
     /// The script `sh`/`bash`/`zsh`/`fish` would run. One walk over the words after the
     /// shell: a word that could expand, or an option that is not a `-` cluster of
@@ -638,8 +639,10 @@ enum CommandShapeClassifier {
                 guard index + 1 < stripped.count else { return .none }
                 let script = stripped[index + 1]
                 if isOption(script) { return .unparseable }
-                // fish keeps reading options after the script: `fish -c 'x' -C 'y'`.
-                if isFish, stripped.dropFirst(index + 2).contains(where: isOption) { return .unparseable }
+                // fish keeps reading options after the script: `fish -c 'x' -C 'y'`, `{-c,'y'}`.
+                if isFish, stripped.dropFirst(index + 2).contains(where: {
+                    isOption($0) || $0.contains(where: shellOptionExpansionCharacters.contains)
+                }) { return .unparseable }
                 return .script(script)
             }
             index += 1

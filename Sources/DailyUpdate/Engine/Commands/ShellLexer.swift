@@ -49,8 +49,12 @@ enum ShellLexer {
         var double = false
         // `${…}` depth inside `"…"`: zsh reads a `"` there as a nested quote.
         var doubleParameterDepth = 0
+        // The target of a redirection is not an argument: `>out sudo …` runs `sudo`.
+        var dropWord = false
         func flush() {
-            if started {
+            if started, dropWord {
+                dropWord = false
+            } else if started {
                 result.tokens.append(ShellToken(value: word, kind: .word, hasUnquotedGlob: glob || brace,
                     hasUnquotedBrace: brace, caseTerminatorEnd: caseTerminatorEnd))
             }
@@ -132,6 +136,25 @@ enum ShellLexer {
                     word += hereString ? "<<<" : "<<"; started = true
                     index += hereString ? 3 : 2; continue
                 }
+                if let length = redirectionLength(chars, at: index) {
+                    // `2>&1`, `2>err`: a word of only digits right before the operator is its fd.
+                    if started, isFileDescriptorPrefix(chars, before: index, count: word.count) {
+                        word = ""; started = false
+                    }
+                    flush()
+                    index += length
+                    if chars[index - 1] == "&", index < chars.count, chars[index] == "-" || chars[index].isNumber {
+                        while index < chars.count, chars[index] == "-" || chars[index].isNumber { index += 1 }
+                        continue
+                    }
+                    while index < chars.count, chars[index] == " " || chars[index] == "\t" { index += 1 }
+                    // `> >(sh)` stays a word, so the process substitution is still seen.
+                    if index + 1 < chars.count, "<>=".contains(chars[index]), chars[index + 1] == "(" { continue }
+                    // A missing target, or one this lexer would not read as a plain word, is not modelled.
+                    if index == chars.count || "\n;|&()<>{}#".contains(chars[index]) { result.invalid = true }
+                    dropWord = true
+                    continue
+                }
                 if char == "(" || (char == "{" && !started && (next.isWhitespace || next == "\0")) {
                     // zsh reads `(` attached to a word as a glob group (`br(e)w`,
                     // `sud(o|x)`). Only an empty `()` ending a function name is modelled.
@@ -188,6 +211,31 @@ enum ShellLexer {
         result.invalid = result.invalid || single || double || until != nil
         result.end = index
         return result
+    }
+
+    /// `<`, `<>`, `<&`, `>`, `>>`, `>|`, `>!`, `>&`, `&>` and `&>>`.
+    private static func redirectionLength(_ chars: [Character], at index: Int) -> Int? {
+        func at(_ offset: Int) -> Character { index + offset < chars.count ? chars[index + offset] : "\0" }
+        switch chars[index] {
+        case "<":
+            return at(1) == ">" || at(1) == "&" ? 2 : 1
+        case ">":
+            var length = at(1) == ">" ? 2 : 1
+            if "|!&".contains(at(length)) { length += 1 }
+            return length
+        case "&" where at(1) == ">":
+            var length = at(2) == ">" ? 3 : 2
+            if "|!".contains(at(length)) { length += 1 }
+            return length
+        default:
+            return nil
+        }
+    }
+
+    private static func isFileDescriptorPrefix(_ chars: [Character], before index: Int, count: Int) -> Bool {
+        guard count > 0, index >= count else { return false }
+        guard chars[(index - count)..<index].allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        return index == count || chars[index - count - 1].isWhitespace || ";|&(){}".contains(chars[index - count - 1])
     }
 
     private static func isParameterCharacter(_ char: Character) -> Bool {
