@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class RoundFourTests: XCTestCase {
+final class RoundFourTests: HermeticTestCase {
     func testRoundFourClassifierAndCheckPathMatrix() {
         let rows: [(String, String, Set<CommandRisk>, Bool)] = [
             ("G1 brace command", "/usr/bin/{sudo,true} brew upgrade", [.unparseable], true),
@@ -961,7 +961,7 @@ extension RoundFourTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(root)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: root)
         }
         try await operation(root, UserSettingsStore())

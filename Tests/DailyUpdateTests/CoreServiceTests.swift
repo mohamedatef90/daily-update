@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class CoreServiceTests: XCTestCase {
+final class CoreServiceTests: HermeticTestCase {
     func testExplicitUpdateWithoutLatestVersionRemainsActionable() async {
         let config = DetectorConfig(
             id: "test",
@@ -1234,7 +1234,7 @@ final class CoreServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(tempRoot)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: tempRoot)
         }
 

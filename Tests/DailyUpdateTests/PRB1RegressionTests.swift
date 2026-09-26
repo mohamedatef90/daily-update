@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import DailyUpdate
 
-final class PRB1ProvenanceAndSecurityTests: XCTestCase {
+final class PRB1ProvenanceAndSecurityTests: HermeticTestCase {
     func testC0CustomBundledSpoofIsForcedToUserAndTypedFieldsDropped() async throws {
         try await withTemporaryAppSupportDirectory { _ in
             var settings = UserSettings.defaults
@@ -142,7 +142,7 @@ final class PRB1ProvenanceAndSecurityTests: XCTestCase {
     }
 }
 
-final class PRB1OwnerMatrixTests: XCTestCase {
+final class PRB1OwnerMatrixTests: HermeticTestCase {
     func testOwnerRowO2RelativeSymlinkResolvesAndBuildsPinnedSpec() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -646,7 +646,7 @@ final class PRB1OwnerMatrixTests: XCTestCase {
     }
 }
 
-final class PRB1FlowAndExecutionTests: XCTestCase {
+final class PRB1FlowAndExecutionTests: HermeticTestCase {
     func testFlowRowF1TypedEngineCheckReturnsUpdateAvailableWithPinnedSpec() async throws {
         let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: "\"1.1.0\"")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1520,7 +1520,7 @@ private func withTemporaryAppSupportDirectory(
     try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
     ConfigLoader.setAppSupportDirectoryForTesting(tempRoot)
     defer {
-        ConfigLoader.setAppSupportDirectoryForTesting(nil)
+        ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
         try? FileManager.default.removeItem(at: tempRoot)
     }
     try await operation(tempRoot)
@@ -1534,7 +1534,7 @@ private func fixture(named filename: String) throws -> String {
     return try String(contentsOf: path, encoding: .utf8)
 }
 
-final class PartThreeRegressionTests: XCTestCase {
+final class PartThreeRegressionTests: HermeticTestCase {
     func testP1SymlinkedNpmIsTrustedAndFingerprintTracksTarget() async throws {
         let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: "\"1.1.0\"")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -1883,7 +1883,7 @@ private actor LookupProbe {
 }
 
 /// PR-B2a item 1: Code Review's suggestions 1 and 2 and round 7's planner-input fetcher.
-final class PRB2aFollowUpTests: XCTestCase {
+final class PRB2aFollowUpTests: HermeticTestCase {
     /// Suggestion 1: the post-update owner check uses a fresh lookup, so a new binary that the
     /// update put earlier on `PATH` is seen instead of the check-time snapshot.
     func testVerificationUsesAFreshLookupAfterTheUpdate() async throws {

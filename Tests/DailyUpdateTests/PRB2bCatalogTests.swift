@@ -4,7 +4,7 @@ import XCTest
 /// PR-B2b: the catalog and strategy items deferred from Phase 1 (TIF-10 items 12 and 13).
 /// Only stubs run: a stub `brew`, a stub `opencode` and a stub `cursor-agent`, and the
 /// release lookups are a planner input, so nothing is fetched and nothing is upgraded.
-final class PRB2bCatalogTests: XCTestCase {
+final class PRB2bCatalogTests: HermeticTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {

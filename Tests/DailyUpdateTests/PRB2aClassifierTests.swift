@@ -3,7 +3,7 @@ import XCTest
 
 /// PR-B2a: the classifier and lexer items deferred from Phase 1 (TIF-10 items 2, 3 and 5–11).
 /// Each row is `(label, command, exact risks, isUnsafeCheckPathCommand)`.
-final class PRB2aClassifierTests: XCTestCase {
+final class PRB2aClassifierTests: HermeticTestCase {
     private func assertRows(_ rows: [(String, String, Set<CommandRisk>, Bool)], file: StaticString = #filePath, line: UInt = #line) {
         for (label, command, risks, unsafe) in rows {
             XCTAssertEqual(CommandShapeClassifier.classify(command).risks, risks, "\(label): \(command)", file: file, line: line)
