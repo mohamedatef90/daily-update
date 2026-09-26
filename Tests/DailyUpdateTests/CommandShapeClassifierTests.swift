@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class CommandShapeClassifierTests: XCTestCase {
+final class CommandShapeClassifierTests: HermeticTestCase {
     func testClassifierMatrixRowC1SingleCommands() {
         let commands = [
             "npm install -g foo@1.2.3",

@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import DailyUpdate
 
-final class ReviewExecutionTests: XCTestCase {
+final class ReviewExecutionTests: HermeticTestCase {
     @MainActor
     func testUnreviewedCustomItemRunsNoCommandsAcrossCheckPaths() async throws {
         try await assertUnreviewedCommandsDoNotRun(imported: false)
@@ -19,7 +19,7 @@ final class ReviewExecutionTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(root)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: root)
         }
 
@@ -206,7 +206,7 @@ extension ReviewExecutionTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(root)
-        defer { ConfigLoader.setAppSupportDirectoryForTesting(nil); try? FileManager.default.removeItem(at: root) }
+        defer { ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root); try? FileManager.default.removeItem(at: root) }
         let store = UserSettingsStore()
         store.settings.disabledItemIDs = ConfigLoader.loadConfigs(settings: .defaults).map(\.id)
         store.settings.rescanReposOnLaunch = false

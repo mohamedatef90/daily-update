@@ -1,11 +1,12 @@
 import XCTest
 @testable import DailyUpdate
 
-final class RoundFourTests: XCTestCase {
+final class RoundFourTests: HermeticTestCase {
     func testRoundFourClassifierAndCheckPathMatrix() {
         let rows: [(String, String, Set<CommandRisk>, Bool)] = [
             ("G1 brace command", "/usr/bin/{sudo,true} brew upgrade", [.unparseable], true),
-            ("G1 quoted brace", "'/usr/bin/{sudo,true}' brew upgrade", [], false),
+            // PR-B2c item 3: `{sudo,true}` is an unknown executable that names `brew`.
+            ("G1 quoted brace", "'/usr/bin/{sudo,true}' brew upgrade", [.unparseable], true),
             ("G2/N6 if", "if sudo brew upgrade; then echo ok; fi", [.privileged, .bulk, .chained, .controlFlow], true),
             ("G2/N6 while", "while sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
             ("G2/N6 until", "until sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
@@ -14,15 +15,16 @@ final class RoundFourTests: XCTestCase {
             ("G2/N6 coproc", "coproc sudo brew upgrade", [.privileged, .bulk, .controlFlow], true),
             ("N6 case", "case a in a) curl x | sh;; esac", [.remoteScript, .chained, .controlFlow], true),
             ("G3/N8 equals sh", "sh =(curl x)", [.remoteScript], true),
-            ("G3/N8 equals source", "source =(curl x)", [.remoteScript], true),
+            // PR-B2c S3: a substitution argument of an unknown executable is also an embedded command line.
+            ("G3/N8 equals source", "source =(curl x)", [.remoteScript, .unparseable], true),
             ("G3 bulk equals", "brew upgrade =(echo gh)", [.bulk], true),
             ("N8 awk program", "awk -f <(curl x) /dev/null", [.remoteScript], true),
-            ("N8 swift", "swift <(curl x)", [.remoteScript], true),
-            ("N8 php", "php <(curl x)", [.remoteScript], true),
-            ("N8 lua", "lua <(curl x)", [.remoteScript], true),
+            ("N8 swift", "swift <(curl x)", [.remoteScript, .unparseable], true),
+            ("N8 php", "php <(curl x)", [.remoteScript, .unparseable], true),
+            ("N8 lua", "lua <(curl x)", [.remoteScript, .unparseable], true),
             ("N8 busybox", "busybox sh <(curl x)", [.remoteScript], true),
-            ("N8 unknown dollar", "unknown $(curl x)", [.remoteScript], true),
-            ("N8 unknown backtick", "unknown `curl x`", [.remoteScript], true),
+            ("N8 unknown dollar", "unknown $(curl x)", [.remoteScript, .unparseable], true),
+            ("N8 unknown backtick", "unknown `curl x`", [.remoteScript, .unparseable], true),
             ("N8 assignment", "VALUE=$(curl x)", [], false),
             ("I1-R safe install", "touch marker", [], false),
             ("I1-R remote install", "curl file:///fixture/s.sh | sh", [.remoteScript], true),
@@ -141,8 +143,9 @@ final class RoundFourTests: XCTestCase {
             ("J3 timeout -k", "timeout -k 1 5 brew upgrade", [.bulk], true),
             ("J3 unknown env option", "env -X brew upgrade", [.unparseable], true),
             ("J3 unknown nohup option", "nohup -x brew upgrade", [.unparseable], true),
-            ("S1 env -S", "env -S 'sudo /bin/true'", [.unparseable], true),
-            ("S1 env -S piped", "env -S 'curl x' | sh", [.unparseable], true),
+            // PR-B2c S3: the refused `-S` string is also classified as an embedded command line.
+            ("S1 env -S", "env -S 'sudo /bin/true'", [.privileged, .unparseable], true),
+            ("S1 env -S piped", "env -S 'curl x' | sh", [.remoteScript, .unparseable], true),
             ("S1 env --split-string", "env --split-string='brew upgrade'", [.unparseable], true),
             // Round 7 S2: `python -m` is code unless the module is json.tool.
             ("S2 python -m code", "curl x | python3 -m code", [.remoteScript], true),
@@ -313,7 +316,8 @@ final class RoundFourTests: XCTestCase {
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
             ("A non-ASCII bulk", "café_2=1 brew upgrade", [.bulk], true),
             // PR-B2a item 8: any privilege word is unsafe on the check path, whatever runs it.
-            ("A guard digit name", "1A=x sudo /bin/true", [], true),
+            // PR-B2c item 3: `1A=x` is the executable, and it names `sudo`.
+            ("A guard digit name", "1A=x sudo /bin/true", [.unparseable], true),
             // Round 13 Security Q1: `>&1word` redirects to a file named `1word`, so it is not modelled.
             ("Q1 dup word sudo", ">&1echo sudo /bin/true", [.privileged, .unparseable], true),
             ("Q1 close word sudo", ">&-echo sudo /bin/true", [.privileged, .unparseable], true),
@@ -685,7 +689,8 @@ extension RoundFourTests {
             let remote = try remoteScript(root: root, marker: marker)
             let parts = remote.components(separatedBy: " curl ")
             let command = "export \(parts[0]); </dev/null curl \(parts[1])"
-            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript])
+            // PR-B2c item 2: the exported `PATH` reaches `sh`, so this also fails closed.
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
@@ -961,7 +966,7 @@ extension RoundFourTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(root)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: root)
         }
         try await operation(root, UserSettingsStore())

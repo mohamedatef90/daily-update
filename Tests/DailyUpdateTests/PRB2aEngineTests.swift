@@ -2,7 +2,7 @@ import XCTest
 @testable import DailyUpdate
 
 /// PR-B2a: the engine items deferred from Phase 1 (TIF-10 items 1 and 4).
-final class PRB2aEngineTests: XCTestCase {
+final class PRB2aEngineTests: HermeticTestCase {
     private func makeRoot() throws -> URL {
         let root = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent(".dailyupdate-tests", isDirectory: true)

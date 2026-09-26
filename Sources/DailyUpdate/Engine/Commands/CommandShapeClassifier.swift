@@ -30,7 +30,25 @@ enum CommandShapeClassifier {
         "python", "python3", "python2", "perl", "ruby", "node"
     ]
     private static let shellExecutables: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"]
-    private static let privilegeCommands: Set<String> = ["sudo", "doas", "pkexec", "su"]
+    private static let privilegeCommands: Set<String> = ["sudo", "doas", "pkexec", "su", "osascript"]
+    /// Executables whose arguments are data, or that this model reads itself. Any other
+    /// executable may be a wrapper, so a command word among its arguments fails closed.
+    private static let knownExecutables: Set<String> = Set([
+        "echo", "printf", "grep", "egrep", "fgrep", "sed", "awk", "head", "tail", "jq", "cut", "tr", "sort", "uniq",
+        "wc", "shasum", "test", "[", "[[", "cat", "tee", "ls", "stat", "readlink", "realpath", "dirname", "basename",
+        "which", "type", "whereis", "hash", "true", "false", "exit", "break", "continue", "return", "cd", "pwd",
+        "export", "declare", "typeset", "readonly", "local", "integer", "setenv", "unset", "set", "setopt", "unsetopt",
+        "emulate", "eval", "trap", "find", "git", "defaults", "plutil", "plistbuddy", "mdls", "mdfind", "sw_vers",
+        "uname", "date", "sleep", "mkdir", "touch", "open", "for", "foreach", "select", "case", "in", "function",
+        // `opencode upgrade <v> --method curl` names its install method, not a program to run.
+        "opencode",
+    ]).union(packageManagerExecutables).union(shellExecutables).union(interpreters).union(fetchers)
+    private static let packageManagerExecutables: Set<String> = [
+        "brew", "npm", "pnpm", "yarn", "gem", "pip", "pip3", "pipx", "uv", "cargo", "rustup", "mas", "mise",
+        "softwareupdate", "bun", "asdf", "nvm", "fnm", "corepack", "flutter", "dart", "go", "composer",
+    ]
+    /// Package-manager verbs that run another program: `npm exec curl …`, `mise exec -- sh`.
+    private static let packageManagerExecVerbs: Set<String> = ["exec", "x", "dlx", "run", "sh", "shell"]
     private static let controlFlowKeywords: Set<String> = [
         "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until", "coproc", "repeat",
         "foreach", "select", "end", "esac"
@@ -138,7 +156,11 @@ enum CommandShapeClassifier {
         let inline = simpleCommands.flatMap { inlineShellCommands(in: $0) }
         // An empty body (`f()`, `$()`) runs nothing; only the top level must be non-empty.
         let nestedBodies = ShellLexer.nestedCommands(in: trimmed).filter { !$0.allSatisfy(\.isWhitespace) }
-        for nested in nestedBodies + inline + echoedShellPayloads(tokens) {
+        let stdin = shellStdinPayloads(tokens)
+        if stdin.failsClosed || assignmentReachesShell(simpleCommands) {
+            risks.insert(.unparseable)
+        }
+        for nested in nestedBodies + inline + stdin.payloads {
             risks.formUnion(classify(nested, depth: depth + 1, visited: nextVisited))
         }
 
@@ -174,7 +196,8 @@ enum CommandShapeClassifier {
                 let executableIndex = words.count - stripWrappersRaw(words).count
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
-                    || shellScriptFollowsOption(words) || changesShellEvaluation(words) {
+                    || shellScriptFollowsOption(words) || changesShellEvaluation(words)
+                    || !commandWordsBehindUnknownExecutable(words).isEmpty || !embeddedCommandLines(words).isEmpty {
                     failsClosed = true
                 }
                 if executableIndex < words.count, words[executableIndex] != "[",
@@ -261,7 +284,91 @@ enum CommandShapeClassifier {
 
     private static func containsPrivilegeEscalation(words: [String]) -> Bool {
         guard let executable = stripWrappersRaw(words, preservePrivilege: true).first.map(normalizedExecutableName) else { return false }
-        return privilegeCommands.contains(executable) || executable == "osascript"
+        return privilegeCommands.contains(executable)
+    }
+
+    /// Argument words that name something this model would read if it were the executable.
+    private static let commandWords: Set<String> = shellExecutables.union(interpreters).union(fetchers)
+        .union(privilegeCommands)
+        .union(["env", "nice", "timeout", "nohup", "caffeinate", "xargs", "taskpolicy", "exec", "arch",
+            // Not `find`: it is also a verb (`npx skills find`), and `find -exec sh …` still names `sh`.
+            "eval", "trap", "source", "xcrun", "sandbox-exec",
+            "brew", "npm", "npx", "pnpm", "yarn", "gem", "pip", "pip3", "pipx", "uv", "cargo", "rustup", "mas",
+            "mise", "softwareupdate", "rm", "dd", "diskutil", "chmod", "chown", "shred", "srm"])
+
+    /// The arguments an executable this model does not know may run (`mywrap curl x`,
+    /// `xcrun sh -c …`), or those around a package manager's exec verb (`npm exec curl`,
+    /// `npm --prefix /tmp exec sudo id`, `brew sh -c …`). npm reads config options anywhere on
+    /// the line, so `npm --call='sudo id' exec` is `npm exec --call='sudo id'`. `nil` when
+    /// neither applies.
+    private static func wrappedArguments(_ stripped: [String]) -> [String]? {
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return nil }
+        let args = Array(stripped.dropFirst())
+        guard knownExecutables.contains(executable) else { return args }
+        // The first exec verb anywhere: an option that takes a value (`--prefix /tmp`) hides a
+        // "first non-option" verb.
+        guard packageManagerExecutables.contains(executable),
+              let verb = args.firstIndex(where: packageManagerExecVerbs.contains) else { return nil }
+        var rest = args
+        rest.remove(at: verb)
+        return rest
+    }
+
+    /// The command words among `wrappedArguments`, including an option's value (`--cmd=sh`).
+    /// Any of them could run.
+    private static func commandWordsBehindUnknownExecutable(_ words: [String]) -> [String] {
+        guard let args = wrappedArguments(stripWrappersRaw(words)) else { return [] }
+        return args.flatMap { $0.hasPrefix("-") ? optionValues($0) : [$0] }
+            .map(normalizedExecutableName).filter(commandWords.contains)
+    }
+
+    /// The values an option word may carry: after `=` (`--cmd=sh`), or attached to a short
+    /// option (`-csh`; `-c'sudo id'` lexes as `-csudo id`), which getopt reads as `-c sh`.
+    /// Short options group (`-yc'sudo id'` is `-y -c 'sudo id'`) and which letter takes a
+    /// value is unknown, so every suffix after the second character is a candidate, longest
+    /// first (`-xcbash` → `cbash`, `bash`, `ash`, `sh`, `h`). Empty for a bare option
+    /// (`--shell`, `-c`).
+    private static func optionValues(_ option: String) -> [String] {
+        if let equals = option.firstIndex(of: "=") {
+            let value = String(option[option.index(after: equals)...])
+            return value.isEmpty ? [] : [value]
+        }
+        guard !option.hasPrefix("--"), option.count > 2 else { return [] }
+        return (2..<option.count).map { String(option.dropFirst($0)) }
+    }
+
+    /// Shell operators that make one argument a command line rather than a word.
+    private static let commandLineOperators = Set("\n|&;<>()`")
+
+    /// Arguments of `wrappedArguments` (or of a package manager whose verb `xargs` input
+    /// picks) that are whole command lines (`npx -c 'curl x | sh'`,
+    /// `npm exec --call='sudo id'`, `tmux new -d 'curl x | sh'`): a shell operator, or a
+    /// command word among its words. An expansion (`npx -c "$X"`, after `X='curl x | sh'`) could
+    /// be either, so it counts as one. An app path with a space (`"/Applications/A B.app"`) is
+    /// not one. They fail closed, and are also classified as nested commands, so a fetcher in
+    /// one is still a remote script.
+    private static func embeddedCommandLines(_ words: [String]) -> [String] {
+        let stripped = stripWrappersRaw(words)
+        guard let args = wrappedArguments(stripped) ?? (xargsInputPicksVerb(words) ? Array(stripped.dropFirst()) : nil)
+        else { return [] }
+        // The longest candidate of an option that is a command line, preferring one that starts
+        // with a command word: `-yc'sudo id'` gives `sudo id`, not also `udo id`, and
+        // `-yc'curl x|sh'` gives `curl x|sh`, not `ccurl x|sh`.
+        return args.compactMap { arg in
+            guard arg.hasPrefix("-") else { return isCommandLine(arg) ? arg : nil }
+            let values = optionValues(arg)
+            let lines = (values.isEmpty ? [arg] : values).filter(isCommandLine)
+            return lines.first(where: startsWithCommandWord) ?? lines.first
+        }
+    }
+
+    private static func startsWithCommandWord(_ value: String) -> Bool {
+        ShellLexer.words(from: ShellLexer.lex(value)).first.map(normalizedExecutableName).map(commandWords.contains) ?? false
+    }
+
+    private static func isCommandLine(_ value: String) -> Bool {
+        value.contains(where: commandLineOperators.contains) || value.contains("$") || (value.contains(where: \.isWhitespace)
+            && ShellLexer.words(from: ShellLexer.lex(value)).map(normalizedExecutableName).contains(where: commandWords.contains))
     }
 
     private static func containsDestructiveOperation(words: [String]) -> Bool {
@@ -358,6 +465,8 @@ enum CommandShapeClassifier {
             let words = commandWords(command)
             if let executable = stripWrappers(words: words).first,
                fetchers.contains(executable) { return true }
+            // `mywrap curl x | sh`: an unknown executable may run the fetcher it names.
+            if commandWordsBehindUnknownExecutable(words).contains(where: fetchers.contains) { return true }
             // `find -exec curl …`, `eval curl …` and `sh -c 'curl …'` fetch too.
             if inlineShellCommands(in: words).contains(where: nestedCommandStartsWithFetcher) { return true }
             for word in words {
@@ -594,7 +703,7 @@ enum CommandShapeClassifier {
         if executable == "trap" { return stripped.dropFirst().first { $0 != "--" }.map { [$0] } ?? [] }
         if executable == "find" { return findExecCommands(Array(stripped.dropFirst())) }
         guard shellExecutables.contains(executable) else {
-            return []
+            return embeddedCommandLines(words)
         }
 
         if case .script(let script) = shellScript(stripped) { return [script] }
@@ -639,12 +748,23 @@ enum CommandShapeClassifier {
         let isFish = executable == "fish"
         let letters = isFish ? fishScriptFlagLetters : shellScriptFlagLetters
         let isOption = { (word: String) in word.hasPrefix("-") || word.hasPrefix("+") }
+        // A here-string is the shell's stdin, and so its script unless `-c` gives one.
+        // The lexer keeps `<<<` on the word after it and on an fd before it (`<<<'x'`, `0<<<x`).
+        if stripped.dropFirst().contains(where: { $0.contains("<<<") }) { return .unparseable }
         var readsStdin = false
         var index = 1
         while index < stripped.count {
             let word = stripped[index]
             if word.contains(where: shellOptionExpansionCharacters.contains) { return .unparseable }
-            guard isOption(word) else { return readsStdin ? .none : .file }
+            guard isOption(word) else {
+                if readsStdin { return .none }
+                // `sh /dev/stdin` and `sh /dev/fd/0` read the script from stdin.
+                if let device = deviceScriptOperand(word) { return device }
+                // `sh <(…)`, `sh < <(…)`: the script file is another command's output.
+                // A fetched script is already `remoteScript`.
+                guard word.hasPrefix("<(") || word.hasPrefix("=(") else { return .file }
+                return ShellLexer.nestedCommands(in: word).contains(where: nestedCommandStartsWithFetcher) ? .file : .unparseable
+            }
             if word == "--", readsStdin { return .none }
             guard word.count > 1, word.hasPrefix("-"), word.dropFirst().allSatisfy(letters.contains) else {
                 return .unparseable
@@ -667,6 +787,18 @@ enum CommandShapeClassifier {
         return .none
     }
 
+    /// A script operand under `/dev`: stdin (`/dev/stdin`, `/dev/fd/0`) is `.none`; any other
+    /// device or descriptor (`/dev/fd/3`, `/dev/tty`) is not modelled. `nil` for anything else.
+    private static func deviceScriptOperand(_ word: String) -> ShellScript? {
+        var parts: [Substring] = []
+        for part in word.split(separator: "/") where part != "." {
+            if part == ".." { _ = parts.popLast() } else { parts.append(part) }
+        }
+        guard parts.first == "dev" || parts.contains("fd") || parts.last == "stdin" else { return nil }
+        let isStdin = word.hasPrefix("/") && (parts == ["dev", "stdin"] || parts == ["dev", "fd", "0"])
+        return isStdin ? ShellScript.none : .unparseable
+    }
+
     /// A shell whose script is stdin, so whatever is piped into it runs.
     private static func shellReadsStdin(_ words: [String]) -> Bool {
         let stripped = stripWrappersRaw(words)
@@ -676,67 +808,222 @@ enum CommandShapeClassifier {
         return false
     }
 
-    /// The text `echo` or `printf` prints into a shell that reads stdin, through `|` or
-    /// `> >(…)`: it is code, like `sh -c`. `echo ok | sh` stays `[]`.
-    private static func echoedShellPayloads(_ tokens: [ShellToken]) -> [String] {
+    /// Commands that run their stdin as code: a shell with no script, `.`/`source` of a
+    /// device (`. /dev/stdin`), and a package manager's exec verb with no command after it
+    /// (`brew sh`, `npm exec`), which starts a shell.
+    private static func runsStdinAsCode(_ words: [String]) -> Bool {
+        if shellReadsStdin(words) { return true }
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return false }
+        if executable == "." || executable == "source" {
+            return stripped.dropFirst().first { !$0.hasPrefix("-") }.map { deviceScriptOperand($0) != nil } ?? false
+        }
+        guard knownExecutables.contains(executable), let args = wrappedArguments(stripped) else { return false }
+        return args.allSatisfy { $0.hasPrefix("-") }
+    }
+
+    /// Program words that turn text from `xargs` into code.
+    private static let xargsCodeRunners: Set<String> = shellExecutables.union(interpreters)
+        .union([".", "source", "eval", "trap", "find", "awk", "gawk", "sed", "osascript"])
+
+    /// `xargs` whose input becomes code or a program: no command after it (`xargs env`), a
+    /// shell or interpreter, an unknown executable, a package manager's exec verb, a package
+    /// manager whose verb the input picks (`xargs npm`, `xargs brew {} -c …`), or the
+    /// `-I`/`-J` replacement string in the program word (`xargs -I{} {}`). Fails closed.
+    private static func xargsRunsInputAsCode(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        let consumed = words.prefix(words.count - stripped.count)
+        guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }) else { return false }
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return true }
+        if xargsCodeRunners.contains(executable) || wrappedArguments(stripped) != nil { return true }
+        if xargsInputPicksVerb(words) { return true }
+        guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
+        return stripped[0].contains(replacement)
+    }
+
+    /// A package manager behind `xargs` whose verb is not literal, so the input picks it
+    /// (`xargs npm` + `exec sudo id`, `xargs -I{} brew {} -c …`). The verb must be the first
+    /// argument, or follow `--opt=value` options only: `--prefix /tmp` could leave the verb
+    /// position to the input.
+    private static func xargsInputPicksVerb(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        let consumed = words.prefix(words.count - stripped.count)
+        guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }),
+              let executable = stripped.first.map(normalizedExecutableName),
+              packageManagerExecutables.contains(executable) else { return false }
+        guard let verb = stripped.dropFirst().first(where: { !($0.hasPrefix("-") && $0.contains("=")) }),
+              !verb.hasPrefix("-") else { return true }
+        guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
+        return verb.contains(replacement)
+    }
+
+    /// The `-I`/`-J` replacement string among `xargs` options, attached (`-I{}`) or not.
+    private static func xargsReplacement(_ options: [String]) -> String? {
+        var replacement: String?
+        var index = 0
+        while index < options.count, replacement == nil {
+            let arg = options[index]
+            if arg.hasPrefix("-"), !arg.hasPrefix("--"), let letter = arg.dropFirst().firstIndex(where: { "IJ".contains($0) }) {
+                let attached = String(arg[arg.index(after: letter)...])
+                replacement = attached.isEmpty && index + 1 < options.count ? options[index + 1] : attached
+            }
+            index += 1
+        }
+        return replacement?.isEmpty == false ? replacement : nil
+    }
+
+    /// How a pipeline stage uses what is piped into it, counting commands nested in it that
+    /// inherit its stdin (`bash -c '. /dev/stdin'`, `sh -c sh`, `echo $(sh)`).
+    private enum StdinUse { case data, code, xargs }
+
+    private static func stdinUse(_ words: [String]) -> StdinUse {
+        let nested = inlineShellCommands(in: words) + words.flatMap { ShellLexer.nestedCommands(in: $0) }
+        let commands = [words] + nested.flatMap(allSimpleCommands)
+        if commands.contains(where: xargsRunsInputAsCode) { return .xargs }
+        return commands.contains(where: runsStdinAsCode) ? .code : .data
+    }
+
+    /// What is piped into a shell that reads stdin, through `|` or `> >(…)`, is code, like
+    /// `sh -c`. Only a literal `echo`/`printf` is modelled, and its text is classified as that
+    /// code; any other producer fails closed. `echo ok | sh` stays `[]`.
+    private static func shellStdinPayloads(_ tokens: [ShellToken]) -> (payloads: [String], failsClosed: Bool) {
         var payloads: [String] = []
+        var failsClosed = false
         for segment in ShellLexer.split(tokens, by: [.and, .or, .semicolon, .newline, .background]) {
             let stages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
             for (offset, stage) in stages.enumerated() {
                 let words = commandWords(stage)
-                // Fetched text piped into a shell is already `remoteScript`.
-                guard let printed = printedText(words), !stageContainsFetcher(stage) else { continue }
-                let intoPipe = offset + 1 < stages.count && shellReadsStdin(commandWords(stages[offset + 1]))
-                let intoSubstitution = words.contains { word in
-                    word.hasPrefix(">(") && ShellLexer.nestedCommands(in: word).contains {
-                        allSimpleCommands($0).contains(where: shellReadsStdin)
-                    }
+                let next = offset + 1 < stages.count ? commandWords(stages[offset + 1]) : nil
+                var uses: [StdinUse] = next.map { [stdinUse($0)] } ?? []
+                for word in words where word.hasPrefix(">(") {
+                    uses += ShellLexer.nestedCommands(in: word).flatMap(allSimpleCommands).map(stdinUse)
                 }
-                if intoPipe || intoSubstitution { payloads += printed }
+                guard uses.contains(where: { $0 != .data }) else { continue }
+                // `xargs` rebuilds its input into a command line this model does not follow.
+                if uses.contains(.xargs) { failsClosed = true }
+                // Fetched text piped into a shell is already `remoteScript`.
+                guard !stageContainsFetcher(stage) else { continue }
+                guard let printed = literalPrintedText(stage) else { failsClosed = true; continue }
+                payloads += printed
+                if let next, stdinUse(next) == .xargs,
+                   let line = xargsCommandLine(next, input: printed.joined(separator: " ")) {
+                    payloads.append(line)
+                }
             }
         }
-        return payloads.filter { !$0.allSatisfy(\.isWhitespace) }
+        return (payloads.filter { !$0.allSatisfy(\.isWhitespace) }, failsClosed)
+    }
+
+    /// The command line `xargs` builds from literal input: its program with the input
+    /// appended (`echo 'exec -c "curl x|sh"' | xargs npm`), or put in place of the `-I`/`-J`
+    /// replacement string. Classified as well as the input itself, so a fetcher or a
+    /// privilege word that only makes sense with the program is still named.
+    private static func xargsCommandLine(_ words: [String], input: String) -> String? {
+        let stripped = stripWrappersRaw(words)
+        let consumed = words.prefix(words.count - stripped.count)
+        guard !stripped.isEmpty,
+              let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }) else { return nil }
+        if let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))),
+           stripped.contains(where: { $0.contains(replacement) }) {
+            return stripped.map { $0.replacingOccurrences(of: replacement, with: input) }.joined(separator: " ")
+        }
+        return (stripped + [input]).joined(separator: " ")
     }
 
     /// What `echo` (after `-n`/`-e`/`-E`) or `printf` (its format, then its arguments) prints,
-    /// with `\n` and `\t` read as the escapes both expand.
-    private static func printedText(_ words: [String]) -> [String]? {
+    /// when that is exactly its words: one simple command whose arguments are literal (no
+    /// backslash, expansion, substitution or glob) and a `printf` format with no `%`.
+    /// Anything else is `nil`: zsh's `echo` alone expands `\x20`, `\0NNN` and `\uNNNN`.
+    private static func literalPrintedText(_ stage: [ShellToken]) -> [String]? {
+        guard stage.allSatisfy(\.isWord) else { return nil }
+        let words = stage.map(\.value)
         let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first.map(normalizedExecutableName), ["echo", "printf"].contains(executable) else {
             return nil
         }
-        var args = stripped.dropFirst().filter { !$0.hasPrefix(">(") && !$0.hasPrefix("<(") }
-        let unescape = { (text: String) in
-            text.replacingOccurrences(of: "\\n", with: "\n").replacingOccurrences(of: "\\t", with: "\t")
-        }
+        let argumentTokens = stage.suffix(stripped.count - 1).filter { !$0.value.hasPrefix(">(") }
+        guard argumentTokens.allSatisfy({ token in
+            !token.hasUnquotedGlob && !token.value.contains(where: { "\\$`".contains($0) })
+                && !token.value.hasPrefix("<(") && !token.value.hasPrefix("=(")
+        }) else { return nil }
+        var args = argumentTokens.map(\.value)
         if executable == "echo" {
             while let first = args.first, matches(#"^-[neE]+$"#, in: first) { args.removeFirst() }
-            return [unescape(args.joined(separator: " "))]
+            return [args.joined(separator: " ")]
         }
         if args.first == "--" { args.removeFirst() }
         guard let format = args.first else { return [] }
-        return [unescape(format), unescape(args.dropFirst().joined(separator: " "))]
+        guard !format.contains("%") else { return nil }
+        return [format, args.dropFirst().joined(separator: " ")]
     }
 
-    /// bash and `sh -i` expand `BASH_ENV` / `ENV` (substitutions included) before they run
-    /// anything, and zsh's `globsubst` (also set by `emulate sh`/`ksh`) turns a string into a
-    /// pattern whose glob qualifiers run code. None of these is modelled.
-    private static func changesShellEvaluation(_ words: [String]) -> Bool {
-        let startupVariables: Set<String> = ["BASH_ENV", "ENV"]
-        func assignedName(_ word: String) -> String {
-            var name = String(word.prefix { $0 != "=" })
-            if name.hasSuffix("+") { name.removeLast() }
-            return name
+    /// Variables a shell reads as code, or as where to find code, at startup or trace time:
+    /// bash `BASH_ENV`, `sh -i` `ENV`, zsh `ZDOTDIR`, bash `SHELLOPTS` (`xtrace`) with `PS4`,
+    /// and interactive bash `PROMPT_COMMAND`. Any program may start such a shell.
+    private static let startupVariables: Set<String> = ["BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "PS4", "PROMPT_COMMAND"]
+
+    /// Variables a shell may be started with. Any other assignment or export, earlier in the
+    /// command or the chain, fails closed once a shell runs: startup reads more than this model does.
+    private static let shellSafeVariables: Set<String> = [
+        "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR", "CI", "NONINTERACTIVE",
+        "HOMEBREW_NO_AUTO_UPDATE", "HOMEBREW_NO_ENV_HINTS", "HOMEBREW_NO_INSTALL_CLEANUP",
+    ]
+
+    private static func assignedName(_ word: String) -> String {
+        var name = String(word.prefix { $0 != "=" })
+        if name.hasSuffix("+") { name.removeLast() }
+        return name
+    }
+
+    /// Names a shell in `commands` may see: assignments before a shell (`A=1 env B=2 sh`), and
+    /// bare assignments or `export`-like builtins anywhere in the chain. An assignment before
+    /// another program (`A=1 curl x | sh`) is that program's alone.
+    private static func assignmentReachesShell(_ commands: [[String]]) -> Bool {
+        let exporters: Set<String> = ["export", "declare", "typeset", "readonly", "local", "integer", "setenv"]
+        var names: [String] = []
+        var runsShell = false
+        for words in commands {
+            let stripped = stripWrappersRaw(words)
+            let prefix = words.prefix(words.count - stripped.count).filter(isAssignment).map(assignedName)
+            guard let executable = stripped.first.map(normalizedExecutableName) else { names += prefix; continue }
+            if shellExecutables.contains(executable) { runsShell = true; names += prefix }
+            if exporters.contains(executable) {
+                names += stripped.dropFirst().filter { !$0.hasPrefix("-") }.map(assignedName)
+            }
         }
-        if words.contains(where: { isAssignment($0) && startupVariables.contains(assignedName($0)) }) { return true }
+        return runsShell && names.contains { !shellSafeVariables.contains($0) }
+    }
+
+    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case),
+    /// which npm, pnpm and yarn v1 read as config. `npm_config_call` is `-c`, so a bare `npx`
+    /// or `npm exec` runs its value through `sh`.
+    private static func isCodeVariable(_ name: String) -> Bool {
+        startupVariables.contains(name) || name.lowercased().hasPrefix("npm_config_")
+    }
+
+    /// The code variables above, anywhere; an exported name that is not written out
+    /// (`export $N=…`, `export {npm,x}_config_call=…`), which may be any of them; zsh's
+    /// `globsubst` (also set by `emulate sh`/`ksh`), which turns a string into a pattern whose
+    /// glob qualifiers run code; and `allexport` (`set -a`), which exports names this model
+    /// never sees as exported (`for npm_config_call in …`, `printf -v npm_config_call …`).
+    /// None of these is modelled.
+    private static func changesShellEvaluation(_ words: [String]) -> Bool {
+        if words.contains(where: { isAssignment($0) && isCodeVariable(assignedName($0)) }) { return true }
         let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first.map(normalizedExecutableName) else { return false }
         let args = Array(stripped.dropFirst())
         switch executable {
         case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
-            return args.contains { startupVariables.contains(assignedName($0)) }
+            // `setenv NAME value`: only the first operand is a name.
+            let operands = args.filter { !$0.hasPrefix("-") }
+            let names = (executable == "setenv" ? Array(operands.prefix(1)) : operands).map(assignedName)
+            return names.contains { !isShellName($0) || isCodeVariable($0) }
         case "setopt", "unsetopt", "set":
-            return args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("globsubst") }
+            return args.contains { arg in
+                let option = arg.lowercased().replacingOccurrences(of: "_", with: "")
+                let letters = (arg.hasPrefix("-") || arg.hasPrefix("+")) && !arg.hasPrefix("--") ? arg.dropFirst() : ""
+                return option.contains("globsubst") || option.contains("allexport") || letters.contains("a")
+            }
         case "emulate":
             return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
         default:
@@ -865,6 +1152,8 @@ enum CommandShapeClassifier {
         "command": WrapperOptions(flags: Set("pvV")),
         "time": WrapperOptions(flags: Set("alp"), values: ["o"]),
         "nohup": WrapperOptions(),
+        // `busybox sh …` runs the applet it names.
+        "busybox": WrapperOptions(),
         "caffeinate": WrapperOptions(flags: Set("disum"), values: Set("tw")),
         "arch": WrapperOptions(words: ["-32", "-64", "-arm64", "-arm64e", "-x86_64", "-i386", "-c", "arm64", "x86_64"],
             valueWords: ["-arch", "-d", "-e"]),
@@ -942,6 +1231,11 @@ enum CommandShapeClassifier {
         guard let equals = word.firstIndex(of: "=") else { return false }
         var name = word[..<equals]
         if name.hasSuffix("+") { name = name.dropLast() }
+        return isShellName(name)
+    }
+
+    /// A shell identifier: no expansion, brace, glob or subscript.
+    private static func isShellName<S: StringProtocol>(_ name: S) -> Bool {
         guard let first = name.first, !(first.isASCII && first.isNumber) else { return false }
         return name.allSatisfy { $0 == "_" || !$0.isASCII || $0.isLetter || $0.isNumber }
     }

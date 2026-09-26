@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class CoreServiceTests: XCTestCase {
+final class CoreServiceTests: HermeticTestCase {
     func testExplicitUpdateWithoutLatestVersionRemainsActionable() async {
         let config = DetectorConfig(
             id: "test",
@@ -1234,7 +1234,7 @@ final class CoreServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(tempRoot)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: tempRoot)
         }
 
@@ -1386,5 +1386,37 @@ extension CoreServiceTests {
         XCTAssertEqual(code, 0)
         XCTAssertEqual(state.executedSelectionSnapshots, [["typed-safe"]])
         XCTAssertFalse(output.contains("This update may run a remote script and must be confirmed in the app."))
+    }
+}
+
+// MARK: - PR-B2c item 4: every dry-run shows what --yes would run
+
+extension CoreServiceTests {
+    /// The gated, bulk and needs-review branches of `--update <id>`, and `--update-all`, print the
+    /// planned spec of a typed item, not its legacy catalog string.
+    @MainActor
+    func testEveryDryRunBranchPrintsThePlannedSpec() async {
+        let planned = CommandSpec(executablePath: "/bin/echo", arguments: ["planned"])
+        let plan = ["Dry-run plan:", "  [Update] typed (typed)", "    '/bin/echo' 'planned'"]
+        let rows: [(String, ItemStatus, [GateReason], [String], Bool, String)] = [
+            ("gated", .gated, [.pinned], ["--update", "typed"], false, "This update is gated. Re-run with --yes to execute it."),
+            ("bulk", .updateAvailable, [.bulk], ["--update", "typed"], false,
+                "Bulk updates require --yes. Re-run with --yes to execute this action."),
+            ("review", .updateAvailable, [.needsReview], ["--update", "typed"], false,
+                "This command needs review. Re-run with --yes to execute it."),
+            ("update-all", .updateAvailable, [], ["--update-all"], true,
+                "Confirmation required. Re-run with --yes to execute these actions."),
+        ]
+        for (label, status, reasons, arguments, confirm, message) in rows {
+            let state = MockCLIRunnerState(confirmBeforeUpdate: confirm, items: [
+                makeItem(id: "typed", installed: true, status: status, updateCommand: "echo legacy", isSelected: true,
+                    gateReasons: reasons, plannedUpdateCommandSpec: planned)
+            ])
+            var output: [String] = []
+            let code = await CLIRunner.run(arguments: ["DailyUpdate"] + arguments, state: state, output: { output.append($0) })
+            XCTAssertEqual(code, 2, label)
+            XCTAssertEqual(output, plan + [message], label)
+            XCTAssertEqual(state.updateSelectedCallCount, 0, label)
+        }
     }
 }

@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class VersionTests: XCTestCase {
+final class VersionTests: HermeticTestCase {
     func testVersionMatrixRowsV1ToV4() {
         assertOrder(current: "2.101.0", latest: "2.101.0", expected: .same)
         assertOrder(current: "3.12.0", latest: "3.12.0", expected: .same)

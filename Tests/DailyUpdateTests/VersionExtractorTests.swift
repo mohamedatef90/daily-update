@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class VersionExtractorTests: XCTestCase {
+final class VersionExtractorTests: HermeticTestCase {
     func testVersionExtractorMatrixRowsE1ToE23() {
         let rows: [(output: String, pattern: String?, token: String?)] = [
             ("gh version 2.101.0 (2026-09-15)", nil, "2.101.0"),

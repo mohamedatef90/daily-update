@@ -3,10 +3,21 @@ import Foundation
 enum ConfigLoader {
     private static let defaultAppSupportDirectory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("DailyUpdate", isDirectory: true)
+        var dir = base.appendingPathComponent("DailyUpdate", isDirectory: true)
+#if DEBUG
+        // A test that forgets the override must never write the real App Support.
+        if isRunningUnderXCTest {
+            dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("DailyUpdate-xctest-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        }
+#endif
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
+
+#if DEBUG
+    static var isRunningUnderXCTest: Bool { NSClassFromString("XCTestCase") != nil }
+#endif
 
     private static var appSupportDirectoryOverride: URL?
 
