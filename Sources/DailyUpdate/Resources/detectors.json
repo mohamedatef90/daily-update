@@ -170,7 +170,11 @@
       "id": "cursor-agent",
       "name": "Cursor Agent CLI",
       "category": "cli",
+      "schemaVersion": 2,
       "description": "Cursor agent command-line tool",
+      "command": "cursor-agent",
+      "packages": {},
+      "selfUpdater": "cursorAgent",
       "detect": {
         "type": "command",
         "command": "command -v agent >/dev/null 2>&1 || command -v cursor-agent >/dev/null 2>&1"
@@ -306,7 +310,14 @@
       "id": "opencode",
       "name": "OpenCode",
       "category": "cli",
+      "schemaVersion": 2,
       "description": "OpenCode terminal AI coding agent",
+      "command": "opencode",
+      "packages": {
+        "npm": "opencode-ai",
+        "brew": "opencode"
+      },
+      "selfUpdater": "opencode",
       "detect": {
         "type": "command",
         "command": "command -v opencode >/dev/null 2>&1"

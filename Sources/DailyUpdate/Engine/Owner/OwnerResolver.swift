@@ -12,6 +12,8 @@ enum ResolvedOwner: Equatable {
 
 enum NativeInstallerID: String, Equatable {
     case claudeCode
+    case opencode
+    case cursorAgent
 }
 
 enum ResolveError: Error, Equatable {
@@ -68,6 +70,8 @@ struct EcosystemLayout: Equatable, Sendable {
     let brewCellars: [String]
     let brewCaskrooms: [String]
     let claudeNativeRoot: String
+    let opencodeNativeRoot: String
+    let cursorAgentNativeRoot: String
     let uvToolRoots: [String]
     let pipxVenvRoots: [String]
     let npmGlobalRoots: [String]
@@ -83,6 +87,8 @@ struct EcosystemLayout: Equatable, Sendable {
             brewCellars: brewPrefixes.map { "\($0)/Cellar" },
             brewCaskrooms: brewPrefixes.map { "\($0)/Caskroom" },
             claudeNativeRoot: "\(home)/.local/share/claude/versions",
+            opencodeNativeRoot: "\(home)/.opencode/bin",
+            cursorAgentNativeRoot: "\(home)/.local/share/cursor-agent/versions",
             uvToolRoots: ["\(home)/.local/share/uv/tools"],
             pipxVenvRoots: ["\(home)/.local/pipx/venvs", "\(home)/.local/share/pipx/venvs"],
             npmGlobalRoots: ["\(home)/.npm-global", "\(home)/.local"],
@@ -113,6 +119,8 @@ struct EcosystemLayout: Equatable, Sendable {
             brewCellars: brewPrefixes.map { "\($0)/Cellar" },
             brewCaskrooms: brewPrefixes.map { "\($0)/Caskroom" },
             claudeNativeRoot: "\(home)/.local/share/claude/versions",
+            opencodeNativeRoot: "\(home)/.opencode/bin",
+            cursorAgentNativeRoot: "\(home)/.local/share/cursor-agent/versions",
             uvToolRoots: ["\(home)/.local/share/uv/tools"],
             pipxVenvRoots: ["\(home)/.local/pipx/venvs", "\(home)/.local/share/pipx/venvs"],
             npmGlobalRoots: ["\(home)/.npm-global", "\(home)/.local"],
@@ -294,6 +302,14 @@ enum OwnerResolver {
         }
         if isPath(resolvedPath, within: layout.claudeNativeRoot) {
             return .nativeInstaller(.claudeCode)
+        }
+        // `curl https://opencode.ai/install | bash` puts the binary in `~/.opencode/bin`.
+        if isPath(resolvedPath, within: layout.opencodeNativeRoot) {
+            return .nativeInstaller(.opencode)
+        }
+        // `curl https://cursor.com/install | bash` links `agent` and `cursor-agent` to `versions/<build>/`.
+        if isPath(resolvedPath, within: layout.cursorAgentNativeRoot) {
+            return .nativeInstaller(.cursorAgent)
         }
         if let name = capture(path: resolvedPath, roots: layout.uvToolRoots) {
             return .uvTool(name: name)

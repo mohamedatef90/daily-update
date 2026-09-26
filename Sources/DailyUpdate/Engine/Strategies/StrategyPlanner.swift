@@ -16,22 +16,31 @@ enum StrategyPlanner {
     /// `/usr/bin/curl` is SIP-protected, so a `curl` planted earlier on PATH
     /// never runs. `-q` must come first to skip `~/.curlrc`, and
     /// `--proto =https` refuses every other scheme. Without `-L`, curl follows no redirects.
-    static let claudeDistTagsRequest = CommandSpec(
-        executablePath: "/usr/bin/curl",
-        arguments: ["-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
-            "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"]
-    )
+    static let claudeDistTagsRequest = pinnedHTTPSRequest("https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags")
 
-    /// Returns the dist-tags payload, or `nil` when the fetch failed. A planner input, like `pathLookup`.
-    typealias DistTagsFetcher = () async -> String?
+    /// Same pinning as `claudeDistTagsRequest`. The body is only read as JSON.
+    static let openCodeLatestReleaseRequest = pinnedHTTPSRequest("https://api.github.com/repos/anomalyco/opencode/releases/latest")
 
-    static let liveClaudeDistTags: DistTagsFetcher = { await fetchClaudeDistTags() }
+    /// Cursor publishes its current build only in its installer script. The script is only
+    /// searched for the build string and never runs.
+    static let cursorAgentInstallerRequest = pinnedHTTPSRequest("https://cursor.com/install")
 
-    static func fetchClaudeDistTags(run: ProcessRunner = { spec in
+    private static func pinnedHTTPSRequest(_ url: String) -> CommandSpec {
+        CommandSpec(executablePath: "/usr/bin/curl",
+            arguments: ["-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20", url])
+    }
+
+    /// Returns the response body for a pinned request, or `nil` when it failed. A planner input,
+    /// like `pathLookup`, so tests never reach the network.
+    typealias ReleaseFetcher = (CommandSpec) async -> String?
+
+    static let liveReleaseFetcher: ReleaseFetcher = { spec in await fetchBody(spec) }
+
+    static func fetchBody(_ spec: CommandSpec, run: ProcessRunner = { spec in
         await ShellRunner.runProcess(executablePath: spec.executablePath, arguments: spec.arguments,
             environment: ["PATH": ShellRunner.defaultPath], timeout: 25)
     }) async -> String? {
-        let result = await run(claudeDistTagsRequest)
+        let result = await run(spec)
         return result.succeeded ? result.stdout : nil
     }
 
@@ -44,7 +53,7 @@ enum StrategyPlanner {
         currentVersion: String?,
         pathLookup: CommandPathLookup? = nil,
         layout: EcosystemLayout = .live(),
-        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
     ) async -> StrategyPlan? {
         guard usesTypedEngine(config: config) else { return nil }
         guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
@@ -66,7 +75,7 @@ enum StrategyPlanner {
             currentVersion: currentVersion,
             resolution: resolution,
             layout: layout,
-            fetchClaudeDistTags: fetchClaudeDistTags
+            fetchRelease: fetchRelease
         )
     }
 
@@ -75,9 +84,9 @@ enum StrategyPlanner {
         currentVersion: String?,
         resolution: OwnerResolution,
         layout: EcosystemLayout = .live(),
-        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
     ) async -> StrategyPlan {
-        switch prepare(config: config, resolution: resolution, layout: layout, fetchClaudeDistTags: fetchClaudeDistTags) {
+        switch prepare(config: config, resolution: resolution, layout: layout, fetchRelease: fetchRelease) {
         case .blocked(let reason, let message):
             return StrategyPlan(
                 ownerResolution: resolution,
@@ -275,7 +284,7 @@ enum StrategyPlanner {
         config: DetectorConfig,
         resolution: OwnerResolution,
         layout: EcosystemLayout,
-        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
     ) -> PreparationOutcome {
         if let error = resolution.resolveError {
             switch error {
@@ -295,7 +304,7 @@ enum StrategyPlanner {
             return .blocked(.ownerMismatch, "Resolved owner does not match catalog package identity")
         }
 
-        switch makeStrategy(config: config, active: active, layout: layout, fetchClaudeDistTags: fetchClaudeDistTags) {
+        switch makeStrategy(config: config, active: active, layout: layout, fetchRelease: fetchRelease) {
         case .strategy(let strategy):
             return .ready(strategy)
         case .unknownOwner(let message):
@@ -309,7 +318,7 @@ enum StrategyPlanner {
         config: DetectorConfig,
         active: OwnerCandidate,
         layout: EcosystemLayout,
-        fetchClaudeDistTags: @escaping DistTagsFetcher
+        fetchRelease: @escaping ReleaseFetcher
     ) -> StrategyBuildOutcome {
         switch active.owner {
         case .brewFormula(let formula):
@@ -357,14 +366,29 @@ enum StrategyPlanner {
                 npmExecutable: npmExecutable
             ))
         case .nativeInstaller(let installer):
-            guard installer == .claudeCode, config.selfUpdater == "claudeCode" else {
+            // The catalog names the one self-updater it trusts for this item.
+            guard config.selfUpdater == installer.rawValue else {
                 return .noStrategy("Unsupported native self-updater")
             }
-            guard PathTrust.isTrustedExecutable(active.commandPath) else {
-                return .unknownOwner("Untrusted Claude executable path")
+            switch installer {
+            case .claudeCode:
+                guard PathTrust.isTrustedExecutable(active.commandPath) else {
+                    return .unknownOwner("Untrusted Claude executable path")
+                }
+                return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
+                    fetchDistTags: { await fetchRelease(claudeDistTagsRequest) }))
+            case .opencode:
+                guard PathTrust.isTrustedExecutable(active.commandPath) else {
+                    return .unknownOwner("Untrusted OpenCode executable path")
+                }
+                return .strategy(OpenCodeNativeStrategy(executable: active.commandPath, fetchRelease: fetchRelease))
+            case .cursorAgent:
+                guard PathTrust.isTrustedExecutable(active.commandPath) else {
+                    return .unknownOwner("Untrusted Cursor Agent executable path")
+                }
+                return .strategy(CursorAgentNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
+                    fetchRelease: fetchRelease))
             }
-            return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
-                fetchDistTags: fetchClaudeDistTags))
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
         case .unknown:
@@ -450,14 +474,19 @@ enum StrategyPlanner {
     }
 
     static func parseBrewCaskVersion(from output: String) -> String? {
+        parseBrewCaskInfo(from: output)?.version
+    }
+
+    /// `version` (without its `,build` suffix) and `auto_updates` from `brew info --json=v2 --cask`.
+    static func parseBrewCaskInfo(from output: String) -> BrewCaskInfo? {
         guard let data = output.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let casks = root["casks"] as? [[String: Any]],
               let first = casks.first,
-              let version = first["version"] as? String else {
+              let version = (first["version"] as? String)?.components(separatedBy: ",").first?.nilIfEmpty else {
             return nil
         }
-        return version.components(separatedBy: ",").first?.nilIfEmpty
+        return BrewCaskInfo(version: version, autoUpdates: (first["auto_updates"] as? Bool) ?? false)
     }
 
     static func parseClaudeDistTags(from output: String) -> [String: String]? {
@@ -545,7 +574,24 @@ private final class BrewFormulaStrategy: Strategy {
     }
 }
 
-private struct BrewCaskStrategy: Strategy {
+struct BrewCaskInfo: Equatable {
+    let version: String
+    let autoUpdates: Bool
+}
+
+/// G3: a cask with `auto_updates` updates itself, so `brew outdated` hides it without `--greedy`.
+/// The check compares what runs (the app bundle) with the cask's version, so a self-updating cask
+/// that is behind shows like `--greedy` would. The plan is a named `brew upgrade --cask <token>`,
+/// which Homebrew always evaluates greedily, so `--greedy` is not passed.
+private final class BrewCaskStrategy: Strategy {
+    private var cachedInfo: BrewCaskInfo?
+    private var loadedInfo = false
+
+    init(token: String, brewExecutable: String, resolvedAppPath: String) {
+        self.token = token
+        self.brewExecutable = brewExecutable
+        self.resolvedAppPath = resolvedAppPath
+    }
     let token: String
     let brewExecutable: String
     let resolvedAppPath: String
@@ -554,17 +600,15 @@ private struct BrewCaskStrategy: Strategy {
 
     func currentVersion() async -> String? {
         if let bundle = bundleVersion(from: resolvedAppPath) { return bundle }
+        // For a self-updating cask the Caskroom directory is what brew installed, not what runs.
+        guard let info = await info(), !info.autoUpdates else { return nil }
         let parts = resolvedAppPath.components(separatedBy: "/")
         guard let index = parts.firstIndex(of: "Caskroom"), parts.count > index + 2 else { return nil }
         return parts[index + 2].nilIfEmpty
     }
 
     func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
-        let result = await ShellRunner.run(
-            CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", "--cask", token]),
-            timeout: 30
-        )
-        guard result.succeeded, let latest = StrategyPlanner.parseBrewCaskVersion(from: result.stdout) else {
+        guard let latest = await info()?.version else {
             return LatestVersionOutcome(latestVersion: nil)
         }
         if latest.lowercased() == "latest" {
@@ -578,6 +622,18 @@ private struct BrewCaskStrategy: Strategy {
 
     func updateCommand(targetVersion: String?) -> CommandSpec? {
         CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--cask", token])
+    }
+
+    private func info() async -> BrewCaskInfo? {
+        if loadedInfo { return cachedInfo }
+        loadedInfo = true
+        let result = await ShellRunner.run(
+            CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", "--cask", token]),
+            timeout: 30
+        )
+        guard result.succeeded else { return nil }
+        cachedInfo = StrategyPlanner.parseBrewCaskInfo(from: result.stdout)
+        return cachedInfo
     }
 
     private func bundleVersion(from binaryPath: String) -> String? {
@@ -712,6 +768,89 @@ private struct ClaudeNativeStrategy: Strategy {
         let channel = (root["autoUpdatesChannel"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "latest"
         guard ["latest", "stable"].contains(channel) else { return nil }
         return channel
+    }
+}
+
+private let strictSemVerPattern = #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#
+
+/// `~/.opencode/bin/opencode`: its own `upgrade <version>` command, pinned to the latest GitHub release.
+private struct OpenCodeNativeStrategy: Strategy {
+    let executable: String
+    let fetchRelease: StrategyPlanner.ReleaseFetcher
+    let requiresLatestVersion = true
+    let requiresTargetVersion = true
+
+    func currentVersion() async -> String? {
+        let result = await ShellRunner.run(CommandSpec(executablePath: executable, arguments: ["--version"]), timeout: 15)
+        guard result.succeeded else { return nil }
+        let version = Self.withoutV(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        return version.range(of: strictSemVerPattern, options: .regularExpression) == nil ? nil : version
+    }
+
+    func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
+        guard let body = await fetchRelease(StrategyPlanner.openCodeLatestReleaseRequest),
+              let data = body.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tag = (root["tag_name"] as? String)?.nilIfEmpty else {
+            return LatestVersionOutcome(latestVersion: nil)
+        }
+        let version = Self.withoutV(tag)
+        guard version.range(of: strictSemVerPattern, options: .regularExpression) != nil else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "OpenCode release tag is not strict semver: \(tag)")
+        }
+        return LatestVersionOutcome(latestVersion: version)
+    }
+
+    /// `--method curl` keeps the upgrade on the native installer that owns this binary.
+    func updateCommand(targetVersion: String?) -> CommandSpec? {
+        guard let targetVersion = targetVersion?.nilIfEmpty,
+              targetVersion.range(of: strictSemVerPattern, options: .regularExpression) != nil else { return nil }
+        return CommandSpec(executablePath: executable, arguments: ["upgrade", targetVersion, "--method", "curl"])
+    }
+
+    private static func withoutV(_ value: String) -> String {
+        value.hasPrefix("v") ? String(value.dropFirst()) : value
+    }
+}
+
+/// `~/.local/bin/cursor-agent` → `~/.local/share/cursor-agent/versions/<YYYY.MM.DD-hash>/`: the
+/// build comes from the path, the latest build from Cursor's installer, and the update is its own
+/// `update` command.
+private struct CursorAgentNativeStrategy: Strategy {
+    let executable: String
+    let resolvedPath: String
+    let fetchRelease: StrategyPlanner.ReleaseFetcher
+    let requiresLatestVersion = true
+    let requiresTargetVersion = false
+
+    private static let buildPattern = #"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$"#
+
+    func currentVersion() async -> String? {
+        guard let range = resolvedPath.range(of: "/versions/"),
+              let build = resolvedPath[range.upperBound...].split(separator: "/").first.map(String.init),
+              build.range(of: Self.buildPattern, options: .regularExpression) != nil else { return nil }
+        return build
+    }
+
+    func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
+        guard let body = await fetchRelease(StrategyPlanner.cursorAgentInstallerRequest),
+              let regex = try? NSRegularExpression(pattern: #"downloads\.cursor\.com/lab/([0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40})/"#),
+              let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+              let range = Range(match.range(at: 1), in: body) else {
+            return LatestVersionOutcome(latestVersion: nil)
+        }
+        let latest = String(body[range])
+        // Builds on the same date differ only by hash, which has no order.
+        if let currentVersion, currentVersion != latest,
+           currentVersion.prefix(10) == latest.prefix(10) {
+            return LatestVersionOutcome(latestVersion: nil,
+                failureMessage: "Cursor Agent build \(latest) can't be ordered against \(currentVersion)")
+        }
+        return LatestVersionOutcome(latestVersion: latest)
+    }
+
+    func updateCommand(targetVersion: String?) -> CommandSpec? {
+        CommandSpec(executablePath: executable, arguments: ["update"])
     }
 }
 
