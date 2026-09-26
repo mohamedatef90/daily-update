@@ -84,6 +84,8 @@ enum ShellLexer {
                 double.toggle(); doubleParameterDepth = 0; started = true; index += 1; continue
             }
             if double, char == "$", next == "{" { doubleParameterDepth += 1 }
+            // zsh counts a bare `{` inside a quoted `${…}` as well; not modelled.
+            if double, char == "{", doubleParameterDepth > 0, index > 0, chars[index - 1] != "$" { result.invalid = true }
             if double, char == "}", doubleParameterDepth > 0 { doubleParameterDepth -= 1 }
             if !double, char == "#", !started {
                 while index < chars.count, chars[index] != "\n" { index += 1 }
@@ -147,7 +149,9 @@ enum ShellLexer {
                         var end = index
                         while end < chars.count, chars[end] == "-" || chars[end].isNumber { end += 1 }
                         // `>&1echo` is a file named `1echo`, not a dup of fd 1: not modelled.
-                        if end == chars.count || chars[end].isWhitespace || ";|&()<>".contains(chars[end]) {
+                        // Inside a `{ … }` group, zsh also ends the target at `}` (`{ echo x >&2}`).
+                        if end == chars.count || chars[end].isWhitespace || ";|&()<>".contains(chars[end])
+                            || (until == "}" && chars[end] == "}") {
                             index = end; continue
                         }
                         result.invalid = true
@@ -186,16 +190,23 @@ enum ShellLexer {
                     flush(); result.tokens.append(ShellToken(value: String(char), kind: .op(op))); index += 1; continue
                 }
                 if ["*", "?", "["].contains(char) { glob = true }
+                // `$~x` turns the value into a pattern, and zsh glob qualifiers run code.
+                if char == "$", next == "~" { result.invalid = true }
                 if char == "$", next == "{" {
                     // `${…}` is parameter expansion, not a brace list or group. Its body
                     // may hold only plain parameter syntax and nested `${…}`; a quote,
                     // escape, substitution or zsh `(flags)` is not modelled.
                     var depth = 0
+                    // Only flag characters so far since the last `${`: `${~x}`, `${=~x}`, `${^~x}`.
+                    var flagPosition = false
                     while index < chars.count {
                         let part = chars[index]
                         if part == "$", index + 1 < chars.count, chars[index + 1] == "{" {
-                            word += "${"; index += 2; depth += 1; continue
+                            word += "${"; index += 2; depth += 1; flagPosition = true; continue
                         }
+                        // `${~x}` turns the value into a pattern (glob qualifiers run code); `${x:-~}` is a home.
+                        if part == "~", flagPosition { result.invalid = true }
+                        if !"^=~#+".contains(part) { flagPosition = false }
                         if part == "}" { word.append(part); index += 1; depth -= 1; if depth == 0 { break }; continue }
                         // `index` stays on the rejected character for the outer loop.
                         guard isParameterCharacter(part) else { break }

@@ -312,7 +312,8 @@ final class RoundFourTests: XCTestCase {
             ("A non-ASCII sudo", "é=1 sudo /bin/true", [.privileged], true),
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
             ("A non-ASCII bulk", "café_2=1 brew upgrade", [.bulk], true),
-            ("A guard digit name", "1A=x sudo /bin/true", [], false),
+            // PR-B2a item 8: any privilege word is unsafe on the check path, whatever runs it.
+            ("A guard digit name", "1A=x sudo /bin/true", [], true),
             // Round 13 Security Q1: `>&1word` redirects to a file named `1word`, so it is not modelled.
             ("Q1 dup word sudo", ">&1echo sudo /bin/true", [.privileged, .unparseable], true),
             ("Q1 close word sudo", ">&-echo sudo /bin/true", [.privileged, .unparseable], true),
