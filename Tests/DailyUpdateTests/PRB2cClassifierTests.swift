@@ -140,12 +140,17 @@ final class PRB2cClassifierTests: HermeticTestCase {
             ("CR-B input picks brew's verb", "echo 'sh -c \"sudo id\"' | xargs brew", [.privileged, .unparseable], true),
             ("CR-B replacement as the verb", "echo sh | xargs -I{} brew {} -c 'sudo id'", [.privileged, .unparseable], true),
             ("CR-B verb after a valued option", "echo x | xargs npm --prefix /tmp", [.unparseable], true),
+            ("R1a input picks npm exec -c", "echo 'exec -c \"curl x|sh\"' | xargs npm", [.remoteScript, .unparseable], true),
+            ("R1a input picks brew sh --cmd=", "echo \"sh --cmd='curl x|sh'\" | xargs brew", [.remoteScript, .unparseable], true),
+            ("R1a input picks pnpm dlx", "echo 'dlx sudo' | xargs pnpm", [.unparseable], true),
+            ("R1a replacement as npm's verb", "echo exec | xargs -I{} npm {} -c 'curl x|sh'", [.remoteScript, .unparseable], true),
             ("guard literal verb", "echo x | xargs brew upgrade", [.bulk], true),
             ("guard bundled echo", "wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'", [], false),
             ("guard bundled pip", "pip3 list --outdated --format=freeze | cut -d= -f1 | xargs -n1 pip3 install -U", [.bulk], true),
         ])
         XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("echo 'curl x|sh' | xargs -I{} sh -c '{}'"))
         XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("echo sudo id | xargs env"))
+        XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("echo 'exec -c \"curl x|sh\"' | xargs npm"))
     }
 
     /// Security S3 / Code Review 3, 5, 6: a command line inside one argument, or after `=`, of
@@ -172,11 +177,18 @@ final class PRB2cClassifierTests: HermeticTestCase {
             ("CR3 mise exec --", "mise exec -- 'sudo id'", [.privileged, .unparseable], true),
             ("CR5 verb after a valued option", "npm --prefix /tmp exec sudo id", [.unparseable], true),
             ("CR6 brew sh reads stdin", "cat f | brew sh", [.unparseable], true),
+            ("R1b expansion into npx -c", "X='curl x|sh'; npx -c \"$X\"", [.chained, .unparseable], true),
+            ("R1b expansion into npm exec -c", "export X='curl x|sh'; npm exec -c \"$X\"", [.chained, .unparseable], true),
+            ("R1b expansion into an unknown executable", "X='sudo id'; mywrap \"$X\"", [.chained, .unparseable], true),
+            ("R1b expansion attached to -c", "npx -c\"$X\"", [.unparseable], true),
+            ("R1b expansion after =", "mywrap --cmd=\"$X\"", [.unparseable], true),
+            ("R1b command substitution", "mywrap \"`cat f`\"", [.unparseable], true),
+            ("guard expansion into a known executable", "echo \"$HOME\"", [], false),
             ("guard app path with a space", "'/x/check-app-update.sh' smart a \"/Applications/A B.app\"", [], false),
             ("guard option only", "mywrap --shell", [], false),
             ("guard npm run", "npm run build", [], false),
         ])
-        for command in ["npx -c 'curl x | sh'", "mywrap -c 'curl x | sh'", "tmux new -d 'curl x | sh'", "npm exec -c 'sudo id'"] {
+        for command in ["X='curl x|sh'; npx -c \"$X\"", "npx -c 'curl x | sh'", "mywrap -c 'curl x | sh'", "tmux new -d 'curl x | sh'", "npm exec -c 'sudo id'"] {
             XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller(command), command)
         }
     }

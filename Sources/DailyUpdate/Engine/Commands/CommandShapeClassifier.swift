@@ -333,7 +333,8 @@ enum CommandShapeClassifier {
     /// Arguments of `wrappedArguments` (or of a package manager whose verb `xargs` input
     /// picks) that are whole command lines (`npx -c 'curl x | sh'`,
     /// `npm exec --call='sudo id'`, `tmux new -d 'curl x | sh'`): a shell operator, or a
-    /// command word among its words. An app path with a space (`"/Applications/A B.app"`) is
+    /// command word among its words. An expansion (`npx -c "$X"`, after `X='curl x | sh'`) could
+    /// be either, so it counts as one. An app path with a space (`"/Applications/A B.app"`) is
     /// not one. They fail closed, and are also classified as nested commands, so a fetcher in
     /// one is still a remote script.
     private static func embeddedCommandLines(_ words: [String]) -> [String] {
@@ -345,7 +346,7 @@ enum CommandShapeClassifier {
             let value = optionValue(arg)
             return value.isEmpty ? arg : value
         }.filter { value in
-            value.contains(where: commandLineOperators.contains) || (value.contains(where: \.isWhitespace)
+            value.contains(where: commandLineOperators.contains) || value.contains("$") || (value.contains(where: \.isWhitespace)
                 && ShellLexer.words(from: ShellLexer.lex(value)).map(normalizedExecutableName).contains(where: commandWords.contains))
         }
     }
@@ -872,7 +873,8 @@ enum CommandShapeClassifier {
             let stages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
             for (offset, stage) in stages.enumerated() {
                 let words = commandWords(stage)
-                var uses: [StdinUse] = offset + 1 < stages.count ? [stdinUse(commandWords(stages[offset + 1]))] : []
+                let next = offset + 1 < stages.count ? commandWords(stages[offset + 1]) : nil
+                var uses: [StdinUse] = next.map { [stdinUse($0)] } ?? []
                 for word in words where word.hasPrefix(">(") {
                     uses += ShellLexer.nestedCommands(in: word).flatMap(allSimpleCommands).map(stdinUse)
                 }
@@ -881,10 +883,31 @@ enum CommandShapeClassifier {
                 if uses.contains(.xargs) { failsClosed = true }
                 // Fetched text piped into a shell is already `remoteScript`.
                 guard !stageContainsFetcher(stage) else { continue }
-                if let printed = literalPrintedText(stage) { payloads += printed } else { failsClosed = true }
+                guard let printed = literalPrintedText(stage) else { failsClosed = true; continue }
+                payloads += printed
+                if let next, stdinUse(next) == .xargs,
+                   let line = xargsCommandLine(next, input: printed.joined(separator: " ")) {
+                    payloads.append(line)
+                }
             }
         }
         return (payloads.filter { !$0.allSatisfy(\.isWhitespace) }, failsClosed)
+    }
+
+    /// The command line `xargs` builds from literal input: its program with the input
+    /// appended (`echo 'exec -c "curl x|sh"' | xargs npm`), or put in place of the `-I`/`-J`
+    /// replacement string. Classified as well as the input itself, so a fetcher or a
+    /// privilege word that only makes sense with the program is still named.
+    private static func xargsCommandLine(_ words: [String], input: String) -> String? {
+        let stripped = stripWrappersRaw(words)
+        let consumed = words.prefix(words.count - stripped.count)
+        guard !stripped.isEmpty,
+              let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }) else { return nil }
+        if let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))),
+           stripped.contains(where: { $0.contains(replacement) }) {
+            return stripped.map { $0.replacingOccurrences(of: replacement, with: input) }.joined(separator: " ")
+        }
+        return (stripped + [input]).joined(separator: " ")
     }
 
     /// What `echo` (after `-n`/`-e`/`-E`) or `printf` (its format, then its arguments) prints,
