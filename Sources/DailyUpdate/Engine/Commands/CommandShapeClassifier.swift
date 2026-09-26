@@ -297,8 +297,10 @@ enum CommandShapeClassifier {
             "mise", "softwareupdate", "rm", "dd", "diskutil", "chmod", "chown", "shred", "srm"])
 
     /// The arguments an executable this model does not know may run (`mywrap curl x`,
-    /// `xcrun sh -c …`), or those after a package manager's exec verb (`npm exec curl`,
-    /// `npm --prefix /tmp exec sudo id`, `brew sh -c …`). `nil` when neither applies.
+    /// `xcrun sh -c …`), or those around a package manager's exec verb (`npm exec curl`,
+    /// `npm --prefix /tmp exec sudo id`, `brew sh -c …`). npm reads config options anywhere on
+    /// the line, so `npm --call='sudo id' exec` is `npm exec --call='sudo id'`. `nil` when
+    /// neither applies.
     private static func wrappedArguments(_ stripped: [String]) -> [String]? {
         guard let executable = stripped.first.map(normalizedExecutableName) else { return nil }
         let args = Array(stripped.dropFirst())
@@ -307,7 +309,9 @@ enum CommandShapeClassifier {
         // "first non-option" verb.
         guard packageManagerExecutables.contains(executable),
               let verb = args.firstIndex(where: packageManagerExecVerbs.contains) else { return nil }
-        return Array(args.dropFirst(verb + 1))
+        var rest = args
+        rest.remove(at: verb)
+        return rest
     }
 
     /// The command words among `wrappedArguments`, including an option's value (`--cmd=sh`).
@@ -347,13 +351,19 @@ enum CommandShapeClassifier {
         let stripped = stripWrappersRaw(words)
         guard let args = wrappedArguments(stripped) ?? (xargsInputPicksVerb(words) ? Array(stripped.dropFirst()) : nil)
         else { return [] }
-        // The longest candidate of an option that is a command line: `-yc'sudo id'` gives
-        // `sudo id`, not also `udo id`.
+        // The longest candidate of an option that is a command line, preferring one that starts
+        // with a command word: `-yc'sudo id'` gives `sudo id`, not also `udo id`, and
+        // `-yc'curl x|sh'` gives `curl x|sh`, not `ccurl x|sh`.
         return args.compactMap { arg in
             guard arg.hasPrefix("-") else { return isCommandLine(arg) ? arg : nil }
             let values = optionValues(arg)
-            return (values.isEmpty ? [arg] : values).first(where: isCommandLine)
+            let lines = (values.isEmpty ? [arg] : values).filter(isCommandLine)
+            return lines.first(where: startsWithCommandWord) ?? lines.first
         }
+    }
+
+    private static func startsWithCommandWord(_ value: String) -> Bool {
+        ShellLexer.words(from: ShellLexer.lex(value)).first.map(normalizedExecutableName).map(commandWords.contains) ?? false
     }
 
     private static func isCommandLine(_ value: String) -> Bool {
@@ -991,9 +1001,12 @@ enum CommandShapeClassifier {
         startupVariables.contains(name) || name.lowercased().hasPrefix("npm_config_")
     }
 
-    /// The code variables above, anywhere, and zsh's `globsubst` (also set by
-    /// `emulate sh`/`ksh`), which turns a string into a pattern whose glob qualifiers run
-    /// code. None of these is modelled.
+    /// The code variables above, anywhere; an exported name that is not written out
+    /// (`export $N=…`, `export {npm,x}_config_call=…`), which may be any of them; zsh's
+    /// `globsubst` (also set by `emulate sh`/`ksh`), which turns a string into a pattern whose
+    /// glob qualifiers run code; and `allexport` (`set -a`), which exports names this model
+    /// never sees as exported (`for npm_config_call in …`, `printf -v npm_config_call …`).
+    /// None of these is modelled.
     private static func changesShellEvaluation(_ words: [String]) -> Bool {
         if words.contains(where: { isAssignment($0) && isCodeVariable(assignedName($0)) }) { return true }
         let stripped = stripWrappersRaw(words)
@@ -1001,9 +1014,16 @@ enum CommandShapeClassifier {
         let args = Array(stripped.dropFirst())
         switch executable {
         case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
-            return args.contains { isCodeVariable(assignedName($0)) }
+            // `setenv NAME value`: only the first operand is a name.
+            let operands = args.filter { !$0.hasPrefix("-") }
+            let names = (executable == "setenv" ? Array(operands.prefix(1)) : operands).map(assignedName)
+            return names.contains { !isShellName($0) || isCodeVariable($0) }
         case "setopt", "unsetopt", "set":
-            return args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("globsubst") }
+            return args.contains { arg in
+                let option = arg.lowercased().replacingOccurrences(of: "_", with: "")
+                let letters = (arg.hasPrefix("-") || arg.hasPrefix("+")) && !arg.hasPrefix("--") ? arg.dropFirst() : ""
+                return option.contains("globsubst") || option.contains("allexport") || letters.contains("a")
+            }
         case "emulate":
             return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
         default:
@@ -1211,6 +1231,11 @@ enum CommandShapeClassifier {
         guard let equals = word.firstIndex(of: "=") else { return false }
         var name = word[..<equals]
         if name.hasSuffix("+") { name = name.dropLast() }
+        return isShellName(name)
+    }
+
+    /// A shell identifier: no expansion, brace, glob or subscript.
+    private static func isShellName<S: StringProtocol>(_ name: S) -> Bool {
         guard let first = name.first, !(first.isASCII && first.isNumber) else { return false }
         return name.allSatisfy { $0 == "_" || !$0.isASCII || $0.isLetter || $0.isNumber }
     }
