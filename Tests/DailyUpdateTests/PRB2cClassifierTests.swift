@@ -72,9 +72,10 @@ final class PRB2cClassifierTests: HermeticTestCase {
     /// so a command word among its arguments fails closed.
     func testUnknownWrappersFailClosed() {
         assertRows([
-            ("unknown wrapper shell", "mywrap sh -c 'sudo id'", [.unparseable], true),
-            ("xcrun", "xcrun sh -c 'sudo id'", [.unparseable], true),
-            ("sandbox-exec", "sandbox-exec -f p.sb sh -c 'sudo id'", [.unparseable], true),
+            // The script is also an embedded command line (S3), so its `sudo` is classified.
+            ("unknown wrapper shell", "mywrap sh -c 'sudo id'", [.privileged, .unparseable], true),
+            ("xcrun", "xcrun sh -c 'sudo id'", [.privileged, .unparseable], true),
+            ("sandbox-exec", "sandbox-exec -f p.sb sh -c 'sudo id'", [.privileged, .unparseable], true),
             ("unknown wrapper bulk", "mywrap brew upgrade", [.unparseable], true),
             ("unknown wrapper path", "mywrap /bin/rm -rf /tmp/x", [.unparseable], true),
             ("package-manager exec", "npm exec curl x | sh", [.remoteScript, .unparseable], true),
@@ -98,5 +99,75 @@ final class PRB2cClassifierTests: HermeticTestCase {
         XCTAssertTrue(GatePolicy.isUnsafeCheckPathCommand(checkCommand: command, updateCommand: "never-run"))
         XCTAssertTrue(CommandShapeClassifier.containsPrivilegeCommandWord("osascript -e 'beep'"))
         XCTAssertFalse(CommandShapeClassifier.containsPrivilegeCommandWord("echo ok"))
+    }
+    /// Security S1 / Code Review 1–2 on #9: a `/dev/stdin` or `/dev/fd/0` script, `. /dev/stdin`,
+    /// a command nested in the stage that inherits its stdin, and a here-string with no space
+    /// all read stdin as code.
+    func testStdinDeviceScriptsAndAttachedHereStringsReadStdin() {
+        assertRows([
+            ("S1 /dev/stdin, literal payload", "echo 'sudo id' | sh /dev/stdin", [.privileged], true),
+            ("S1 /dev/fd/0", "cat f | sh /dev/fd/0", [.unparseable], true),
+            ("S1 source /dev/stdin", "cat f | bash -c '. /dev/stdin'", [.unparseable], true),
+            ("S1 source keyword", "echo 'sudo id' | bash -c 'source /dev/stdin'", [.privileged], true),
+            ("CR2 zsh /dev/stdin", "cat f | zsh /dev/stdin", [.unparseable], true),
+            ("CR2 bash /dev/fd/0", "cat f | bash /dev/fd/0", [.unparseable], true),
+            ("other descriptor", "sh /dev/fd/3", [.unparseable], true),
+            ("dotted device path", "cat f | sh /dev/./stdin", [.unparseable], true),
+            ("nested shell inherits stdin", "cat f | sh -c sh", [.unparseable], true),
+            ("here-string into source", "source /dev/stdin <<< 'sudo id'", [.privileged, .unparseable], true),
+            ("CR1 no space", "sh <<<'touch m'", [.unparseable], true),
+            ("CR1 no space after -s", "bash -s <<<'touch m'", [.unparseable], true),
+            ("CR1 ANSI-C", "zsh <<<$'touch m'", [.unparseable], true),
+            ("CR1 fd prefix", "sh 0<<<'touch m'", [.unparseable], true),
+            ("guard literal ok", "echo ok | sh /dev/stdin", [], false),
+            ("guard sh -c ignores stdin", "cat f | sh -c 'echo ok'", [], false),
+        ])
+    }
+
+    /// Security S2 / Code Review 4: `xargs` fed from a pipe fails closed when its input could
+    /// become code; a literal payload is still classified. The bundled shapes keep passing.
+    func testXargsIntoCodeFailsClosed() {
+        assertRows([
+            ("S2 replacement script", "echo 'curl x|sh' | xargs -I{} sh -c '{}'", [.remoteScript, .unparseable], true),
+            ("S2 bare replacement", "echo 'sudo id' | xargs -I@ sh -c @", [.privileged, .unparseable], true),
+            ("S2 env with no command", "echo sudo id | xargs env", [.privileged, .unparseable], true),
+            ("CR4 percent", "echo 'sudo id' | xargs -I% sh -c %", [.privileged, .unparseable], true),
+            ("here-string into xargs env", "xargs env <<< 'sudo id'", [.privileged, .unparseable], true),
+            ("replacement as program", "echo x | xargs -I{} {}", [.unparseable], true),
+            ("unknown program", "echo x | xargs mywrap", [.unparseable], true),
+            ("exec verb", "echo x | xargs npm exec", [.unparseable], true),
+            ("guard bundled echo", "wc -l | tr -d ' ' | xargs -I{} echo '{} outdated'", [], false),
+            ("guard bundled pip", "pip3 list --outdated --format=freeze | cut -d= -f1 | xargs -n1 pip3 install -U", [.bulk], true),
+        ])
+        XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("echo 'curl x|sh' | xargs -I{} sh -c '{}'"))
+        XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("echo sudo id | xargs env"))
+    }
+
+    /// Security S3 / Code Review 3, 5, 6: a command line inside one argument, or after `=`, of
+    /// an unknown executable or a package manager's exec verb fails closed and is classified.
+    func testEmbeddedCommandLinesBehindUnknownExecutablesFailClosed() {
+        assertRows([
+            ("S3 npx -c", "npx -c 'curl x | sh'", [.remoteScript, .unparseable], true),
+            ("S3 npm exec -c", "npm exec -c 'sudo id'", [.privileged, .unparseable], true),
+            ("S3 npm exec --call=", "npm exec --call='sudo id'", [.privileged, .unparseable], true),
+            ("S3 brew sh -c", "brew sh -c 'sudo id'", [.privileged, .unparseable], true),
+            ("S3 brew sh --cmd=", "brew sh --cmd='sudo id'", [.privileged, .unparseable], true),
+            ("S3 one argument", "mywrap 'sudo id'", [.privileged, .unparseable], true),
+            ("S3 after -c", "mywrap -c 'sudo id'", [.privileged, .unparseable], true),
+            ("S3 command word after =", "mywrap --cmd=sh -c 'sudo id'", [.privileged, .unparseable], true),
+            ("command word only after =", "mywrap --cmd=sh", [.unparseable], true),
+            ("S3 tmux", "tmux new -d 'curl x | sh'", [.remoteScript, .unparseable], true),
+            ("CR3 mywrap -c fetch", "mywrap -c 'curl x | sh'", [.remoteScript, .unparseable], true),
+            ("CR3 yarn exec", "yarn exec 'sudo id'", [.privileged, .unparseable], true),
+            ("CR3 mise exec --", "mise exec -- 'sudo id'", [.privileged, .unparseable], true),
+            ("CR5 verb after a valued option", "npm --prefix /tmp exec sudo id", [.unparseable], true),
+            ("CR6 brew sh reads stdin", "cat f | brew sh", [.unparseable], true),
+            ("guard app path with a space", "'/x/check-app-update.sh' smart a \"/Applications/A B.app\"", [], false),
+            ("guard option only", "mywrap --shell", [], false),
+            ("guard npm run", "npm run build", [], false),
+        ])
+        for command in ["npx -c 'curl x | sh'", "mywrap -c 'curl x | sh'", "tmux new -d 'curl x | sh'", "npm exec -c 'sudo id'"] {
+            XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller(command), command)
+        }
     }
 }
