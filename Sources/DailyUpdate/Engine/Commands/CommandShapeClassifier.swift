@@ -314,22 +314,36 @@ enum CommandShapeClassifier {
     /// Any of them could run.
     private static func commandWordsBehindUnknownExecutable(_ words: [String]) -> [String] {
         guard let args = wrappedArguments(stripWrappersRaw(words)) else { return [] }
-        return args.map { $0.hasPrefix("-") ? String($0.drop { $0 != "=" }.dropFirst()) : $0 }
+        return args.map { $0.hasPrefix("-") ? optionValue($0) : $0 }
             .filter { !$0.isEmpty }.map(normalizedExecutableName).filter(commandWords.contains)
+    }
+
+    /// The value an option word carries: after `=` (`--cmd=sh`), or attached to a short
+    /// option (`-csh`; `-c'sudo id'` lexes as `-csudo id`), which getopt reads as `-c sh`.
+    /// Empty for a bare option (`--shell`, `-c`).
+    private static func optionValue(_ option: String) -> String {
+        if let equals = option.firstIndex(of: "=") { return String(option[option.index(after: equals)...]) }
+        guard !option.hasPrefix("--"), option.count > 2 else { return "" }
+        return String(option.dropFirst(2))
     }
 
     /// Shell operators that make one argument a command line rather than a word.
     private static let commandLineOperators = Set("\n|&;<>()`")
 
-    /// Arguments of `wrappedArguments` that are whole command lines (`npx -c 'curl x | sh'`,
+    /// Arguments of `wrappedArguments` (or of a package manager whose verb `xargs` input
+    /// picks) that are whole command lines (`npx -c 'curl x | sh'`,
     /// `npm exec --call='sudo id'`, `tmux new -d 'curl x | sh'`): a shell operator, or a
     /// command word among its words. An app path with a space (`"/Applications/A B.app"`) is
     /// not one. They fail closed, and are also classified as nested commands, so a fetcher in
     /// one is still a remote script.
     private static func embeddedCommandLines(_ words: [String]) -> [String] {
-        guard let args = wrappedArguments(stripWrappersRaw(words)) else { return [] }
+        let stripped = stripWrappersRaw(words)
+        guard let args = wrappedArguments(stripped) ?? (xargsInputPicksVerb(words) ? Array(stripped.dropFirst()) : nil)
+        else { return [] }
         return args.map { arg in
-            arg.hasPrefix("-") && arg.contains("=") ? String(arg.drop { $0 != "=" }.dropFirst()) : arg
+            guard arg.hasPrefix("-") else { return arg }
+            let value = optionValue(arg)
+            return value.isEmpty ? arg : value
         }.filter { value in
             value.contains(where: commandLineOperators.contains) || (value.contains(where: \.isWhitespace)
                 && ShellLexer.words(from: ShellLexer.lex(value)).map(normalizedExecutableName).contains(where: commandWords.contains))
@@ -792,7 +806,8 @@ enum CommandShapeClassifier {
         .union([".", "source", "eval", "trap", "find", "awk", "gawk", "sed", "osascript"])
 
     /// `xargs` whose input becomes code or a program: no command after it (`xargs env`), a
-    /// shell or interpreter, an unknown executable, a package manager's exec verb, or the
+    /// shell or interpreter, an unknown executable, a package manager's exec verb, a package
+    /// manager whose verb the input picks (`xargs npm`, `xargs brew {} -c …`), or the
     /// `-I`/`-J` replacement string in the program word (`xargs -I{} {}`). Fails closed.
     private static func xargsRunsInputAsCode(_ words: [String]) -> Bool {
         let stripped = stripWrappersRaw(words)
@@ -800,18 +815,40 @@ enum CommandShapeClassifier {
         guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }) else { return false }
         guard let executable = stripped.first.map(normalizedExecutableName) else { return true }
         if xargsCodeRunners.contains(executable) || wrappedArguments(stripped) != nil { return true }
+        if xargsInputPicksVerb(words) { return true }
+        guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
+        return stripped[0].contains(replacement)
+    }
+
+    /// A package manager behind `xargs` whose verb is not literal, so the input picks it
+    /// (`xargs npm` + `exec sudo id`, `xargs -I{} brew {} -c …`). The verb must be the first
+    /// argument, or follow `--opt=value` options only: `--prefix /tmp` could leave the verb
+    /// position to the input.
+    private static func xargsInputPicksVerb(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        let consumed = words.prefix(words.count - stripped.count)
+        guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }),
+              let executable = stripped.first.map(normalizedExecutableName),
+              packageManagerExecutables.contains(executable) else { return false }
+        guard let verb = stripped.dropFirst().first(where: { !($0.hasPrefix("-") && $0.contains("=")) }),
+              !verb.hasPrefix("-") else { return true }
+        guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
+        return verb.contains(replacement)
+    }
+
+    /// The `-I`/`-J` replacement string among `xargs` options, attached (`-I{}`) or not.
+    private static func xargsReplacement(_ options: [String]) -> String? {
         var replacement: String?
-        var index = xargs + 1
-        while index < consumed.endIndex, replacement == nil {
-            let arg = consumed[index]
+        var index = 0
+        while index < options.count, replacement == nil {
+            let arg = options[index]
             if arg.hasPrefix("-"), !arg.hasPrefix("--"), let letter = arg.dropFirst().firstIndex(where: { "IJ".contains($0) }) {
                 let attached = String(arg[arg.index(after: letter)...])
-                replacement = attached.isEmpty && index + 1 < consumed.endIndex ? consumed[index + 1] : attached
+                replacement = attached.isEmpty && index + 1 < options.count ? options[index + 1] : attached
             }
             index += 1
         }
-        guard let replacement, !replacement.isEmpty else { return false }
-        return stripped[0].contains(replacement)
+        return replacement?.isEmpty == false ? replacement : nil
     }
 
     /// How a pipeline stage uses what is piped into it, counting commands nested in it that
