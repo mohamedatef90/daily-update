@@ -280,7 +280,7 @@ enum CLIRunner {
             DryRunEntry(
                 id: item.id,
                 name: item.name,
-                command: item.canInstall ? item.installCommand : item.updateCommand,
+                command: plannedCommand(for: item),
                 action: item.actionLabel,
                 category: item.category
             )
@@ -336,7 +336,7 @@ enum CLIRunner {
         // Remote-script and unparseable updates are refused on one path, with
         // or without --yes, whatever gate or loop shape put them there. A typed
         // item runs its planned spec, so the spec is what is checked and shown.
-        let updateCommand = item.plannedUpdateCommandSpec?.displayString ?? item.updateCommand
+        let updateCommand = plannedUpdateCommand(for: item)
         if action == .update, item.status == .gated || action.matches(item),
            ActionCommandPolicy.isRemoteScriptInstaller(updateCommand) {
             printDryRunPlan(entries: [
@@ -356,7 +356,7 @@ enum CLIRunner {
                 DryRunEntry(
                     id: item.id,
                     name: item.name,
-                    command: item.updateCommand,
+                    command: updateCommand,
                     action: item.actionLabel,
                     category: item.category
                 )
@@ -377,7 +377,7 @@ enum CLIRunner {
                 DryRunEntry(
                     id: item.id,
                     name: item.name,
-                    command: item.updateCommand,
+                    command: updateCommand,
                     action: item.actionLabel,
                     category: item.category
                 )
@@ -405,7 +405,7 @@ enum CLIRunner {
                 DryRunEntry(
                     id: item.id,
                     name: item.name,
-                    command: action == .install ? item.installCommand : item.updateCommand,
+                    command: action == .install ? item.installCommand : updateCommand,
                     action: item.actionLabel,
                     category: item.category
                 )
@@ -529,13 +529,12 @@ enum CLIRunner {
     }
 
     private static func plannedCommand(for item: UpdateItem) -> String {
-        if item.canInstall {
-            return item.installCommand
-        }
-        if let plannedSpec = item.plannedUpdateCommandSpec {
-            return plannedSpec.displayString
-        }
-        return item.updateCommand
+        item.canInstall ? item.installCommand : plannedUpdateCommand(for: item)
+    }
+
+    /// A typed item runs its planned spec, so every dry-run shows that, not the catalog string.
+    private static func plannedUpdateCommand(for item: UpdateItem) -> String {
+        item.plannedUpdateCommandSpec?.displayString ?? item.updateCommand
     }
 }
 
