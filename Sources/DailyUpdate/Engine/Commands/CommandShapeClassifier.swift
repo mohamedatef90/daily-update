@@ -984,17 +984,24 @@ enum CommandShapeClassifier {
         return runsShell && names.contains { !shellSafeVariables.contains($0) }
     }
 
-    /// The startup variables above, anywhere, and zsh's `globsubst` (also set by
+    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case),
+    /// which npm, pnpm and yarn v1 read as config. `npm_config_call` is `-c`, so a bare `npx`
+    /// or `npm exec` runs its value through `sh`.
+    private static func isCodeVariable(_ name: String) -> Bool {
+        startupVariables.contains(name) || name.lowercased().hasPrefix("npm_config_")
+    }
+
+    /// The code variables above, anywhere, and zsh's `globsubst` (also set by
     /// `emulate sh`/`ksh`), which turns a string into a pattern whose glob qualifiers run
     /// code. None of these is modelled.
     private static func changesShellEvaluation(_ words: [String]) -> Bool {
-        if words.contains(where: { isAssignment($0) && startupVariables.contains(assignedName($0)) }) { return true }
+        if words.contains(where: { isAssignment($0) && isCodeVariable(assignedName($0)) }) { return true }
         let stripped = stripWrappersRaw(words)
         guard let executable = stripped.first.map(normalizedExecutableName) else { return false }
         let args = Array(stripped.dropFirst())
         switch executable {
         case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
-            return args.contains { startupVariables.contains(assignedName($0)) }
+            return args.contains { isCodeVariable(assignedName($0)) }
         case "setopt", "unsetopt", "set":
             return args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("globsubst") }
         case "emulate":
