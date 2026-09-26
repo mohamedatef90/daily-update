@@ -1979,3 +1979,17 @@ extension PRB2aFollowUpTests {
         XCTAssertEqual(requests, [StrategyPlanner.openCodeLatestReleaseRequest])
     }
 }
+
+// MARK: - PR-B2c item 6: one anchored semver pattern
+
+extension PRB2aFollowUpTests {
+    /// ICU's `$` also matches before a final newline; `\z` does not, so `"1.1.0\n"` is refused.
+    func testNpmLatestWithATrailingNewlineIsNotStrictSemver() async throws {
+        let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: #""1.1.0\n""#)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let check = await UpdateCheckService.check(fixture.config, installed: true, pathLookup: fixture.lookup)
+        XCTAssertEqual(check.status, .checkFailed)
+        XCTAssertEqual(check.message, "Latest npm version is not strict semver: 1.1.0\n")
+        XCTAssertNil(check.plannedUpdateCommandSpec)
+    }
+}
