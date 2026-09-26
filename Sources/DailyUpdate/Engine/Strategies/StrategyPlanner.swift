@@ -688,7 +688,7 @@ private struct NpmPackageStrategy: Strategy {
             candidate = rawValue
         }
 
-        guard isStrictSemVer(candidate) else {
+        guard StrategyPlanner.isStrictSemVer(candidate) else {
             return LatestVersionOutcome(
                 latestVersion: nil,
                 failureMessage: "Latest npm version is not strict semver: \(candidate)"
@@ -698,7 +698,7 @@ private struct NpmPackageStrategy: Strategy {
     }
 
     func updateCommand(targetVersion: String?) -> CommandSpec? {
-        guard let targetVersion = targetVersion?.nilIfEmpty, isStrictSemVer(targetVersion) else {
+        guard let targetVersion = targetVersion?.nilIfEmpty, StrategyPlanner.isStrictSemVer(targetVersion) else {
             return nil
         }
         return CommandSpec(
@@ -706,13 +706,6 @@ private struct NpmPackageStrategy: Strategy {
             arguments: ["install", "-g", "--prefix", prefix, "\(package)@\(targetVersion)"],
             environment: ["PATH": "\(prefix)/bin:\(ShellRunner.defaultPath)"]
         )
-    }
-
-    private func isStrictSemVer(_ value: String) -> Bool {
-        value.range(
-            of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#,
-            options: .regularExpression
-        ) != nil
     }
 }
 
@@ -801,7 +794,9 @@ private struct OpenCodeNativeStrategy: Strategy {
         }
         let version = Self.withoutV(tag)
         guard StrategyPlanner.isStrictSemVer(version) else {
-            let shown = tag.count > 32 ? tag.prefix(32) + "…" : tag
+            // Scalars, not graphemes, bound the text; anything but printable ASCII shows as `?`.
+            let printable = tag.unicodeScalars.prefix(32).map { (0x20...0x7E).contains($0.value) ? Character($0) : "?" }
+            let shown = String(printable) + (tag.unicodeScalars.count > 32 ? "…" : "")
             return LatestVersionOutcome(latestVersion: nil, failureMessage: "OpenCode release tag is not strict semver: \(shown)")
         }
         return LatestVersionOutcome(latestVersion: version)
@@ -830,7 +825,7 @@ private struct CursorAgentNativeStrategy: Strategy {
     let requiresLatestVersion = true
     let requiresTargetVersion = false
 
-    private static let buildPattern = #"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$"#
+    private static let buildPattern = #"\A[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}\z"#
 
     func currentVersion() async -> String? {
         let prefix = nativeRoot.hasSuffix("/") ? nativeRoot : nativeRoot + "/"

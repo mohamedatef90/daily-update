@@ -220,6 +220,24 @@ final class PRB2bCatalogTests: HermeticTestCase {
         XCTAssertEqual(shown.message, "OpenCode release tag is not strict semver: " + exact)
     }
 
+    /// PR-B2c item 6: the echoed tag is at most 32 scalars of printable ASCII.
+    func testOpenCodeFailureShowsOnlyPrintableASCII() async throws {
+        let (binary, _) = try makeOpenCode(version: "1.18.32")
+        let url = StrategyPlanner.openCodeLatestReleaseRequest.arguments.last!
+        let lookup = CommandPathLookup(candidatesByName: ["opencode": [binary.path]], layout: layout)
+        let rows: [(String, String)] = [
+            (#"1.2\u001b[31m\u202ex\ny"#, "1.2?[31m?x?y"),
+            ("a" + String(repeating: #"\u0301"#, count: 200), "a" + String(repeating: "?", count: 31) + "…"),
+            (#"v1.é"#, "v1.?"),
+        ]
+        for (json, shown) in rows {
+            let (fetcher, _) = recordingFetcher([url: #"{"tag_name":""# + json + #""}"#])
+            let check = await UpdateCheckService.check(openCodeConfig, installed: true, pathLookup: lookup, fetchRelease: fetcher)
+            XCTAssertEqual(check.status, .checkFailed, json)
+            XCTAssertEqual(check.message, "OpenCode release tag is not strict semver: " + shown, json)
+        }
+    }
+
     func testOpenCodeFromNpmUsesTheNpmStrategyAndOtherPackagesMismatch() throws {
         let prefix = root.appendingPathComponent(".nvm/versions/node/v24.0.0")
         try write("#!/bin/sh\n", to: prefix.appendingPathComponent("bin/node"))

@@ -1965,3 +1965,17 @@ final class PRB2aFollowUpTests: HermeticTestCase {
         XCTAssertEqual(failed.message, "Could not determine latest version")
     }
 }
+
+// MARK: - PR-B2c item 7: `fetchBody` runs the spec it is given
+
+extension PRB2aFollowUpTests {
+    func testFetchBodyPassesItsOwnSpecThrough() async {
+        var requests: [CommandSpec] = []
+        let payload = await StrategyPlanner.fetchBody(StrategyPlanner.openCodeLatestReleaseRequest) { spec in
+            requests.append(spec)
+            return ShellRunner.Result(exitCode: 0, stdout: "{}", stderr: "")
+        }
+        XCTAssertEqual(payload, "{}")
+        XCTAssertEqual(requests, [StrategyPlanner.openCodeLatestReleaseRequest])
+    }
+}
