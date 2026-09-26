@@ -21,3 +21,24 @@ enum TestAppSupport {
 
     static func install() { ConfigLoader.setAppSupportDirectoryForTesting(root) }
 }
+
+final class TestAppSupportTests: HermeticTestCase {
+    private var realAppSupport: String {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("DailyUpdate", isDirectory: true).path
+    }
+
+    func testTheBundleUsesItsOwnAppSupport() {
+        XCTAssertEqual(ConfigLoader.appSupportDirectory.standardizedFileURL, TestAppSupport.root.standardizedFileURL)
+        XCTAssertNotEqual(ConfigLoader.appSupportDirectory.path, realAppSupport)
+    }
+
+    /// Even without an override, a DEBUG build under XCTest never resolves the real directory.
+    func testTheDefaultDirectoryIsNotTheRealOneUnderXCTest() {
+        ConfigLoader.setAppSupportDirectoryForTesting(nil)
+        defer { TestAppSupport.install() }
+        XCTAssertTrue(ConfigLoader.isRunningUnderXCTest)
+        XCTAssertNotEqual(ConfigLoader.appSupportDirectory.path, realAppSupport)
+        XCTAssertTrue(ConfigLoader.appSupportDirectory.lastPathComponent.hasPrefix("DailyUpdate-xctest-"))
+    }
+}
