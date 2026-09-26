@@ -5,7 +5,8 @@ final class RoundFourTests: HermeticTestCase {
     func testRoundFourClassifierAndCheckPathMatrix() {
         let rows: [(String, String, Set<CommandRisk>, Bool)] = [
             ("G1 brace command", "/usr/bin/{sudo,true} brew upgrade", [.unparseable], true),
-            ("G1 quoted brace", "'/usr/bin/{sudo,true}' brew upgrade", [], false),
+            // PR-B2c item 3: `{sudo,true}` is an unknown executable that names `brew`.
+            ("G1 quoted brace", "'/usr/bin/{sudo,true}' brew upgrade", [.unparseable], true),
             ("G2/N6 if", "if sudo brew upgrade; then echo ok; fi", [.privileged, .bulk, .chained, .controlFlow], true),
             ("G2/N6 while", "while sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
             ("G2/N6 until", "until sudo brew upgrade; do echo ok; done", [.privileged, .bulk, .chained, .controlFlow], true),
@@ -313,7 +314,8 @@ final class RoundFourTests: HermeticTestCase {
             ("A non-ASCII remote", "é=1 curl x | sh", [.remoteScript], true),
             ("A non-ASCII bulk", "café_2=1 brew upgrade", [.bulk], true),
             // PR-B2a item 8: any privilege word is unsafe on the check path, whatever runs it.
-            ("A guard digit name", "1A=x sudo /bin/true", [], true),
+            // PR-B2c item 3: `1A=x` is the executable, and it names `sudo`.
+            ("A guard digit name", "1A=x sudo /bin/true", [.unparseable], true),
             // Round 13 Security Q1: `>&1word` redirects to a file named `1word`, so it is not modelled.
             ("Q1 dup word sudo", ">&1echo sudo /bin/true", [.privileged, .unparseable], true),
             ("Q1 close word sudo", ">&-echo sudo /bin/true", [.privileged, .unparseable], true),
@@ -685,7 +687,8 @@ extension RoundFourTests {
             let remote = try remoteScript(root: root, marker: marker)
             let parts = remote.components(separatedBy: " curl ")
             let command = "export \(parts[0]); </dev/null curl \(parts[1])"
-            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript])
+            // PR-B2c item 2: the exported `PATH` reaches `sh`, so this also fails closed.
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
             store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
                 source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
                 versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]

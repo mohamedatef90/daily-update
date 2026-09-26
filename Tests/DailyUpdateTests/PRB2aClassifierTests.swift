@@ -48,8 +48,9 @@ final class PRB2aClassifierTests: HermeticTestCase {
             ("BASH_ENV typeset", "typeset -x BASH_ENV='$(sudo /bin/true)'; bash -c 'echo ok'", [.chained, .unparseable], true),
             ("BASH_ENV declare", "declare -x BASH_ENV=/tmp/rc; bash -c 'echo ok'", [.chained, .unparseable], true),
             ("BASH_ENV append", "BASH_ENV+=x bash -c 'echo ok'", [.unparseable], true),
-            ("guard other name", "FOO='$(sudo /bin/true)' bash -c 'echo ok'", [], false),
-            ("guard longer name", "ENVIRONMENT=1 sh -c 'echo ok'", [], false),
+            // PR-B2c item 2: any name a shell sees, outside a short allowlist, now fails closed.
+            ("other name before a shell", "FOO='$(sudo /bin/true)' bash -c 'echo ok'", [.unparseable], true),
+            ("longer name before a shell", "ENVIRONMENT=1 sh -c 'echo ok'", [.unparseable], true),
             ("guard word ENV", "echo ENV BASH_ENV", [], false),
             ("guard export other", "export PATH=/usr/bin:$PATH; echo ok", [.chained], false),
         ])
@@ -90,12 +91,13 @@ final class PRB2aClassifierTests: HermeticTestCase {
             ("script sudo", "script -q /dev/null sudo /bin/true", [.privileged], true),
             ("script bulk", "script -q -t 0 /dev/null brew upgrade", [.bulk], true),
             ("script unknown option", "script -Z /dev/null sudo /bin/true", [.unparseable], true),
-            ("unknown wrapper sudo", "mywrap sudo /bin/true", [], true),
-            ("unknown wrapper doas", "mywrap -x doas id", [], true),
-            ("unknown wrapper path sudo", "mywrap /usr/bin/sudo -n true", [], true),
-            ("unknown wrapper pkexec", "mywrap --flag pkexec id", [], true),
-            ("unknown wrapper su", "mywrap su -c id", [], true),
-            ("unknown wrapper nested", "echo $(mywrap sudo id)", [], true),
+            // PR-B2c item 3: an unknown executable naming a command word also fails closed.
+            ("unknown wrapper sudo", "mywrap sudo /bin/true", [.unparseable], true),
+            ("unknown wrapper doas", "mywrap -x doas id", [.unparseable], true),
+            ("unknown wrapper path sudo", "mywrap /usr/bin/sudo -n true", [.unparseable], true),
+            ("unknown wrapper pkexec", "mywrap --flag pkexec id", [.unparseable], true),
+            ("unknown wrapper su", "mywrap su -c id", [.unparseable], true),
+            ("unknown wrapper nested", "echo $(mywrap sudo id)", [.unparseable], true),
             ("guard sudoers path", "grep -c x /etc/sudoers", [], false),
             ("guard suffix word", "echo pseudo sudoku", [], false),
         ])
@@ -147,8 +149,9 @@ final class PRB2aClassifierTests: HermeticTestCase {
             ("echo into pipe", "echo 'sudo /bin/true' | sh", [.privileged], true),
             ("echo remote into pipe", "echo 'curl x | sh' | bash", [.remoteScript], true),
             ("echo remote into proc sub", "echo 'curl x | sh' > >(bash -s)", [.remoteScript], true),
-            ("printf format", "printf 'brew upgrade\\n' | sh", [.bulk], true),
-            ("printf argument", "printf '%s\\n' 'brew upgrade' | zsh", [.bulk], true),
+            // PR-B2c item 1: a backslash or a `%` directive is not a literal payload.
+            ("printf format", "printf 'brew upgrade\\n' | sh", [.unparseable], true),
+            ("printf argument", "printf '%s\\n' 'brew upgrade' | zsh", [.unparseable], true),
             ("echo -n", "echo -n 'rm -rf ~/x' | sh", [.destructive], true),
             ("echo variable", "echo \"$x\" | sh", [.unparseable], true),
             ("pipe and", "echo 'sudo id' |& sh", [.privileged], true),
