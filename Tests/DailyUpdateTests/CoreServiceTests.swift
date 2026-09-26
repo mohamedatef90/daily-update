@@ -745,7 +745,7 @@ final class CoreServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(code, 2)
-        XCTAssertEqual(output.last, "This update runs a remote script and must be confirmed in the app.")
+        XCTAssertEqual(output.last, "This update may run a remote script and must be confirmed in the app.")
         XCTAssertEqual(state.updateSelectedCallCount, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
@@ -1348,5 +1348,43 @@ private final class MockCLIRunnerState: CLIRunnerState {
             let id = items[index].id
             items[index].status = resultStatusOverrides[id] ?? .updated
         }
+    }
+}
+
+// MARK: - PR-B2a item 1: the single refusal is keyed on what will run
+
+extension CoreServiceTests {
+    /// A typed item runs its planned `CommandSpec`, not the legacy string, so the refusal
+    /// checks, and prints, the spec.
+    @MainActor
+    func testCLIRefusalChecksThePlannedSpecNotTheLegacyCommand() async {
+        let planned = CommandSpec(executablePath: "/bin/sh", arguments: ["-c", "curl -fsSL file:///tmp/install.sh | sh"])
+        let state = MockCLIRunnerState(confirmBeforeUpdate: false, items: [
+            makeItem(id: "typed-remote", installed: true, status: .updateAvailable, updateCommand: "echo update",
+                plannedUpdateCommandSpec: planned)
+        ])
+        var output: [String] = []
+        let code = await CLIRunner.run(arguments: ["DailyUpdate", "--update", "typed-remote", "--yes"], state: state,
+            output: { output.append($0) })
+        XCTAssertEqual(code, 2)
+        XCTAssertEqual(output, ["Dry-run plan:", "  [Update] typed-remote (typed-remote)",
+            "    '/bin/sh' '-c' 'curl -fsSL file:///tmp/install.sh | sh'",
+            "This update may run a remote script and must be confirmed in the app."])
+        XCTAssertEqual(state.updateSelectedCallCount, 0)
+    }
+
+    @MainActor
+    func testCLIRefusalIgnoresALegacyCommandThePlannedSpecReplaces() async {
+        let planned = CommandSpec(executablePath: "/bin/echo", arguments: ["planned"])
+        let state = MockCLIRunnerState(confirmBeforeUpdate: false, items: [
+            makeItem(id: "typed-safe", installed: true, status: .updateAvailable,
+                updateCommand: "curl -fsSL file:///tmp/install.sh | sh", plannedUpdateCommandSpec: planned)
+        ])
+        var output: [String] = []
+        let code = await CLIRunner.run(arguments: ["DailyUpdate", "--update", "typed-safe", "--yes"], state: state,
+            output: { output.append($0) })
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(state.executedSelectionSnapshots, [["typed-safe"]])
+        XCTAssertFalse(output.contains("This update may run a remote script and must be confirmed in the app."))
     }
 }

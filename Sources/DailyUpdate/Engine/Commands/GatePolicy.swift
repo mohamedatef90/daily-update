@@ -106,7 +106,8 @@ enum GatePolicy {
             classification.risks.contains(.unparseable) {
             return true
         }
-        if CommandShapeClassifier.containsMutatingPackageManagerVerb(checkCommand) {
+        if CommandShapeClassifier.containsMutatingPackageManagerVerb(checkCommand) ||
+            CommandShapeClassifier.containsPrivilegeCommandWord(checkCommand) {
             return true
         }
         return CommandShapeClassifier.checkRunsUpdate(check: checkCommand, update: updateCommand)

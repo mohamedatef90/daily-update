@@ -15,14 +15,17 @@ enum StrategyPlanner {
 
     /// `/usr/bin/curl` is SIP-protected, so a `curl` planted earlier on PATH
     /// never runs. `-q` must come first to skip `~/.curlrc`, and
-    /// `--proto =https` refuses every other scheme, redirects included.
+    /// `--proto =https` refuses every other scheme. Without `-L`, curl follows no redirects.
     static let claudeDistTagsRequest = CommandSpec(
         executablePath: "/usr/bin/curl",
         arguments: ["-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
             "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"]
     )
 
-    private static var claudeDistTagsFetcherOverride: (() async -> String?)?
+    /// Returns the dist-tags payload, or `nil` when the fetch failed. A planner input, like `pathLookup`.
+    typealias DistTagsFetcher = () async -> String?
+
+    static let liveClaudeDistTags: DistTagsFetcher = { await fetchClaudeDistTags() }
 
     static func fetchClaudeDistTags(run: ProcessRunner = { spec in
         await ShellRunner.runProcess(executablePath: spec.executablePath, arguments: spec.arguments,
@@ -30,14 +33,6 @@ enum StrategyPlanner {
     }) async -> String? {
         let result = await run(claudeDistTagsRequest)
         return result.succeeded ? result.stdout : nil
-    }
-
-    static func setClaudeDistTagsFetcherForTesting(_ fetcher: (() async -> String?)?) {
-#if DEBUG
-        claudeDistTagsFetcherOverride = fetcher
-#else
-        _ = fetcher
-#endif
     }
 
     static func usesTypedEngine(config: DetectorConfig) -> Bool {
@@ -48,7 +43,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         currentVersion: String?,
         pathLookup: CommandPathLookup? = nil,
-        layout: EcosystemLayout = .live()
+        layout: EcosystemLayout = .live(),
+        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
     ) async -> StrategyPlan? {
         guard usesTypedEngine(config: config) else { return nil }
         guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
@@ -69,7 +65,8 @@ enum StrategyPlanner {
             config: config,
             currentVersion: currentVersion,
             resolution: resolution,
-            layout: layout
+            layout: layout,
+            fetchClaudeDistTags: fetchClaudeDistTags
         )
     }
 
@@ -77,9 +74,10 @@ enum StrategyPlanner {
         config: DetectorConfig,
         currentVersion: String?,
         resolution: OwnerResolution,
-        layout: EcosystemLayout = .live()
+        layout: EcosystemLayout = .live(),
+        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
     ) async -> StrategyPlan {
-        switch prepare(config: config, resolution: resolution, layout: layout) {
+        switch prepare(config: config, resolution: resolution, layout: layout, fetchClaudeDistTags: fetchClaudeDistTags) {
         case .blocked(let reason, let message):
             return StrategyPlan(
                 ownerResolution: resolution,
@@ -276,7 +274,8 @@ enum StrategyPlanner {
     private static func prepare(
         config: DetectorConfig,
         resolution: OwnerResolution,
-        layout: EcosystemLayout
+        layout: EcosystemLayout,
+        fetchClaudeDistTags: @escaping DistTagsFetcher = liveClaudeDistTags
     ) -> PreparationOutcome {
         if let error = resolution.resolveError {
             switch error {
@@ -296,7 +295,7 @@ enum StrategyPlanner {
             return .blocked(.ownerMismatch, "Resolved owner does not match catalog package identity")
         }
 
-        switch makeStrategy(config: config, active: active, layout: layout) {
+        switch makeStrategy(config: config, active: active, layout: layout, fetchClaudeDistTags: fetchClaudeDistTags) {
         case .strategy(let strategy):
             return .ready(strategy)
         case .unknownOwner(let message):
@@ -309,7 +308,8 @@ enum StrategyPlanner {
     private static func makeStrategy(
         config: DetectorConfig,
         active: OwnerCandidate,
-        layout: EcosystemLayout
+        layout: EcosystemLayout,
+        fetchClaudeDistTags: @escaping DistTagsFetcher
     ) -> StrategyBuildOutcome {
         switch active.owner {
         case .brewFormula(let formula):
@@ -364,7 +364,7 @@ enum StrategyPlanner {
                 return .unknownOwner("Untrusted Claude executable path")
             }
             return .strategy(ClaudeNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
-                fetchDistTags: claudeDistTagsFetcherOverride ?? { await fetchClaudeDistTags() }))
+                fetchDistTags: fetchClaudeDistTags))
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
         case .unknown:

@@ -1582,17 +1582,16 @@ final class PartThreeRegressionTests: XCTestCase {
         try createExecutable(at: target)
         try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
-        StrategyPlanner.setClaudeDistTagsFetcherForTesting { #"{"latest":"2.1.281","stable":"2.1.281"}"# }
-        defer { StrategyPlanner.setClaudeDistTagsFetcherForTesting(nil) }
+        let distTags: StrategyPlanner.DistTagsFetcher = { #"{"latest":"2.1.281","stable":"2.1.281"}"# }
         var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
         config.selfUpdater = "claudeCode"
         let lookup = CommandPathLookup(candidatesByName: ["claude": [link.path]], layout: .fixture(home: root.path))
-        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: distTags)
         XCTAssertEqual(check.status, .upToDate)
         XCTAssertEqual(check.currentVersion, "2.1.281")
         XCTAssertEqual(check.latestVersion, "2.1.281")
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: target.path)
-        let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup)
+        let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: distTags)
         XCTAssertEqual(untrusted.status, .blocked)
         XCTAssertEqual(untrusted.message, "Untrusted Claude executable path")
     }
@@ -1715,8 +1714,9 @@ final class PartThreeRegressionTests: XCTestCase {
         setenv("HOMEBREW_PREFIX", "/custom/brew", 1)
         defer { if let previous { setenv("HOMEBREW_PREFIX", previous, 1) } else { unsetenv("HOMEBREW_PREFIX") } }
         let layout = await EcosystemLayout.discover()
-        XCTAssertEqual(layout.brewPrefixes, ["/custom/brew"])
-        XCTAssertEqual(layout.brewCellars, ["/custom/brew/Cellar"])
+        // PR-B2a (Code Review suggestion 2): the configured prefix is added to the defaults.
+        XCTAssertEqual(layout.brewPrefixes, ["/custom/brew", "/opt/homebrew", "/usr/local"])
+        XCTAssertEqual(layout.brewCellars, ["/custom/brew/Cellar", "/opt/homebrew/Cellar", "/usr/local/Cellar"])
     }
 
     func testCatalogV2MigrationAndInvalidEntryIsolation() {
@@ -1768,10 +1768,16 @@ final class PartThreeRegressionTests: XCTestCase {
         if [ "$1" = install ]; then printf '%s' '{"name":"@openai/codex","version":"1.1.0"}' > \(ShellEscaping.quote(json.path)); exit 0; fi
         exit 2
         """)
-        let result = await UpdateExecutor.update(item, config: fixture.config, pathLookup: fixture.lookup,
+        let lookups = LookupProbe()
+        let runner = UpdateExecutor.Runner(runCommand: UpdateExecutor.Runner.live.runCommand,
+            runSpec: UpdateExecutor.Runner.live.runSpec,
+            lookupCommand: { name in await lookups.record(name); return fixture.lookup })
+        let result = await UpdateExecutor.update(item, runner: runner, config: fixture.config, pathLookup: fixture.lookup,
             reviewedCommandHash: GatePolicy.reviewedCommandHash(for: fixture.config))
         XCTAssertEqual(result.status, .updated)
         XCTAssertEqual(result.currentVersion, "1.1.0")
+        let names = await lookups.names
+        XCTAssertEqual(names, ["codex"])
     }
 
     @MainActor
@@ -1844,7 +1850,10 @@ extension PartThreeRegressionTests {
         item.isInstalled = true
         item.latestVersion = "1.1.0"
         item.plannedUpdateCommandSpec = CommandSpec(executablePath: stub.path, arguments: [])
-        let result = await UpdateExecutor.update(item, config: config, pathLookup: lookup)
+        // PR-B2a: the post-update lookup is fresh, so the fixture supplies it too.
+        let runner = UpdateExecutor.Runner(runCommand: UpdateExecutor.Runner.live.runCommand,
+            runSpec: UpdateExecutor.Runner.live.runSpec, lookupCommand: { _ in lookup })
+        let result = await UpdateExecutor.update(item, runner: runner, config: config, pathLookup: lookup)
         XCTAssertEqual(result.status, .failedVerification)
         XCTAssertEqual(result.currentVersion, "1.1.0")
     }
@@ -1863,5 +1872,92 @@ extension PartThreeRegressionTests {
         let result = await UpdateExecutor.update(item, config: config, reviewedCommandHash: GatePolicy.reviewedCommandHash(for: config))
         XCTAssertEqual(result.status, .updated)
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+}
+
+private actor LookupProbe {
+    private(set) var names: [String] = []
+    func record(_ name: String) { names.append(name) }
+}
+
+/// PR-B2a item 1: Code Review's suggestions 1 and 2 and round 7's planner-input fetcher.
+final class PRB2aFollowUpTests: XCTestCase {
+    /// Suggestion 1: the post-update owner check uses a fresh lookup, so a new binary that the
+    /// update put earlier on `PATH` is seen instead of the check-time snapshot.
+    func testVerificationUsesAFreshLookupAfterTheUpdate() async throws {
+        let fixture = try makeTypedCheckFixture(installedVersion: "1.0.0", latestOutput: "\"1.1.0\"")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var item = fixture.config.toUpdateItem()
+        item.isInstalled = true
+        item.currentVersion = "1.0.0"
+        item.latestVersion = "1.1.0"
+        let npm = fixture.install.prefix.appendingPathComponent("bin/npm")
+        item.plannedUpdateCommandSpec = CommandSpec(executablePath: npm.path,
+            arguments: ["install", "-g", "--prefix", fixture.install.prefix.path, "@openai/codex@1.1.0"])
+        let json = fixture.install.prefix.appendingPathComponent("lib/node_modules/@openai/codex/package.json")
+        let shadow = fixture.root.appendingPathComponent("shadow/codex")
+        try createExecutable(at: npm, contents: """
+        #!/bin/sh
+        if [ "$1" = view ]; then echo '"1.1.0"'; exit 0; fi
+        if [ "$1" = install ]; then printf '%s' '{"name":"@openai/codex","version":"1.1.0"}' > \(ShellEscaping.quote(json.path)); exit 0; fi
+        exit 2
+        """)
+        try createExecutable(at: shadow)
+        let fresh = CommandPathLookup(candidatesByName: ["codex": [shadow.path, fixture.install.commandPath.path]])
+        let lookups = LookupProbe()
+        let runner = UpdateExecutor.Runner(runCommand: UpdateExecutor.Runner.live.runCommand,
+            runSpec: UpdateExecutor.Runner.live.runSpec,
+            lookupCommand: { name in await lookups.record(name); return fresh })
+        let result = await UpdateExecutor.update(item, runner: runner, config: fixture.config, pathLookup: fixture.lookup,
+            reviewedCommandHash: GatePolicy.reviewedCommandHash(for: fixture.config))
+        XCTAssertEqual(result.status, .failedVerification)
+        XCTAssertEqual(result.message, "Resolved owner does not match catalog package identity")
+        let names = await lookups.names
+        XCTAssertEqual(names, ["codex"])
+    }
+
+    /// Suggestion 2: a discovered or configured prefix is added to the defaults, not swapped in.
+    func testLayoutAddsTheDiscoveredPrefixToTheDefaults() {
+        let custom = EcosystemLayout.live(home: "/Users/x", brewPrefix: "/custom/brew")
+        XCTAssertEqual(custom.brewPrefixes, ["/custom/brew", "/opt/homebrew", "/usr/local"])
+        XCTAssertEqual(custom.brewCaskrooms, ["/custom/brew/Caskroom", "/opt/homebrew/Caskroom", "/usr/local/Caskroom"])
+        let rosetta = EcosystemLayout.live(home: "/Users/x", brewPrefix: "/usr/local")
+        XCTAssertEqual(rosetta.brewPrefixes, ["/usr/local", "/opt/homebrew"])
+        let standard = EcosystemLayout.live(home: "/Users/x", brewPrefix: "/opt/homebrew")
+        XCTAssertEqual(standard.brewPrefixes, ["/opt/homebrew", "/usr/local"])
+    }
+
+    /// Suggestion 2: `brew --prefix` is spawned once per run, not once per lookup.
+    func testBrewPrefixIsProbedOncePerRun() async {
+        let probes = LookupProbe()
+        let discovery = BrewPrefixDiscovery()
+        let probe: @Sendable () async -> String? = { await probes.record("brew --prefix"); return "/custom/brew" }
+        let first = await discovery.prefix(probe: probe)
+        let second = await discovery.prefix(probe: probe)
+        XCTAssertEqual(first, "/custom/brew")
+        XCTAssertEqual(second, "/custom/brew")
+        let count = await probes.names.count
+        XCTAssertEqual(count, 1)
+        let failed = BrewPrefixDiscovery()
+        let none = await failed.prefix(probe: { nil })
+        XCTAssertNil(none)
+    }
+
+    /// Round 7: the Claude dist-tags fetcher is a planner input, like `pathLookup`.
+    func testClaudeDistTagsFetcherIsAPlannerInput() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent(".local/share/claude/versions/2.1.281")
+        try createExecutable(at: target)
+        var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
+        config.selfUpdater = "claudeCode"
+        let lookup = CommandPathLookup(candidatesByName: ["claude": [target.path]], layout: .fixture(home: root.path))
+        let newer = await UpdateCheckService.check(config, installed: true, pathLookup: lookup,
+            fetchClaudeDistTags: { #"{"latest":"2.1.282","stable":"2.1.281"}"# })
+        XCTAssertEqual(newer.status, .updateAvailable)
+        XCTAssertEqual(newer.latestVersion, "2.1.282")
+        let failed = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: { nil })
+        XCTAssertEqual(failed.status, .checkFailed)
+        XCTAssertEqual(failed.message, "Could not determine latest version")
     }
 }

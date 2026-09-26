@@ -26,10 +26,10 @@ struct CommandClassification: Equatable {
 enum CommandShapeClassifier {
     private static let fetchers: Set<String> = ["curl", "wget", "fetch", "http", "lwp-request", "lwp-download", "get", "nscurl", "aria2c", "https", "xh"]
     private static let interpreters: Set<String> = [
-        "sh", "bash", "zsh", "dash", "ksh", "fish",
+        "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
         "python", "python3", "python2", "perl", "ruby", "node"
     ]
-    private static let shellExecutables: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish"]
+    private static let shellExecutables: Set<String> = ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"]
     private static let privilegeCommands: Set<String> = ["sudo", "doas", "pkexec", "su"]
     private static let controlFlowKeywords: Set<String> = [
         "if", "then", "fi", "for", "while", "case", "do", "done", "function", "else", "elif", "until", "coproc", "repeat",
@@ -63,6 +63,14 @@ enum CommandShapeClassifier {
             }
         }
         return false
+    }
+
+    /// Any word, in any simple command, that names a privilege command. An exec wrapper this
+    /// model does not know (`mywrap sudo …`) still hides nothing on the check path.
+    static func containsPrivilegeCommandWord(_ command: String) -> Bool {
+        allSimpleCommands(command).contains { words in
+            words.contains { privilegeCommands.contains(normalizedExecutableName($0)) }
+        }
     }
 
     static func containsMutatingPackageManagerVerb(_ command: String) -> Bool {
@@ -130,7 +138,7 @@ enum CommandShapeClassifier {
         let inline = simpleCommands.flatMap { inlineShellCommands(in: $0) }
         // An empty body (`f()`, `$()`) runs nothing; only the top level must be non-empty.
         let nestedBodies = ShellLexer.nestedCommands(in: trimmed).filter { !$0.allSatisfy(\.isWhitespace) }
-        for nested in nestedBodies + inline {
+        for nested in nestedBodies + inline + echoedShellPayloads(tokens) {
             risks.formUnion(classify(nested, depth: depth + 1, visited: nextVisited))
         }
 
@@ -166,7 +174,7 @@ enum CommandShapeClassifier {
                 let executableIndex = words.count - stripWrappersRaw(words).count
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
-                    || shellScriptFollowsOption(words) {
+                    || shellScriptFollowsOption(words) || changesShellEvaluation(words) {
                     failsClosed = true
                 }
                 if executableIndex < words.count, words[executableIndex] != "[",
@@ -604,13 +612,16 @@ enum CommandShapeClassifier {
     }
 
     private enum ShellScript {
+        /// No script operand: the shell reads its commands from stdin.
         case none
         case script(String)
+        /// The first operand is a script file.
+        case file
         case unparseable
     }
 
     /// Clusters that take no value, so the script is the word right after the cluster.
-    private static let shellScriptFlagLetters = Set("cefilnuvx")
+    private static let shellScriptFlagLetters = Set("cefilnsuvx")
     /// fish reads `-f` as `--features`, which takes a value.
     private static let fishScriptFlagLetters = Set("ceilnuvx")
 
@@ -618,24 +629,29 @@ enum CommandShapeClassifier {
     /// `~x` after `hash -d x=-c;`, and `^x` / `x#` under `setopt extendedglob`.
     private static let shellOptionExpansionCharacters = Set("$`{*?[~^#")
 
-    /// The script `sh`/`bash`/`zsh`/`fish` would run. One walk over the words after the
+    /// The script `sh`/`bash`/`zsh`/`fish`/`csh` would run. One walk over the words after the
     /// shell: a word that could expand, or an option that is not a `-` cluster of
-    /// `c e f i l n u v x` (`--wordexp`, `--command`, `+c`, `-o name`, `-C`), fails closed.
+    /// `c e f i l n s u v x` (`--wordexp`, `--command`, `+c`, `-o name`, `-C`), fails closed.
     /// A cluster with `c` takes the next word as the script; the first operand is a file.
+    /// After `-s` the script is stdin: operands, and every word after `--`, are positional parameters.
     private static func shellScript(_ stripped: [String]) -> ShellScript {
         guard let executable = stripped.first.map(normalizedExecutableName) else { return .none }
         let isFish = executable == "fish"
         let letters = isFish ? fishScriptFlagLetters : shellScriptFlagLetters
         let isOption = { (word: String) in word.hasPrefix("-") || word.hasPrefix("+") }
+        var readsStdin = false
         var index = 1
         while index < stripped.count {
             let word = stripped[index]
             if word.contains(where: shellOptionExpansionCharacters.contains) { return .unparseable }
-            guard isOption(word) else { return .none }
+            guard isOption(word) else { return readsStdin ? .none : .file }
+            if word == "--", readsStdin { return .none }
             guard word.count > 1, word.hasPrefix("-"), word.dropFirst().allSatisfy(letters.contains) else {
                 return .unparseable
             }
             if word.contains("c") {
+                // fish's `-c` takes a value, so in `fish -ci 'x'` fish runs `i`: not modelled.
+                if isFish, word.last != "c" { return .unparseable }
                 guard index + 1 < stripped.count else { return .none }
                 let script = stripped[index + 1]
                 if isOption(script) { return .unparseable }
@@ -645,9 +661,87 @@ enum CommandShapeClassifier {
                 }) { return .unparseable }
                 return .script(script)
             }
+            if word.contains("s") { readsStdin = true }
             index += 1
         }
         return .none
+    }
+
+    /// A shell whose script is stdin, so whatever is piped into it runs.
+    private static func shellReadsStdin(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName),
+              shellExecutables.contains(executable) else { return false }
+        if case .none = shellScript(stripped) { return true }
+        return false
+    }
+
+    /// The text `echo` or `printf` prints into a shell that reads stdin, through `|` or
+    /// `> >(…)`: it is code, like `sh -c`. `echo ok | sh` stays `[]`.
+    private static func echoedShellPayloads(_ tokens: [ShellToken]) -> [String] {
+        var payloads: [String] = []
+        for segment in ShellLexer.split(tokens, by: [.and, .or, .semicolon, .newline, .background]) {
+            let stages = ShellLexer.split(segment, by: [.pipe, .pipeAnd])
+            for (offset, stage) in stages.enumerated() {
+                let words = commandWords(stage)
+                // Fetched text piped into a shell is already `remoteScript`.
+                guard let printed = printedText(words), !stageContainsFetcher(stage) else { continue }
+                let intoPipe = offset + 1 < stages.count && shellReadsStdin(commandWords(stages[offset + 1]))
+                let intoSubstitution = words.contains { word in
+                    word.hasPrefix(">(") && ShellLexer.nestedCommands(in: word).contains {
+                        allSimpleCommands($0).contains(where: shellReadsStdin)
+                    }
+                }
+                if intoPipe || intoSubstitution { payloads += printed }
+            }
+        }
+        return payloads.filter { !$0.allSatisfy(\.isWhitespace) }
+    }
+
+    /// What `echo` (after `-n`/`-e`/`-E`) or `printf` (its format, then its arguments) prints,
+    /// with `\n` and `\t` read as the escapes both expand.
+    private static func printedText(_ words: [String]) -> [String]? {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), ["echo", "printf"].contains(executable) else {
+            return nil
+        }
+        var args = stripped.dropFirst().filter { !$0.hasPrefix(">(") && !$0.hasPrefix("<(") }
+        let unescape = { (text: String) in
+            text.replacingOccurrences(of: "\\n", with: "\n").replacingOccurrences(of: "\\t", with: "\t")
+        }
+        if executable == "echo" {
+            while let first = args.first, matches(#"^-[neE]+$"#, in: first) { args.removeFirst() }
+            return [unescape(args.joined(separator: " "))]
+        }
+        if args.first == "--" { args.removeFirst() }
+        guard let format = args.first else { return [] }
+        return [unescape(format), unescape(args.dropFirst().joined(separator: " "))]
+    }
+
+    /// bash and `sh -i` expand `BASH_ENV` / `ENV` (substitutions included) before they run
+    /// anything, and zsh's `globsubst` (also set by `emulate sh`/`ksh`) turns a string into a
+    /// pattern whose glob qualifiers run code. None of these is modelled.
+    private static func changesShellEvaluation(_ words: [String]) -> Bool {
+        let startupVariables: Set<String> = ["BASH_ENV", "ENV"]
+        func assignedName(_ word: String) -> String {
+            var name = String(word.prefix { $0 != "=" })
+            if name.hasSuffix("+") { name.removeLast() }
+            return name
+        }
+        if words.contains(where: { isAssignment($0) && startupVariables.contains(assignedName($0)) }) { return true }
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName) else { return false }
+        let args = Array(stripped.dropFirst())
+        switch executable {
+        case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
+            return args.contains { startupVariables.contains(assignedName($0)) }
+        case "setopt", "unsetopt", "set":
+            return args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("globsubst") }
+        case "emulate":
+            return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
+        default:
+            return false
+        }
     }
 
     /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.
@@ -775,6 +869,10 @@ enum CommandShapeClassifier {
         "arch": WrapperOptions(words: ["-32", "-64", "-arm64", "-arm64e", "-x86_64", "-i386", "-c", "arm64", "x86_64"],
             valueWords: ["-arch", "-d", "-e"]),
         "xargs": WrapperOptions(flags: Set("0oprtx"), values: Set("EIJLnPRSs")),
+        // macOS `taskpolicy [-x|-X] [-d p] [-g p] [-c clamp] [-b] [-t tier] … <program>`.
+        "taskpolicy": WrapperOptions(flags: Set("xXbBas"), values: Set("dgctlSPmjp")),
+        // macOS `script [-aeFkpqr] [-t time] [file [command …]]`: the file is an operand.
+        "script": WrapperOptions(flags: Set("adeFkpqr"), values: Set("tT"), operands: 1),
     ]
 
     /// Removes leading wrappers (`sudo -u root`, `env A=1`, `if`, `then` …)
