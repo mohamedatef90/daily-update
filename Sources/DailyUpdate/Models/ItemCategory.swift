@@ -141,14 +141,22 @@ struct UpdateItem: Identifiable, Hashable {
     var duplicateGroupID: String? = nil
     let iconPath: String?
     let detectCommand: String?
+    var command: String? = nil
+    var packages: PackageIdentifiers? = nil
+    var selfUpdater: String? = nil
+    var appcastURL: String? = nil
+    var autoUpdates: Bool? = nil
     let versionCommand: String?
     var versionPattern: String? = nil
     let checkCommand: String?
     let installCommand: String
     let updateCommand: String
     let workingDirectory: String?
+    var plannedUpdateCommandSpec: CommandSpec? = nil
+    var ownerFingerprint: String? = nil
     var detectedPaths: [String] = []
     var needsReview: Bool = false
+    var detectRule: DetectRule? = nil
 
     var isSnoozed: Bool {
         guard let snoozedUntil else { return false }
@@ -162,7 +170,7 @@ struct UpdateItem: Identifiable, Hashable {
               !targetVersion.isEmpty else {
             return false
         }
-        return targetVersion != pinnedVersion
+        return !GatePolicy.versionsMatch(targetVersion, pinnedVersion)
     }
 
     var displayVersion: String {
@@ -216,7 +224,20 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var commandReviewHash: String {
-        GatePolicy.reviewedCommandHash(updateCommand: updateCommand, installCommand: installCommand)
+        GatePolicy.reviewedCommandHash(
+            detectCommand: detectCommand,
+            versionCommand: versionCommand,
+            checkCommand: checkCommand,
+            updateCommand: updateCommand,
+            installCommand: installCommand,
+            detectRule: detectRule, versionPattern: versionPattern, workingDirectory: workingDirectory,
+            command: command, packages: packages, selfUpdater: selfUpdater,
+            appcastURL: appcastURL, autoUpdates: autoUpdates
+        )
+    }
+
+    var isAwaitingAutomationReview: Bool {
+        source != .bundled && needsReview && gateReasons.contains(.needsReview)
     }
 
     var requiresCommandReview: Bool {
@@ -244,6 +265,8 @@ struct UpdateItem: Identifiable, Hashable {
         hasher.combine(latestVersion)
         hasher.combine(statusMessage)
         hasher.combine(versionPattern)
+        hasher.combine(plannedUpdateCommandSpec)
+        hasher.combine(ownerFingerprint)
     }
 
     static func == (lhs: UpdateItem, rhs: UpdateItem) -> Bool {
@@ -257,6 +280,8 @@ struct UpdateItem: Identifiable, Hashable {
             lhs.currentVersion == rhs.currentVersion &&
             lhs.latestVersion == rhs.latestVersion &&
             lhs.versionPattern == rhs.versionPattern &&
+            lhs.plannedUpdateCommandSpec == rhs.plannedUpdateCommandSpec &&
+            lhs.ownerFingerprint == rhs.ownerFingerprint &&
             lhs.isInstalled == rhs.isInstalled &&
             lhs.autoUpdate == rhs.autoUpdate &&
             lhs.isSnoozed == rhs.isSnoozed &&

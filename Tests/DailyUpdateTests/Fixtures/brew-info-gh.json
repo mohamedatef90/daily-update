@@ -1,0 +1,25 @@
+{
+  "formulae": [
+    {
+      "name": "gh",
+      "versions": {
+        "stable": "2.101.0",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "revision": 0,
+      "linked_keg": "2.101.0",
+      "installed": [
+        {
+          "version": "2.101.0",
+          "used_options": [],
+          "built_as_bottle": true,
+          "poured_from_bottle": true,
+          "runtime_dependencies": [],
+          "installed_on_request": true
+        }
+      ],
+      "pinned": false
+    }
+  ]
+}

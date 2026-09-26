@@ -183,7 +183,12 @@
       "id": "codex-cli",
       "name": "Codex CLI",
       "category": "cli",
+      "schemaVersion": 2,
       "description": "OpenAI Codex CLI",
+      "command": "codex",
+      "packages": {
+        "npm": "@openai/codex"
+      },
       "detect": {
         "type": "command",
         "command": "command -v codex >/dev/null 2>&1"
@@ -196,7 +201,14 @@
       "id": "claude-code",
       "name": "Claude Code",
       "category": "cli",
+      "schemaVersion": 2,
       "description": "Anthropic Claude Code CLI",
+      "command": "claude",
+      "packages": {
+        "npm": "@anthropic-ai/claude-code",
+        "brewCask": "claude-code"
+      },
+      "selfUpdater": "claudeCode",
       "detect": {
         "type": "command",
         "command": "command -v claude >/dev/null 2>&1"
@@ -245,7 +257,12 @@
       "versionCommand": "cline version 2>/dev/null || cline --version 2>/dev/null",
       "checkCommand": "npm outdated -g cline 2>/dev/null | grep -q '^cline' && echo UPDATE || echo OK",
       "installCommand": "npm install -g cline",
-      "updateCommand": "npm install -g cline@latest"
+      "updateCommand": "npm install -g cline@latest",
+      "schemaVersion": 2,
+      "command": "cline",
+      "packages": {
+        "npm": "cline"
+      }
     },
     {
       "id": "gemini-cli",
@@ -259,7 +276,12 @@
       "versionCommand": "gemini --version 2>/dev/null",
       "checkCommand": "npm outdated -g @google/gemini-cli 2>/dev/null | grep -q '@google/gemini-cli' && echo UPDATE || echo OK",
       "installCommand": "npm install -g @google/gemini-cli",
-      "updateCommand": "npm install -g @google/gemini-cli@latest"
+      "updateCommand": "npm install -g @google/gemini-cli@latest",
+      "schemaVersion": 2,
+      "command": "gemini",
+      "packages": {
+        "npm": "@google/gemini-cli"
+      }
     },
     {
       "id": "qwen-code",
@@ -273,7 +295,12 @@
       "versionCommand": "qwen --version 2>/dev/null",
       "checkCommand": "npm outdated -g @qwen-code/qwen-code 2>/dev/null | grep -q '@qwen-code/qwen-code' && echo UPDATE || echo OK",
       "installCommand": "npm install -g @qwen-code/qwen-code@latest",
-      "updateCommand": "npm install -g @qwen-code/qwen-code@latest"
+      "updateCommand": "npm install -g @qwen-code/qwen-code@latest",
+      "schemaVersion": 2,
+      "command": "qwen",
+      "packages": {
+        "npm": "@qwen-code/qwen-code"
+      }
     },
     {
       "id": "opencode",
@@ -300,7 +327,12 @@
       },
       "versionCommand": "gh --version 2>/dev/null | head -1",
       "checkCommand": "if brew list gh >/dev/null 2>&1; then if brew outdated gh 2>/dev/null | grep -q '^gh$'; then latest=$(brew info gh 2>/dev/null | head -1 | sed -E 's/.*stable ([^ )]+).*/\\1/'); echo UPDATE; [ -n \"$latest\" ] && echo \"latest: $latest\"; else echo OK; fi; else echo OK; fi",
-      "updateCommand": "brew upgrade gh"
+      "updateCommand": "brew upgrade gh",
+      "schemaVersion": 2,
+      "command": "gh",
+      "packages": {
+        "brew": "gh"
+      }
     },
     {
       "id": "swift",
@@ -618,13 +650,13 @@
       },
       "versionCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do [ -d \"$d/.git\" ] && git -C \"$d\" rev-parse --short HEAD && break; done",
       "checkCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do if [ -d \"$d/.git\" ]; then git -C \"$d\" fetch --quiet origin 2>/dev/null || true; commits=$(git -C \"$d\" rev-list HEAD..@{u} 2>/dev/null || true); [ -n \"$commits\" ] && echo UPDATE && exit 0; fi; done; echo OK",
-      "updateCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do if [ -d \"$d/.git\" ]; then git -C \"$d\" pull --ff-only && exit 0; fi; done; echo 'Impeccable repo not found \u2014 add path in Settings'"
+      "updateCommand": "for d in \"{ROOT}/impeccable\" \"{ROOT}/Projects/impeccable\" \"{ROOT}/dev/impeccable\"; do if [ -d \"$d/.git\" ]; then git -C \"$d\" pull --ff-only && exit 0; fi; done; echo 'Impeccable repo not found — add path in Settings'"
     },
     {
       "id": "agent-skills",
       "name": "Agent Skills (global)",
       "category": "library",
-      "description": "Skills from npx skills \u2014 Cursor, Claude, Codex, and other agents",
+      "description": "Skills from npx skills — Cursor, Claude, Codex, and other agents",
       "detect": {
         "type": "command",
         "command": "command -v npx >/dev/null 2>&1"

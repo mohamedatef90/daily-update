@@ -113,6 +113,17 @@ enum RepoSafetyService {
 }
 
 enum ConfigImportExport {
+    enum ImportError: LocalizedError {
+        case typedFieldsNotAllowed(itemID: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .typedFieldsNotAllowed(let itemID):
+                return "Imported item \(itemID) cannot define typed strategy fields."
+            }
+        }
+    }
+
     struct ExportBundle: Codable {
         let exportedAt: Date
         let settings: UserSettings
@@ -131,6 +142,19 @@ enum ConfigImportExport {
     static func importData(_ data: Data, into store: UserSettingsStore) throws {
         let bundle = try JSONDecoder().decode(ExportBundle.self, from: data)
         var imported = bundle.settings
+
+        if let typedCustomItem = imported.customItems.first(where: \.hasTypedEngineFields) {
+            throw ImportError.typedFieldsNotAllowed(itemID: typedCustomItem.id)
+        }
+
+        imported.customItems = imported.customItems.map { item in
+            var reviewed = item
+            reviewed.source = .user
+            reviewed.needsReview = true
+            reviewed = reviewed.droppingTypedEngineFields()
+            return reviewed
+        }
+
         // Imported command definitions must be reviewed again in this workspace.
         imported.itemPreferences = imported.itemPreferences.mapValues { pref in
             var copy = pref

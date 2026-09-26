@@ -853,6 +853,51 @@ final class CoreServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testCLICheckJSONIncludesPlannedCommandField() async throws {
+        let plannedSpec = CommandSpec(
+            executablePath: "/opt/homebrew/bin/brew",
+            arguments: ["upgrade", "gh"]
+        )
+        let state = MockCLIRunnerState(
+            items: [
+                makeItem(
+                    id: "gh",
+                    installed: true,
+                    status: .updateAvailable,
+                    updateCommand: "brew upgrade gh",
+                    plannedUpdateCommandSpec: plannedSpec
+                ),
+                makeItem(
+                    id: "new-tool",
+                    installed: false,
+                    status: .notInstalled,
+                    installCommand: "brew install new-tool"
+                )
+            ]
+        )
+        var output: [String] = []
+
+        let code = await CLIRunner.run(
+            arguments: ["DailyUpdate", "--check", "--json"],
+            state: state,
+            output: { output.append($0) }
+        )
+
+        XCTAssertEqual(code, 0)
+        let payloadData = output.joined(separator: "\n").data(using: .utf8)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: try XCTUnwrap(payloadData)) as? [[String: Any]]
+        )
+        let byID = Dictionary(uniqueKeysWithValues: payload.compactMap { row -> (String, [String: Any])? in
+            guard let id = row["id"] as? String else { return nil }
+            return (id, row)
+        })
+
+        XCTAssertEqual(byID["gh"]?["plannedCommand"] as? String, plannedSpec.displayString)
+        XCTAssertEqual(byID["new-tool"]?["plannedCommand"] as? String, "brew install new-tool")
+    }
+
+    @MainActor
     func testCLIUpdateReturnsNonZeroWhenActionFails() async {
         let state = MockCLIRunnerState(
             confirmBeforeUpdate: false,
@@ -1204,7 +1249,8 @@ final class CoreServiceTests: XCTestCase {
         updateCommand: String = "echo update",
         isSelected: Bool = false,
         gateReasons: [GateReason] = [],
-        blockReason: BlockReason? = nil
+        blockReason: BlockReason? = nil,
+        plannedUpdateCommandSpec: CommandSpec? = nil
     ) -> UpdateItem {
         UpdateItem(
             id: id,
@@ -1227,7 +1273,8 @@ final class CoreServiceTests: XCTestCase {
             checkCommand: nil,
             installCommand: installCommand,
             updateCommand: updateCommand,
-            workingDirectory: nil
+            workingDirectory: nil,
+            plannedUpdateCommandSpec: plannedUpdateCommandSpec
         )
     }
 }

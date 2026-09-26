@@ -4,6 +4,8 @@ import Foundation
 
 @MainActor
 final class AppState: ObservableObject {
+    typealias PlannedCommandResolver = @Sendable (DetectorConfig, String?, CommandPathLookup) async -> (commandSpec: CommandSpec, fingerprint: String)?
+
     @Published var items: [UpdateItem] = []
     @Published var selectedCategory: ItemCategory? = nil
     @Published var showUpdatesOnly = false
@@ -34,14 +36,34 @@ final class AppState: ObservableObject {
 
     weak var appDelegate: AppDelegate?
     private var configs: [DetectorConfig] = []
+    private let plannedCommandResolver: PlannedCommandResolver
     private var wakeObserver: NSObjectProtocol?
     private var hasRunStartupCheck = false
     private var cancellables = Set<AnyCancellable>()
     private var administratorPermissionQueue: [UpdateItem] = []
     private var pendingDryRunItemIDs: [String] = []
+    private var pendingExecutionPlan: [String: PlannedExecutionItem] = [:]
 
-    init(settingsStore: UserSettingsStore = UserSettingsStore()) {
+    struct PlannedExecutionItem {
+        let id: String
+        let action: String
+        let command: String
+        let workingDirectory: String?
+        let ownerFingerprint: String?
+    }
+
+    init(
+        settingsStore: UserSettingsStore = UserSettingsStore(),
+        plannedCommandResolver: @escaping PlannedCommandResolver = { config, targetVersion, lookup in
+            await StrategyPlanner.plannedCommand(
+                config: config,
+                targetVersion: targetVersion,
+                pathLookup: lookup
+            )
+        }
+    ) {
         self.settingsStore = settingsStore
+        self.plannedCommandResolver = plannedCommandResolver
         settingsStore.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -376,11 +398,20 @@ final class AppState: ObservableObject {
 
     func markCommandReviewed(id: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
-        let hash = items[index].commandReviewHash
+        let needsRecheck = items[index].isAwaitingAutomationReview
+        let hash = configs
+            .first(where: { $0.id == id })
+            .map(GatePolicy.reviewedCommandHash(for:))
+            ?? items[index].commandReviewHash
         settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
         items[index].needsReview = false
         items[index].gateReasons.removeAll { $0 == .needsReview }
-        if items[index].status == .gated {
+        if needsRecheck {
+            items[index].status = .checking
+            items[index].isSelected = false
+            items[index].statusMessage = "Checking reviewed item"
+            Task { await recheckItems(ids: [id]) }
+        } else if items[index].status == .gated {
             if items[index].gateReasons.isEmpty {
                 items[index].status = .updateAvailable
                 items[index].statusMessage = nil
@@ -517,6 +548,7 @@ final class AppState: ObservableObject {
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
+        let pathLookup = await strategyLookup(for: configs)
         totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
@@ -529,6 +561,7 @@ final class AppState: ObservableObject {
                 group.addTask {
                     var item = config.toUpdateItem()
                     let pref = prefs[config.id]
+                    let reviewedHash = pref?.reviewedCommandHash
                     if let pref {
                         item.autoUpdate = pref.autoUpdate
                         item.snoozedUntil = pref.snoozedUntil
@@ -538,6 +571,17 @@ final class AppState: ObservableObject {
                     if item.permanentlyIgnored || item.isSnoozed {
                         item.status = .unknown
                         item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
+                        return (index, item)
+                    }
+                    if config.requiresReviewBeforeAutomation &&
+                        !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedHash) {
+                        item.status = .gated
+                        item.statusMessage = "Needs review before running commands"
+                        item.gateReasons = [.needsReview]
+                        item.blockReason = nil
+                        item.plannedUpdateCommandSpec = nil
+                        item.ownerFingerprint = nil
+                        item.isSelected = false
                         return (index, item)
                     }
                     let detection = await DetectionService.detect(config, applicationFolders: appFolders)
@@ -552,12 +596,15 @@ final class AppState: ObservableObject {
                     if !detection.installed {
                         item.status = .notInstalled
                         item.statusMessage = detection.message
+                        item.plannedUpdateCommandSpec = nil
+                        item.ownerFingerprint = nil
                         return (index, item)
                     }
                     let check = await UpdateCheckService.check(
                         config,
                         installed: detection.installed,
-                        reviewedCommandHash: pref?.reviewedCommandHash
+                        reviewedCommandHash: reviewedHash,
+                        pathLookup: pathLookup
                     )
                     item.status = check.status
                     item.currentVersionRaw = check.currentVersionRaw
@@ -567,6 +614,8 @@ final class AppState: ObservableObject {
                     item.gateReasons = check.gateReasons
                     item.blockReason = check.blockReason
                     item.needsReview = check.gateReasons.contains(.needsReview)
+                    item.plannedUpdateCommandSpec = check.plannedUpdateCommandSpec
+                    item.ownerFingerprint = check.ownerFingerprint
                     applyPinnedGateIfNeeded(to: &item)
                     item.isSelected = item.status == .updateAvailable && !item.isSnoozed
                     return (index, item)
@@ -625,11 +674,13 @@ final class AppState: ObservableObject {
         showDryRun = false
         dryRunEntries = []
         pendingDryRunItemIDs = []
+        pendingExecutionPlan = [:]
     }
 
     func confirmDryRun() async {
         let targetIDs = pendingDryRunItemIDs
         let plannedEntries = dryRunEntries
+        let plannedExecution = pendingExecutionPlan
         guard !targetIDs.isEmpty else {
             appendLog("No items selected")
             return
@@ -637,35 +688,88 @@ final class AppState: ObservableObject {
         dismissDryRun()
 
         let plannedByID = Dictionary(uniqueKeysWithValues: plannedEntries.map { ($0.id, $0) })
-        let confirmedTargetIDs = actionTargets(for: targetIDs).compactMap { target -> String? in
+        let confirmedPlan = actionTargets(for: targetIDs).compactMap { target -> PlannedExecutionItem? in
             guard let planned = plannedByID[target.id] else { return nil }
-            if planned.action != target.actionLabel || planned.command != actionCommand(for: target) {
+            guard let execution = plannedExecution[target.id] else { return nil }
+            if planned.action != target.actionLabel ||
+                planned.command != actionCommand(for: target) ||
+                execution.workingDirectory != normalizedWorkingDirectory(for: target.workingDirectory) {
                 appendLog("\(target.name): changed since you confirmed, not run")
                 return nil
             }
-            return target.id
+            return execution
         }
-        guard !confirmedTargetIDs.isEmpty else {
+        guard !confirmedPlan.isEmpty else {
             appendLog("Nothing run: all items changed since you confirmed")
             return
         }
-        await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
+        let planByID = Dictionary(uniqueKeysWithValues: confirmedPlan.map { ($0.id, $0) })
+        await updateSelected(
+            skipDryRun: true,
+            explicitTargetIDs: confirmedPlan.map(\.id),
+            explicitPlan: planByID
+        )
     }
 
     func updateSelected(
         skipDryRun: Bool = false,
         retryItemID: String? = nil,
-        explicitTargetIDs: [String]? = nil
+        explicitTargetIDs: [String]? = nil,
+        explicitPlan: [String: PlannedExecutionItem]? = nil
     ) async {
         guard !isUpdating else { return }
         let targets: [UpdateItem]
-        if let explicitTargetIDs, !explicitTargetIDs.isEmpty {
+        let plannedByID: [String: PlannedExecutionItem]
+
+        if let explicitPlan, !explicitPlan.isEmpty {
+            let requestedOrder = (explicitTargetIDs ?? [])
+                .filter { explicitPlan[$0] != nil }
+            let idsInOrder = requestedOrder.isEmpty ? Array(explicitPlan.keys).sorted() : requestedOrder
+            targets = actionTargets(for: idsInOrder)
+            plannedByID = explicitPlan
+        } else if let explicitTargetIDs, !explicitTargetIDs.isEmpty {
             targets = actionTargets(for: explicitTargetIDs)
+            plannedByID = Dictionary(uniqueKeysWithValues: targets.map { item in
+                (
+                    item.id,
+                    PlannedExecutionItem(
+                        id: item.id,
+                        action: item.actionLabel,
+                        command: actionCommand(for: item),
+                        workingDirectory: normalizedWorkingDirectory(for: item.workingDirectory),
+                        ownerFingerprint: item.ownerFingerprint
+                    )
+                )
+            })
         } else if let retryItemID,
-           let retryItem = activeItems.first(where: { $0.id == retryItemID }) {
+                  let retryItem = activeItems.first(where: { $0.id == retryItemID }) {
             targets = [retryItem]
+            plannedByID = Dictionary(uniqueKeysWithValues: targets.map { item in
+                (
+                    item.id,
+                    PlannedExecutionItem(
+                        id: item.id,
+                        action: item.actionLabel,
+                        command: actionCommand(for: item),
+                        workingDirectory: normalizedWorkingDirectory(for: item.workingDirectory),
+                        ownerFingerprint: item.ownerFingerprint
+                    )
+                )
+            })
         } else {
             targets = orderedActionTargets(selectedActionableItems)
+            plannedByID = Dictionary(uniqueKeysWithValues: targets.map { item in
+                (
+                    item.id,
+                    PlannedExecutionItem(
+                        id: item.id,
+                        action: item.actionLabel,
+                        command: actionCommand(for: item),
+                        workingDirectory: normalizedWorkingDirectory(for: item.workingDirectory),
+                        ownerFingerprint: item.ownerFingerprint
+                    )
+                )
+            })
         }
         guard !targets.isEmpty else { appendLog("No items selected"); return }
 
@@ -681,18 +785,68 @@ final class AppState: ObservableObject {
         var skippedDueToChanges = 0
         var updatedIDs: [String] = []
         var successfulIDs = Set<String>()
-        let plannedCommands = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, actionCommand(for: $0)) })
+        let targetIDs = targets.map(\.id)
+        let strategyConfigs = configs.filter { targetIDs.contains($0.id) }
+        let pathLookup = await strategyLookup(for: strategyConfigs)
 
         for target in targets {
-            guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
-            guard let plannedCommand = plannedCommands[target.id] else { continue }
-            let liveCommand = actionCommand(for: items[index])
-            if liveCommand != plannedCommand {
-                skippedDueToChanges += 1
-                items[index].isSelected = false
-                appendLog("\(items[index].name): changed since you confirmed, not run")
+            guard let initialPlan = plannedByID[target.id],
+                  let initialIndex = items.firstIndex(where: { $0.id == target.id }) else {
                 continue
             }
+
+            let plannedCommand = initialPlan.command
+            let plannedWorkingDirectory = initialPlan.workingDirectory
+
+            if actionCommand(for: items[initialIndex]) != plannedCommand ||
+                normalizedWorkingDirectory(for: items[initialIndex].workingDirectory) != plannedWorkingDirectory {
+                skippedDueToChanges += 1
+                items[initialIndex].isSelected = false
+                appendLog("\(items[initialIndex].name): changed since you confirmed, not run")
+                continue
+            }
+
+            if let config = configs.first(where: { $0.id == target.id }),
+               StrategyPlanner.usesTypedEngine(config: config) {
+                guard let expectedFingerprint = initialPlan.ownerFingerprint,
+                      let replanned = await plannedCommandResolver(
+                          config,
+                          items[initialIndex].latestVersion,
+                          pathLookup
+                      ),
+                      replanned.commandSpec.displayString == plannedCommand,
+                      replanned.fingerprint == expectedFingerprint else {
+                    skippedDueToChanges += 1
+                    items[initialIndex].isSelected = false
+                    appendLog("\(items[initialIndex].name): changed since you confirmed, not run")
+                    continue
+                }
+
+                guard let postAwaitIndex = items.firstIndex(where: { $0.id == target.id }),
+                      actionCommand(for: items[postAwaitIndex]) == plannedCommand,
+                      normalizedWorkingDirectory(for: items[postAwaitIndex].workingDirectory) == plannedWorkingDirectory else {
+                    skippedDueToChanges += 1
+                    if let postAwaitIndex = items.firstIndex(where: { $0.id == target.id }) {
+                        items[postAwaitIndex].isSelected = false
+                        appendLog("\(items[postAwaitIndex].name): changed since you confirmed, not run")
+                    }
+                    continue
+                }
+                items[postAwaitIndex].plannedUpdateCommandSpec = replanned.commandSpec
+                items[postAwaitIndex].ownerFingerprint = replanned.fingerprint
+            }
+
+            guard let index = items.firstIndex(where: { $0.id == target.id }),
+                  actionCommand(for: items[index]) == plannedCommand,
+                  normalizedWorkingDirectory(for: items[index].workingDirectory) == plannedWorkingDirectory else {
+                if let index = items.firstIndex(where: { $0.id == target.id }) {
+                    items[index].isSelected = false
+                    appendLog("\(items[index].name): changed since you confirmed, not run")
+                }
+                skippedDueToChanges += 1
+                continue
+            }
+
             let installing = items[index].canInstall
             let verb = installing ? "Installing" : "Updating"
             items[index].status = .updating
@@ -703,7 +857,10 @@ final class AppState: ObservableObject {
             let result = await UpdateExecutor.update(
                 items[index],
                 installing: installing,
-                stashRepos: stashReposBeforeUpdate
+                stashRepos: stashReposBeforeUpdate,
+                config: configs.first { $0.id == target.id },
+                pathLookup: pathLookup,
+                reviewedCommandHash: settingsStore.preference(for: target.id).reviewedCommandHash
             )
             items[index].status = result.status
             items[index].gateReasons = []
@@ -808,6 +965,8 @@ final class AppState: ObservableObject {
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
         let idSet = Set(ids)
+        let scopedConfigs = configs.filter { idSet.contains($0.id) }
+        let pathLookup = await strategyLookup(for: scopedConfigs)
 
         for index in items.indices where idSet.contains(items[index].id) {
             items[index].status = .checking
@@ -816,6 +975,18 @@ final class AppState: ObservableObject {
         for index in items.indices where idSet.contains(items[index].id) {
             guard let config = configs.first(where: { $0.id == items[index].id }) else { continue }
             if items[index].permanentlyIgnored || items[index].isSnoozed { continue }
+            let reviewedHash = prefs[config.id]?.reviewedCommandHash
+            if config.requiresReviewBeforeAutomation &&
+                !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedHash) {
+                items[index].status = .gated
+                items[index].statusMessage = "Needs review before running commands"
+                items[index].gateReasons = [.needsReview]
+                items[index].blockReason = nil
+                items[index].plannedUpdateCommandSpec = nil
+                items[index].ownerFingerprint = nil
+                items[index].isSelected = false
+                continue
+            }
 
             let detection = await DetectionService.detect(config, applicationFolders: appFolders)
             if detection.blockReason == .unsafeCheckCommand {
@@ -829,13 +1000,16 @@ final class AppState: ObservableObject {
             if !detection.installed {
                 items[index].status = .notInstalled
                 items[index].statusMessage = detection.message
+                items[index].plannedUpdateCommandSpec = nil
+                items[index].ownerFingerprint = nil
                 continue
             }
 
             let check = await UpdateCheckService.check(
                 config,
                 installed: detection.installed,
-                reviewedCommandHash: prefs[config.id]?.reviewedCommandHash
+                reviewedCommandHash: reviewedHash,
+                pathLookup: pathLookup
             )
             let reconciled = reconcileAfterUpdate(
                 wasSuccessfulUpdate: successfulIDs.contains(items[index].id),
@@ -850,6 +1024,8 @@ final class AppState: ObservableObject {
             items[index].gateReasons = check.gateReasons
             items[index].blockReason = check.blockReason
             items[index].needsReview = check.gateReasons.contains(.needsReview)
+            items[index].plannedUpdateCommandSpec = check.plannedUpdateCommandSpec
+            items[index].ownerFingerprint = check.ownerFingerprint
             applyPinnedGateIfNeeded(to: &items[index])
             if items[index].status == .gated,
                items[index].statusMessage == nil {
@@ -889,8 +1065,28 @@ final class AppState: ObservableObject {
         return checkStatus
     }
 
+    private func strategyLookup(for configs: [DetectorConfig]) async -> CommandPathLookup {
+        let commandNames = configs
+            .filter { StrategyPlanner.usesTypedEngine(config: $0) }
+            .compactMap { $0.command?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return await OwnerResolver.lookup(commandNames: commandNames)
+    }
+
+    private func normalizedWorkingDirectory(for value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        let expanded = (value as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
     private func actionCommand(for item: UpdateItem) -> String {
-        item.canInstall ? item.installCommand : item.updateCommand
+        if item.canInstall {
+            return item.installCommand
+        }
+        if let commandSpec = item.plannedUpdateCommandSpec {
+            return commandSpec.displayString
+        }
+        return item.updateCommand
     }
 
     private func queueAdministratorPermission(for item: UpdateItem) {
@@ -932,6 +1128,18 @@ final class AppState: ObservableObject {
 
     private func presentDryRun(for targets: [UpdateItem]) {
         pendingDryRunItemIDs = targets.map(\.id)
+        pendingExecutionPlan = Dictionary(uniqueKeysWithValues: targets.map { item in
+            (
+                item.id,
+                PlannedExecutionItem(
+                    id: item.id,
+                    action: item.actionLabel,
+                    command: actionCommand(for: item),
+                    workingDirectory: normalizedWorkingDirectory(for: item.workingDirectory),
+                    ownerFingerprint: item.ownerFingerprint
+                )
+            )
+        })
         dryRunEntries = targets.map { item in
             DryRunEntry(
                 id: item.id,

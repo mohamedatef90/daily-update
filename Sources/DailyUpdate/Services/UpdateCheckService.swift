@@ -8,10 +8,17 @@ struct CheckResult {
     var message: String?
     var gateReasons: [GateReason]
     var blockReason: BlockReason?
+    var plannedUpdateCommandSpec: CommandSpec? = nil
+    var ownerFingerprint: String? = nil
 }
 
 enum UpdateCheckService {
-    static func check(_ config: DetectorConfig, installed: Bool, reviewedCommandHash: String? = nil) async -> CheckResult {
+    static func check(
+        _ config: DetectorConfig,
+        installed: Bool,
+        reviewedCommandHash: String? = nil,
+        pathLookup: CommandPathLookup? = nil
+    ) async -> CheckResult {
         guard installed else {
             return CheckResult(
                 status: .notInstalled,
@@ -38,6 +45,29 @@ enum UpdateCheckService {
                     blockReason: nil
                 )
             }
+        }
+
+        if config.requiresReviewBeforeAutomation &&
+            !GatePolicy.isReviewSatisfied(for: config, reviewedHash: reviewedCommandHash) {
+            return CheckResult(
+                status: .gated,
+                currentVersion: nil,
+                currentVersionRaw: nil,
+                latestVersion: nil,
+                message: "Needs review before running commands",
+                gateReasons: [.needsReview],
+                blockReason: nil
+            )
+        }
+
+        if let strategyResult = await typedEngineCheck(
+            config: config,
+            current: nil,
+            currentRaw: nil,
+            reviewedCommandHash: reviewedCommandHash,
+            pathLookup: pathLookup
+        ) {
+            return strategyResult
         }
 
         let cwd = config.workingDirectory?.expandingTilde
@@ -302,7 +332,7 @@ enum UpdateCheckService {
                 if let token = VersionExtractor.extract(from: parsed, pattern: pattern) {
                     return token
                 }
-                return parsed.nilIfEmpty
+                return nil
             }
         }
         return nil
@@ -340,9 +370,18 @@ enum UpdateCheckService {
         currentRaw: String?,
         latest: String?,
         fallbackMessage: String? = nil,
-        reviewedCommandHash: String?
+        reviewedCommandHash: String?,
+        commandOverride: String? = nil,
+        additionalGateReasons: [GateReason] = []
     ) -> CheckResult {
-        let gateReasons = GatePolicy.updateGateReasons(for: config, reviewedHash: reviewedCommandHash)
+        var gateReasons = GatePolicy.updateGateReasons(
+            for: config,
+            reviewedHash: reviewedCommandHash,
+            commandOverride: commandOverride
+        )
+        for reason in additionalGateReasons where !gateReasons.contains(reason) {
+            gateReasons.append(reason)
+        }
 
         if !gateReasons.isEmpty {
             let labels = gateReasons.map(\.label).joined(separator: ", ")
@@ -368,6 +407,119 @@ enum UpdateCheckService {
         )
     }
 
+    // Use the typed strategy engine when resolver metadata is available.
+    private static func typedEngineCheck(
+        config: DetectorConfig,
+        current: String?,
+        currentRaw: String?,
+        reviewedCommandHash: String?,
+        pathLookup: CommandPathLookup?
+    ) async -> CheckResult? {
+        guard let plan = await StrategyPlanner.checkPlan(
+            config: config,
+            currentVersion: current,
+            pathLookup: pathLookup
+        ) else {
+            return nil
+        }
+
+        let fingerprint = StrategyPlanner.ownershipFingerprint(for: config, resolution: plan.ownerResolution)
+        let resolvedCurrent = plan.currentVersion
+        let competingMessage = plan.ownerResolution.competing.isEmpty
+            ? nil
+            : "Multiple installs detected; updating the active path only."
+
+        if let blockReason = plan.blockReason {
+            return CheckResult(
+                status: .blocked,
+                currentVersion: resolvedCurrent,
+                currentVersionRaw: currentRaw,
+                latestVersion: plan.latestVersion,
+                message: plan.failureMessage ?? blockReason.label,
+                gateReasons: plan.gateReasons,
+                blockReason: blockReason,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        if let failureMessage = plan.failureMessage {
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: resolvedCurrent,
+                currentVersionRaw: currentRaw,
+                latestVersion: plan.latestVersion,
+                message: failureMessage,
+                gateReasons: plan.gateReasons,
+                blockReason: nil,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        guard let latest = plan.latestVersion else {
+            return CheckResult(
+                status: .checkFailed,
+                currentVersion: resolvedCurrent,
+                currentVersionRaw: currentRaw,
+                latestVersion: nil,
+                message: "Could not determine latest version",
+                gateReasons: plan.gateReasons,
+                blockReason: nil,
+                plannedUpdateCommandSpec: nil,
+                ownerFingerprint: fingerprint
+            )
+        }
+
+        if let resolvedCurrent {
+            switch VersionComparator.compare(current: resolvedCurrent, latest: latest) {
+            case .same, .newer:
+                return CheckResult(
+                    status: .upToDate,
+                    currentVersion: resolvedCurrent,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: competingMessage,
+                    gateReasons: plan.gateReasons,
+                    blockReason: nil,
+                    plannedUpdateCommandSpec: plan.updateCommandSpec,
+                    ownerFingerprint: fingerprint
+                )
+            case .older:
+                var result = gatedOrUpdatableResult(
+                    config: config,
+                    current: resolvedCurrent,
+                    currentRaw: currentRaw,
+                    latest: latest,
+                    reviewedCommandHash: reviewedCommandHash,
+                    commandOverride: plan.updateCommandSpec?.displayString,
+                    additionalGateReasons: plan.gateReasons
+                )
+                if result.message == nil {
+                    result.message = competingMessage
+                }
+                result.plannedUpdateCommandSpec = plan.updateCommandSpec
+                result.ownerFingerprint = fingerprint
+                return result
+            case .incomparable:
+                return CheckResult(
+                    status: .checkFailed,
+                    currentVersion: resolvedCurrent,
+                    currentVersionRaw: currentRaw,
+                    latestVersion: latest,
+                    message: "Could not compare \(resolvedCurrent) with \(latest)",
+                    gateReasons: plan.gateReasons,
+                    blockReason: nil,
+                    plannedUpdateCommandSpec: nil,
+                    ownerFingerprint: fingerprint
+                )
+            }
+        }
+
+        return CheckResult(status: .checkFailed, currentVersion: nil, currentVersionRaw: currentRaw,
+            latestVersion: latest, message: "Could not read installed version", gateReasons: [], blockReason: nil)
+
+    }
 }
 
 private extension String {

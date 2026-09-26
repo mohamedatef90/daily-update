@@ -42,31 +42,41 @@ enum ConfigLoader {
 
         if let bundled = loadBundledConfigs() {
             for var item in bundled {
-                item = expandConfig(item, settings: settings)
+                item = expandConfig(item, settings: settings, source: .bundled)
                 byID[item.id] = item
             }
         }
 
         if let legacyUser = loadLegacyUserConfigs() {
             for item in legacyUser where byID[item.id] == nil {
-                byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
+                byID[item.id] = expandConfig(
+                    item,
+                    settings: settings,
+                    source: .user,
+                    flagNeedsReview: true
+                )
             }
         }
 
         for item in settings.customItems {
-            byID[item.id] = expandConfig(item, settings: settings, flagNeedsReview: true)
+            byID[item.id] = expandConfig(
+                item,
+                settings: settings,
+                source: .user,
+                flagNeedsReview: true
+            )
         }
 
         for item in discoveredRepos where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         for item in discoveredApps where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         for item in discoveredSkills where byID[item.id] == nil {
-            byID[item.id] = expandConfig(item, settings: settings)
+            byID[item.id] = expandConfig(item, settings: settings, source: .discovered)
         }
 
         configs = Array(byID.values)
@@ -172,11 +182,19 @@ enum ConfigLoader {
     private static func expandConfig(
         _ config: DetectorConfig,
         settings: UserSettings,
+        source: ItemSource,
         flagNeedsReview: Bool = false
     ) -> DetectorConfig {
         let home = settings.rootFolder.isEmpty ? NSHomeDirectory() : settings.rootFolder
         let folders = settings.allScanFolders
-        var detect = config.detect
+        let resolvedSource = source
+        var sanitized = config
+        sanitized.source = resolvedSource
+        if resolvedSource != .bundled {
+            sanitized = sanitized.droppingTypedEngineFields()
+        }
+
+        var detect = sanitized.detect
 
         if var rule = detect {
             if rule.type == .app, let appName = rule.appName {
@@ -205,9 +223,9 @@ enum ConfigLoader {
             detect = rule
         }
 
-        let expandedUpdate = expandVariables(config.updateCommand, home: home) ?? config.updateCommand
+        let expandedUpdate = expandVariables(sanitized.updateCommand, home: home) ?? sanitized.updateCommand
         let resolvedInstall = resolvedInstallCommand(
-            config,
+            sanitized,
             home: home,
             expandedUpdateCommand: expandedUpdate
         )
@@ -218,18 +236,24 @@ enum ConfigLoader {
         )
 
         return DetectorConfig(
-            id: config.id,
-            name: config.name,
-            category: config.category,
-            description: config.description,
-            source: config.source ?? .bundled,
+            id: sanitized.id,
+            name: sanitized.name,
+            category: sanitized.category,
+            description: sanitized.description,
+            schemaVersion: sanitized.schemaVersion,
+            source: sanitized.source,
+            command: expandVariables(sanitized.command, home: home),
+            packages: sanitized.packages,
+            selfUpdater: sanitized.selfUpdater,
+            appcastURL: expandVariables(sanitized.appcastURL, home: home),
+            autoUpdates: sanitized.autoUpdates,
             detect: detect,
-            versionCommand: expandVariables(config.versionCommand, home: home),
-            versionPattern: config.versionPattern,
-            checkCommand: expandVariables(config.checkCommand, home: home),
+            versionCommand: expandVariables(sanitized.versionCommand, home: home),
+            versionPattern: sanitized.versionPattern,
+            checkCommand: expandVariables(sanitized.checkCommand, home: home),
             installCommand: resolvedInstall,
             updateCommand: expandedUpdate,
-            workingDirectory: expandVariables(config.workingDirectory, home: home),
+            workingDirectory: expandVariables(sanitized.workingDirectory, home: home),
             needsReview: needsReview
         )
     }
@@ -246,25 +270,14 @@ enum ConfigLoader {
     }
 
     private static func commandNeedsReview(
-        updateCommand: String,
-        installCommand: String,
+        updateCommand _: String,
+        installCommand _: String,
         flagNeedsReview: Bool
     ) -> Bool {
-        guard flagNeedsReview else { return false }
-
-        let risky = [
-            ActionCommandPolicy.hasFallbackChain(updateCommand),
-            ActionCommandPolicy.hasSuppressedStderr(updateCommand),
-            ActionCommandPolicy.hasCommandSeparator(updateCommand),
-            ActionCommandPolicy.isRemoteScriptInstaller(updateCommand),
-            ActionCommandPolicy.matchesBulkPattern(updateCommand),
-            ActionCommandPolicy.hasFallbackChain(installCommand),
-            ActionCommandPolicy.hasSuppressedStderr(installCommand),
-            ActionCommandPolicy.hasCommandSeparator(installCommand),
-            ActionCommandPolicy.isRemoteScriptInstaller(installCommand),
-            ActionCommandPolicy.matchesBulkPattern(installCommand)
-        ].contains(true)
-        return risky
+        guard flagNeedsReview else {
+            return false
+        }
+        return true
     }
 
     private static func expandVariables(_ value: String?, home: String) -> String? {
@@ -295,25 +308,57 @@ enum ConfigLoader {
 
         if let url = mainCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
            let data = try? Data(contentsOf: url) {
-            return decode(data)
+            return decode(data, validateBundled: true)
         }
 
         guard let url = Bundle.module.url(forResource: "detectors", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return nil }
-        return decode(data)
+        return decode(data, validateBundled: true)
     }
 
     private static func loadLegacyUserConfigs() -> [DetectorConfig]? {
         guard FileManager.default.fileExists(atPath: userConfigURL.path),
               let data = try? Data(contentsOf: userConfigURL) else { return nil }
-        return decode(data)
+        return decode(data, validateBundled: false)
     }
 
-    private static func decode(_ data: Data) -> [DetectorConfig]? {
+    private static func decode(_ data: Data, validateBundled: Bool) -> [DetectorConfig]? {
+        if validateBundled { return decodeBundledConfigs(data) }
         let decoder = JSONDecoder()
-        guard let file = try? decoder.decode(DetectorConfigFile.self, from: data) else { return nil }
-        return file.items
+        return (try? decoder.decode(DetectorConfigFile.self, from: data))?.items
     }
+
+    static func decodeBundledConfigs(_ data: Data) -> [DetectorConfig]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = root["items"] as? [[String: Any]] else { return nil }
+        let decoded = rows.compactMap { row -> DetectorConfig? in
+            guard let encoded = try? JSONSerialization.data(withJSONObject: row),
+                  let item = try? JSONDecoder().decode(DetectorConfig.self, from: encoded) else {
+                NSLog("DailyUpdate: dropping malformed bundled detector %@", row["id"] as? String ?? "<missing id>")
+                return nil
+            }
+            return item
+        }
+        return validateBundledConfigs(decoded)
+    }
+
+    static func validateBundledConfigs(_ items: [DetectorConfig]) -> [DetectorConfig] {
+        items.filter { item in
+            let valid: Bool
+            if item.hasTypedEngineFields && item.schemaVersion != 2 {
+                valid = false
+            } else if item.schemaVersion == 2 {
+                let hasCommand = !(item.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let packages = item.packages
+                let hasPackage = [packages?.brew, packages?.brewCask, packages?.npm, packages?.pipx,
+                    packages?.uv, packages?.cargo, packages?.gem, packages?.masAdamID].contains { !($0?.isEmpty ?? true) }
+                valid = hasCommand && (hasPackage || !(item.selfUpdater?.isEmpty ?? true))
+            } else { valid = true }
+            if !valid { NSLog("DailyUpdate: dropping invalid bundled detector %@", item.id) }
+            return valid
+        }
+    }
+
 }
 
 private extension String {

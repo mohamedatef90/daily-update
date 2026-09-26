@@ -24,8 +24,6 @@ final class GatePolicyTests: XCTestCase {
         try await withTemporaryAppSupportDirectory { root in
             let updateMarker = root.appendingPathComponent("available")
             let runMarker = root.appendingPathComponent("ran")
-            let checkCommand = "[ -f \(ShellEscaping.quote(updateMarker.path)) ] && echo UPDATE || echo OK"
-            let updateCommand = "touch \(ShellEscaping.quote(runMarker.path))"
 
             let store = UserSettingsStore()
             store.settings.confirmBeforeUpdate = true
@@ -38,20 +36,20 @@ final class GatePolicyTests: XCTestCase {
                     source: .user,
                     detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
                     versionCommand: "echo 1.0.0",
-                    checkCommand: checkCommand,
+                    checkCommand: "[ -f \(ShellEscaping.quote(updateMarker.path)) ] && echo UPDATE || echo OK",
                     installCommand: nil,
-                    updateCommand: updateCommand,
+                    updateCommand: "touch \(ShellEscaping.quote(runMarker.path))",
                     workingDirectory: nil
                 ),
             ]
 
             let state = AppState(settingsStore: store)
             state.notificationsEnabled = false
-
             guard let index = state.items.firstIndex(where: { $0.id == "retry-custom" }) else {
                 XCTFail("Missing retry item")
                 return
             }
+            state.markCommandReviewed(id: "retry-custom")
 
             state.items[index].isInstalled = true
             state.items[index].status = .error
@@ -117,6 +115,7 @@ final class GatePolicyTests: XCTestCase {
 
             let state = AppState(settingsStore: store)
             state.notificationsEnabled = false
+            state.markCommandReviewed(id: "pinned-row-s4")
             await state.recheckItems(ids: ["pinned-row-s4"])
 
             guard let item = state.items.first(where: { $0.id == "pinned-row-s4" }) else {
@@ -421,6 +420,72 @@ final class GatePolicyTests: XCTestCase {
             XCTAssertEqual(relaunched.status, .updateAvailable)
             XCTAssertFalse(relaunched.requiresCommandReview)
             XCTAssertFalse(relaunched.needsReview)
+        }
+    }
+
+    @MainActor
+    func testReviewIsInvalidatedWhenOnlyCheckCommandChanges() async throws {
+        try await withTemporaryAppSupportDirectory { root in
+            let id = "review-check-mismatch"
+            let marker = root.appendingPathComponent("changed-check-ran")
+            let quote = ShellEscaping.quote(marker.path)
+
+            let store = UserSettingsStore()
+            store.settings.customItems = [
+                DetectorConfig(
+                    id: id,
+                    name: "Review Check Mismatch",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.0.0",
+                    checkCommand: "echo UPDATE",
+                    installCommand: nil,
+                    updateCommand: "echo first && echo second",
+                    workingDirectory: nil
+                )
+            ]
+
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            await state.recheckItems(ids: [id])
+            state.markCommandReviewed(id: id)
+            await state.recheckItems(ids: [id])
+
+            guard let reviewed = state.items.first(where: { $0.id == id }) else {
+                XCTFail("Missing reviewed item before check command change")
+                return
+            }
+            XCTAssertEqual(reviewed.status, .updateAvailable)
+            XCTAssertFalse(reviewed.requiresCommandReview)
+
+            store.settings.customItems = [
+                DetectorConfig(
+                    id: id,
+                    name: "Review Check Mismatch",
+                    category: .cli,
+                    description: nil,
+                    source: .user,
+                    detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                    versionCommand: "echo 1.0.0",
+                    checkCommand: "touch \(quote) && echo UPDATE",
+                    installCommand: nil,
+                    updateCommand: "echo first && echo second",
+                    workingDirectory: nil
+                )
+            ]
+
+            let relaunch = AppState(settingsStore: store)
+            relaunch.notificationsEnabled = false
+            await relaunch.recheckItems(ids: [id])
+            guard let gated = relaunch.items.first(where: { $0.id == id }) else {
+                XCTFail("Missing item after check command change")
+                return
+            }
+            XCTAssertEqual(gated.status, .gated)
+            XCTAssertEqual(gated.gateReasons, [.needsReview])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
 

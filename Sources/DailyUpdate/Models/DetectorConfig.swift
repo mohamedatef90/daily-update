@@ -9,7 +9,13 @@ struct DetectorConfig: Codable, Identifiable {
     let name: String
     let category: ItemCategory
     let description: String?
+    var schemaVersion: Int? = nil
     var source: ItemSource?
+    var command: String? = nil
+    var packages: PackageIdentifiers? = nil
+    var selfUpdater: String? = nil
+    var appcastURL: String? = nil
+    var autoUpdates: Bool? = nil
     let detect: DetectRule?
     let versionCommand: String?
     var versionPattern: String? = nil
@@ -26,6 +32,49 @@ struct DetectorConfig: Codable, Identifiable {
     var isDiscovered: Bool {
         source == .discovered
     }
+
+    var hasTypedEngineFields: Bool {
+        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil
+    }
+
+    var requiresReviewBeforeAutomation: Bool {
+        needsReview == true && source != .bundled
+    }
+
+    func droppingTypedEngineFields() -> DetectorConfig {
+        DetectorConfig(
+            id: id,
+            name: name,
+            category: category,
+            description: description,
+            schemaVersion: schemaVersion,
+            source: source,
+            command: nil,
+            packages: nil,
+            selfUpdater: nil,
+            appcastURL: nil,
+            autoUpdates: nil,
+            detect: detect,
+            versionCommand: versionCommand,
+            versionPattern: versionPattern,
+            checkCommand: checkCommand,
+            installCommand: installCommand,
+            updateCommand: updateCommand,
+            workingDirectory: workingDirectory,
+            needsReview: needsReview
+        )
+    }
+}
+
+struct PackageIdentifiers: Codable, Hashable {
+    var brew: String?
+    var brewCask: String?
+    var npm: String?
+    var pipx: String?
+    var uv: String?
+    var cargo: String?
+    var gem: String?
+    var masAdamID: String?
 }
 
 struct DetectRule: Codable {
@@ -60,6 +109,11 @@ extension DetectorConfig {
             autoUpdate: false,
             iconPath: category == .app ? detect?.paths?.first : nil,
             detectCommand: detect?.command,
+            command: command,
+            packages: packages,
+            selfUpdater: selfUpdater,
+            appcastURL: appcastURL,
+            autoUpdates: autoUpdates,
             versionCommand: versionCommand,
             versionPattern: versionPattern,
             checkCommand: checkCommand,
@@ -67,7 +121,8 @@ extension DetectorConfig {
             updateCommand: updateCommand,
             workingDirectory: workingDirectory,
             detectedPaths: detect?.paths ?? [],
-            needsReview: needsReview ?? false
+            needsReview: needsReview ?? false,
+            detectRule: detect
         )
     }
 }

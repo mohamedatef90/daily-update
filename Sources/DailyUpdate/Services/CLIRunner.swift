@@ -329,6 +329,10 @@ enum CLIRunner {
             printAvailableIDs(state: state, for: action, output: output)
             return 1
         }
+        if item.isAwaitingAutomationReview {
+            output("Review this item in the app first: \(itemID)")
+            return 2
+        }
         // Remote-script and unparseable updates are refused on one path, with
         // or without --yes, whatever gate or loop shape put them there.
         if action == .update, item.status == .gated || action.matches(item),
@@ -512,13 +516,24 @@ enum CLIRunner {
                 "currentVersion": item.currentVersion ?? "",
                 "latestVersion": item.latestVersion ?? "",
                 "gateReasons": item.gateReasons.map(\.rawValue),
-                "blockReason": item.blockReason?.rawValue ?? ""
+                "blockReason": item.blockReason?.rawValue ?? "",
+                "plannedCommand": plannedCommand(for: item)
             ]
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
            let str = String(data: data, encoding: .utf8) {
             output(str)
         }
+    }
+
+    private static func plannedCommand(for item: UpdateItem) -> String {
+        if item.canInstall {
+            return item.installCommand
+        }
+        if let plannedSpec = item.plannedUpdateCommandSpec {
+            return plannedSpec.displayString
+        }
+        return item.updateCommand
     }
 }
 

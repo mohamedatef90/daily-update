@@ -25,6 +25,23 @@ enum ShellRunner {
         )
     }
 
+    static func run(
+        _ commandSpec: CommandSpec,
+        workingDirectory: String? = nil,
+        environment: [String: String]? = nil,
+        timeout: TimeInterval = 120
+    ) async -> Result {
+        var mergedEnvironment = commandSpec.environment
+        environment?.forEach { mergedEnvironment[$0.key] = $0.value }
+        return await runProcess(
+            executablePath: commandSpec.executablePath,
+            arguments: commandSpec.arguments,
+            workingDirectory: workingDirectory ?? commandSpec.workingDirectory,
+            environment: mergedEnvironment,
+            timeout: timeout
+        )
+    }
+
     static func runProcess(
         executablePath: String,
         arguments: [String],
@@ -105,7 +122,7 @@ enum ShellRunner {
         }
     }
 
-    private static var defaultPath: String {
+    static var defaultPath: String {
         let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
         let inheritedPath = ProcessInfo.processInfo.environment["PATH"]
             .map { $0.split(separator: ":").map(String.init) } ?? []
