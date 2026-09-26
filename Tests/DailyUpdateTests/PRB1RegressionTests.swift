@@ -1582,31 +1582,34 @@ final class PartThreeRegressionTests: XCTestCase {
         try createExecutable(at: target)
         try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
-        let distTags: StrategyPlanner.DistTagsFetcher = { #"{"latest":"2.1.281","stable":"2.1.281"}"# }
+        let distTags: StrategyPlanner.ReleaseFetcher = { _ in #"{"latest":"2.1.281","stable":"2.1.281"}"# }
         var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
         config.selfUpdater = "claudeCode"
         let lookup = CommandPathLookup(candidatesByName: ["claude": [link.path]], layout: .fixture(home: root.path))
-        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: distTags)
+        let check = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchRelease: distTags)
         XCTAssertEqual(check.status, .upToDate)
         XCTAssertEqual(check.currentVersion, "2.1.281")
         XCTAssertEqual(check.latestVersion, "2.1.281")
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: target.path)
-        let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: distTags)
+        let untrusted = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchRelease: distTags)
         XCTAssertEqual(untrusted.status, .blocked)
         XCTAssertEqual(untrusted.message, "Untrusted Claude executable path")
     }
 
     func testClaudeDistTagsFetchRunsPinnedCurlWithExactArgv() async {
+        XCTAssertEqual(StrategyPlanner.claudeDistTagsRequest, CommandSpec(executablePath: "/usr/bin/curl", arguments: [
+            "-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
+            "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"]))
         var requests: [CommandSpec] = []
-        let payload = await StrategyPlanner.fetchClaudeDistTags { spec in
+        let payload = await StrategyPlanner.fetchBody(StrategyPlanner.claudeDistTagsRequest) { spec in
             requests.append(spec)
             return ShellRunner.Result(exitCode: 0, stdout: "{}", stderr: "")
         }
         XCTAssertEqual(payload, "{}")
-        XCTAssertEqual(requests, [CommandSpec(executablePath: "/usr/bin/curl", arguments: [
-            "-q", "--proto", "=https", "--fail", "--silent", "--show-error", "--max-time", "20",
-            "https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags"])])
-        let failed = await StrategyPlanner.fetchClaudeDistTags { _ in ShellRunner.Result(exitCode: 22, stdout: "{}", stderr: "") }
+        XCTAssertEqual(requests, [StrategyPlanner.claudeDistTagsRequest])
+        let failed = await StrategyPlanner.fetchBody(StrategyPlanner.claudeDistTagsRequest) { _ in
+            ShellRunner.Result(exitCode: 22, stdout: "{}", stderr: "")
+        }
         XCTAssertNil(failed)
     }
 
@@ -1721,9 +1724,8 @@ final class PartThreeRegressionTests: XCTestCase {
 
     func testCatalogV2MigrationAndInvalidEntryIsolation() {
         let items = ConfigLoader.loadConfigs(settings: .defaults).filter { $0.source == .bundled }
-        // cursor-agent and opencode stay legacy until PR-B2: both are usually
-        // installed by their own native installer, which has no typed strategy yet.
-        let migrated = Set(["codex-cli", "claude-code", "cline-cli", "gemini-cli", "qwen-code", "gh-cli"])
+        // PR-B2b: cursor-agent and opencode have native-installer strategies now.
+        let migrated = Set(["codex-cli", "claude-code", "cline-cli", "gemini-cli", "qwen-code", "gh-cli", "cursor-agent", "opencode"])
         XCTAssertEqual(Set(items.filter { $0.schemaVersion == 2 }.map(\.id)), migrated)
         XCTAssertEqual(ConfigLoader.validateBundledConfigs(items).map(\.id), items.map(\.id))
         var invalid = typedConfig(id: "bad", commandName: "bad", packageName: "unused")
@@ -1943,7 +1945,7 @@ final class PRB2aFollowUpTests: XCTestCase {
         XCTAssertNil(none)
     }
 
-    /// Round 7: the Claude dist-tags fetcher is a planner input, like `pathLookup`.
+    /// Round 7: the Claude dist-tags lookup goes through the `fetchRelease` planner input, like `pathLookup`.
     func testClaudeDistTagsFetcherIsAPlannerInput() async throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1952,11 +1954,13 @@ final class PRB2aFollowUpTests: XCTestCase {
         var config = typedConfig(id: "native", commandName: "claude", packageName: "@anthropic-ai/claude-code")
         config.selfUpdater = "claudeCode"
         let lookup = CommandPathLookup(candidatesByName: ["claude": [target.path]], layout: .fixture(home: root.path))
+        var requests: [CommandSpec] = []
         let newer = await UpdateCheckService.check(config, installed: true, pathLookup: lookup,
-            fetchClaudeDistTags: { #"{"latest":"2.1.282","stable":"2.1.281"}"# })
+            fetchRelease: { spec in requests.append(spec); return #"{"latest":"2.1.282","stable":"2.1.281"}"# })
         XCTAssertEqual(newer.status, .updateAvailable)
         XCTAssertEqual(newer.latestVersion, "2.1.282")
-        let failed = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchClaudeDistTags: { nil })
+        XCTAssertEqual(requests, [StrategyPlanner.claudeDistTagsRequest])
+        let failed = await UpdateCheckService.check(config, installed: true, pathLookup: lookup, fetchRelease: { _ in nil })
         XCTAssertEqual(failed.status, .checkFailed)
         XCTAssertEqual(failed.message, "Could not determine latest version")
     }
