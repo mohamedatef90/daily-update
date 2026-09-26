@@ -452,7 +452,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -476,7 +476,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -500,7 +500,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -524,7 +524,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -548,7 +548,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -572,7 +572,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -596,7 +596,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -620,7 +620,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -672,7 +672,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -696,7 +696,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -777,7 +777,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -830,7 +830,7 @@ extension RoundFourTests {
             let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
             XCTAssertEqual(exit, 2)
             XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
-                "This install runs a remote script and must be confirmed in the app."])
+                "This install may run a remote script and must be confirmed in the app."])
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
         }
     }
@@ -863,7 +863,7 @@ extension RoundFourTests {
                 let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--update", id, "--yes"], state: wrapper, output: { output.append($0) })
                 XCTAssertEqual(exit, 2, id)
                 XCTAssertEqual(output, ["Dry-run plan:", "  [Update] \(id) (\(id))", "    \(commands[id]!)",
-                    "This update runs a remote script and must be confirmed in the app."], id)
+                    "This update may run a remote script and must be confirmed in the app."], id)
                 XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(id).path), id)
             }
         }

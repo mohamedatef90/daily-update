@@ -92,17 +92,21 @@ struct EcosystemLayout: Equatable, Sendable {
         )
     }
 
+    static let defaultBrewPrefixes = ["/opt/homebrew", "/usr/local"]
+
     static func discover() async -> EcosystemLayout {
         if ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] != nil { return .live() }
-        let result = await ShellRunner.run("brew --prefix", timeout: 10)
-        let prefix = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.succeeded, prefix.hasPrefix("/"), !prefix.contains("\n") else { return .live() }
-        return live(brewPrefix: prefix)
+        return live(brewPrefix: await BrewPrefixDiscovery.shared.prefix(probe: BrewPrefixDiscovery.runBrewPrefix))
     }
 
+    /// A discovered or configured prefix is added to the defaults, so formulas under a second
+    /// (Rosetta) brew keep their owner.
     static func live(home: String = NSHomeDirectory(), brewPrefix: String? = nil) -> EcosystemLayout {
         let configured = brewPrefix ?? ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"]
-        let brewPrefixes = configured.map { [$0] } ?? ["/opt/homebrew", "/usr/local"]
+        var brewPrefixes: [String] = []
+        for prefix in [configured].compactMap({ $0 }) + defaultBrewPrefixes where !brewPrefixes.contains(prefix) {
+            brewPrefixes.append(prefix)
+        }
         return EcosystemLayout(
             homeDirectory: home,
             brewPrefixes: brewPrefixes,
@@ -116,6 +120,27 @@ struct EcosystemLayout: Equatable, Sendable {
             voltaRoot: "\(home)/.volta",
             fnmRoots: ["\(home)/.fnm", "\(home)/.local/share/fnm"]
         )
+    }
+}
+
+/// Runs `brew --prefix` at most once per process; every lookup reuses the answer.
+actor BrewPrefixDiscovery {
+    static let shared = BrewPrefixDiscovery()
+
+    private var cached: String??
+
+    func prefix(probe: @Sendable () async -> String?) async -> String? {
+        if let cached { return cached }
+        let value = await probe()
+        cached = .some(value)
+        return value
+    }
+
+    static let runBrewPrefix: @Sendable () async -> String? = {
+        let result = await ShellRunner.run("brew --prefix", timeout: 10)
+        let prefix = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.succeeded, prefix.hasPrefix("/"), !prefix.contains("\n") else { return nil }
+        return prefix
     }
 }
 

@@ -4,6 +4,21 @@ enum UpdateExecutor {
     struct Runner {
         let runCommand: @Sendable (String, String?, TimeInterval) async -> ShellRunner.Result
         let runSpec: @Sendable (CommandSpec, TimeInterval) async -> ShellRunner.Result
+        /// A one-shot lookup for the post-update owner check, so a binary the update put
+        /// earlier on `PATH` is seen instead of the check-time snapshot.
+        let lookupCommand: @Sendable (String) async -> CommandPathLookup
+
+        init(
+            runCommand: @escaping @Sendable (String, String?, TimeInterval) async -> ShellRunner.Result,
+            runSpec: @escaping @Sendable (CommandSpec, TimeInterval) async -> ShellRunner.Result,
+            lookupCommand: @escaping @Sendable (String) async -> CommandPathLookup = { name in
+                await OwnerResolver.lookup(commandNames: [name])
+            }
+        ) {
+            self.runCommand = runCommand
+            self.runSpec = runSpec
+            self.lookupCommand = lookupCommand
+        }
 
         static let live = Runner(
             runCommand: { command, directory, timeout in
@@ -108,12 +123,13 @@ enum UpdateExecutor {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
         }
 
+        let afterLookup = typed ? await runner.lookupCommand(config.command ?? "") : pathLookup
         let check = await UpdateCheckService.check(config, installed: true,
-            reviewedCommandHash: reviewedCommandHash, pathLookup: pathLookup)
+            reviewedCommandHash: reviewedCommandHash, pathLookup: afterLookup)
         let afterVersion = typed ? check.currentVersion : await DetectionService.getVersion(config)
         if typed {
-            let afterOwner = await OwnerResolver.resolve(commandName: config.command ?? "", lookup: pathLookup,
-                layout: pathLookup?.layout ?? .live()).active
+            let afterOwner = await OwnerResolver.resolve(commandName: config.command ?? "", lookup: afterLookup,
+                layout: afterLookup?.layout ?? .live()).active
             guard let beforeOwner = before?.owner, let afterOwner,
                   beforeOwner.owner == afterOwner.owner, beforeOwner.commandPath == afterOwner.commandPath,
                   check.status == .upToDate else {

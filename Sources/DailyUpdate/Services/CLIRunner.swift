@@ -334,19 +334,21 @@ enum CLIRunner {
             return 2
         }
         // Remote-script and unparseable updates are refused on one path, with
-        // or without --yes, whatever gate or loop shape put them there.
+        // or without --yes, whatever gate or loop shape put them there. A typed
+        // item runs its planned spec, so the spec is what is checked and shown.
+        let updateCommand = item.plannedUpdateCommandSpec?.displayString ?? item.updateCommand
         if action == .update, item.status == .gated || action.matches(item),
-           ActionCommandPolicy.isRemoteScriptInstaller(item.updateCommand) {
+           ActionCommandPolicy.isRemoteScriptInstaller(updateCommand) {
             printDryRunPlan(entries: [
                 DryRunEntry(
                     id: item.id,
                     name: item.name,
-                    command: item.updateCommand,
+                    command: updateCommand,
                     action: item.actionLabel,
                     category: item.category
                 )
             ], output: output)
-            output("This update runs a remote script and must be confirmed in the app.")
+            output("This update may run a remote script and must be confirmed in the app.")
             return 2
         }
         if action == .update, item.status == .gated, GatePolicy.canRunScopedUpdateWithYes(item), !confirmed {
@@ -394,7 +396,7 @@ enum CLIRunner {
                     category: item.category
                 )
             ], output: output)
-            output("This install runs a remote script and must be confirmed in the app.")
+            output("This install may run a remote script and must be confirmed in the app.")
             return 2
         }
 
