@@ -18,19 +18,6 @@ enum ActionCommandPolicy {
         case mas
     }
 
-    private static let remoteScriptPattern = #"(curl|wget)\b[^|\n]*\|\s*(sh|bash)\b"#
-    private static let stderrSuppressionPattern = #"2>\s*/dev/null"#
-
-    private static let bulkPatterns: [String] = [
-        #"^\s*npm\s+update\s+-g\s*$"#,
-        #"^\s*pnpm\s+update\s+-g\s*$"#,
-        #"^\s*yarn\s+global\s+upgrade\s*$"#,
-        #"^\s*brew\s+upgrade\s*$"#,
-        #"^\s*gem\s+update\s*$"#,
-        #"^\s*mise\s+upgrade\s*$"#,
-        #"xargs[^|\n]*\s+install\s+-U(\s|$)"#
-    ]
-
     private static let packageManagerPatterns: [(PackageManager, String)] = [
         (.brew, #"\bbrew\b"#),
         (.npm, #"\bnpm\b"#),
@@ -49,19 +36,23 @@ enum ActionCommandPolicy {
     ]
 
     static func hasFallbackChain(_ command: String) -> Bool {
-        command.contains("||")
+        CommandShapeClassifier.classify(command).risks.contains(.fallbackChain)
     }
 
     static func hasSuppressedStderr(_ command: String) -> Bool {
-        matches(pattern: stderrSuppressionPattern, in: command)
+        CommandShapeClassifier.classify(command).risks.contains(.suppressedErrors)
     }
 
     static func hasCommandSeparator(_ command: String) -> Bool {
-        command.contains(";")
+        CommandShapeClassifier.classify(command).risks.contains(.chained)
     }
 
+    /// Also true for an unparseable command: the classifier cannot show that
+    /// it does not fetch and run a script, so it is refused the same way.
     static func isRemoteScriptInstaller(_ command: String) -> Bool {
-        matches(pattern: remoteScriptPattern, in: command)
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let risks = CommandShapeClassifier.classify(command).risks
+        return risks.contains(.remoteScript) || risks.contains(.unparseable)
     }
 
     static func shouldAutoSelectForInstall(_ item: UpdateItem) -> Bool {
@@ -84,23 +75,11 @@ enum ActionCommandPolicy {
     }
 
     static func checkCommandContainsOwnUpdateCommand(checkCommand: String, updateCommand: String) -> Bool {
-        let normalizedCheck = normalizeCommandForComparison(checkCommand)
-        let normalizedUpdate = normalizeCommandForComparison(updateCommand)
-        guard !normalizedUpdate.isEmpty else { return false }
-        return normalizedCheck.contains(normalizedUpdate)
+        CommandShapeClassifier.checkRunsUpdate(check: checkCommand, update: updateCommand)
     }
 
     static func matchesBulkPattern(_ command: String) -> Bool {
-        bulkPatterns.contains { pattern in
-            matches(pattern: pattern, in: command)
-        }
-    }
-
-    private static func normalizeCommandForComparison(_ command: String) -> String {
-        command
-            .lowercased()
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        CommandShapeClassifier.classify(command).isBulk
     }
 
     private static func matches(pattern: String, in command: String) -> Bool {

@@ -163,7 +163,11 @@ final class AppState: ObservableObject {
     var filteredItems: [UpdateItem] {
         var result = activeItems
         if let selectedCategory { result = result.filter { $0.category == selectedCategory } }
-        if showUpdatesOnly { result = result.filter { $0.status == .updateAvailable || $0.status == .updatePending } }
+        if showUpdatesOnly {
+            result = result.filter {
+                $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending
+            }
+        }
         if !searchText.isEmpty {
             let q = searchText.lowercased()
             result = result.filter {
@@ -194,7 +198,7 @@ final class AppState: ObservableObject {
     }
 
     var updateAvailableCount: Int {
-        activeItems.filter { $0.status == .updateAvailable || $0.status == .updatePending }.count
+        activeItems.filter { $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending }.count
     }
 
     var selectedActionableItems: [UpdateItem] {
@@ -370,6 +374,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    func markCommandReviewed(id: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let hash = items[index].commandReviewHash
+        settingsStore.updatePreference(for: id) { $0.reviewedCommandHash = hash }
+        items[index].needsReview = false
+        items[index].gateReasons.removeAll { $0 == .needsReview }
+        if items[index].status == .gated {
+            if items[index].gateReasons.isEmpty {
+                items[index].status = .updateAvailable
+                items[index].statusMessage = nil
+            } else {
+                let labels = items[index].gateReasons.map(\.label).joined(separator: ", ")
+                items[index].statusMessage = "Gated: \(labels)"
+            }
+        }
+        appendLog("Marked \(items[index].name) command as reviewed")
+    }
+
     func setPinnedVersion(id: String, version: String?) {
         settingsStore.updatePreference(for: id) { $0.pinnedVersion = version?.nilIfEmpty }
         if let index = items.firstIndex(where: { $0.id == id }) {
@@ -444,7 +466,7 @@ final class AppState: ObservableObject {
         for index in items.indices {
             if let visibleIDs, !visibleIDs.contains(items[index].id) { continue }
             let item = items[index]
-            items[index].isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
+            items[index].isSelected = GatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
         }
     }
 
@@ -484,6 +506,10 @@ final class AppState: ObservableObject {
 
     func checkAll() async {
         guard !isChecking else { return }
+        guard !isUpdating else {
+            appendLog("Check skipped: an update is running")
+            return
+        }
         isChecking = true
         checkedItemCount = 0
         appendLog("Starting update check…")
@@ -502,7 +528,8 @@ final class AppState: ObservableObject {
                 let config = configs[index]
                 group.addTask {
                     var item = config.toUpdateItem()
-                    if let pref = prefs[config.id] {
+                    let pref = prefs[config.id]
+                    if let pref {
                         item.autoUpdate = pref.autoUpdate
                         item.snoozedUntil = pref.snoozedUntil
                         item.pinnedVersion = pref.pinnedVersion
@@ -513,22 +540,35 @@ final class AppState: ObservableObject {
                         item.statusMessage = item.isSnoozed ? "Snoozed" : "Ignored"
                         return (index, item)
                     }
-                    let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
-                    item.isInstalled = installed
-                    if !installed {
-                        item.status = .notInstalled
-                        item.statusMessage = detectMsg
+                    let detection = await DetectionService.detect(config, applicationFolders: appFolders)
+                    if detection.blockReason == .unsafeCheckCommand {
+                        item.status = .blocked
+                        item.statusMessage = detection.message ?? "Blocked unsafe detect command"
+                        item.blockReason = .unsafeCheckCommand
+                        item.isSelected = false
                         return (index, item)
                     }
-                    let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
-                    item.status = status
-                    item.currentVersion = current
-                    item.latestVersion = latest
-                    item.statusMessage = message
-                    if item.isPinnedMismatch {
-                        item.statusMessage = "Pinned to \(item.pinnedVersion ?? "")"
+                    item.isInstalled = detection.installed
+                    if !detection.installed {
+                        item.status = .notInstalled
+                        item.statusMessage = detection.message
+                        return (index, item)
                     }
-                    item.isSelected = BulkUpdatePolicy.shouldAutoSelectForUpdate(item) && !item.isSnoozed
+                    let check = await UpdateCheckService.check(
+                        config,
+                        installed: detection.installed,
+                        reviewedCommandHash: pref?.reviewedCommandHash
+                    )
+                    item.status = check.status
+                    item.currentVersionRaw = check.currentVersionRaw
+                    item.currentVersion = check.currentVersion
+                    item.latestVersion = check.latestVersion
+                    item.statusMessage = check.message
+                    item.gateReasons = check.gateReasons
+                    item.blockReason = check.blockReason
+                    item.needsReview = check.gateReasons.contains(.needsReview)
+                    applyPinnedGateIfNeeded(to: &item)
+                    item.isSelected = item.status == .updateAvailable && !item.isSnoozed
                     return (index, item)
                 }
             }
@@ -565,11 +605,20 @@ final class AppState: ObservableObject {
 
     func retryUpdate(for id: String) async {
         guard let item = items.first(where: { $0.id == id }), item.canRetryUpdate else { return }
+        if configs.contains(where: { $0.id == id }) {
+            appendLog("Re-checking \(item.name) before retry…")
+            await recheckItems(ids: [id])
+        }
+        guard let refreshed = items.first(where: { $0.id == id }) else { return }
+        guard refreshed.status == .updateAvailable else {
+            appendLog("Retry skipped for \(refreshed.name): update is no longer available")
+            return
+        }
         deselectAll()
-        if let index = items.firstIndex(where: { $0.id == id }) {
+        if let index = items.firstIndex(where: { $0.id == refreshed.id }) {
             items[index].isSelected = true
         }
-        await updateSelected(skipDryRun: false, retryItemID: item.id)
+        await requestUpdateSelected()
     }
 
     func dismissDryRun() {
@@ -597,7 +646,7 @@ final class AppState: ObservableObject {
             return target.id
         }
         guard !confirmedTargetIDs.isEmpty else {
-            appendLog("No items selected")
+            appendLog("Nothing run: all items changed since you confirmed")
             return
         }
         await updateSelected(skipDryRun: true, explicitTargetIDs: confirmedTargetIDs)
@@ -629,11 +678,21 @@ final class AppState: ObservableObject {
         appendLog("Running \(targets.count) action(s)…")
         var successCount = 0
         var failCount = 0
+        var skippedDueToChanges = 0
         var updatedIDs: [String] = []
         var successfulIDs = Set<String>()
+        let plannedCommands = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, actionCommand(for: $0)) })
 
         for target in targets {
             guard let index = items.firstIndex(where: { $0.id == target.id }) else { continue }
+            guard let plannedCommand = plannedCommands[target.id] else { continue }
+            let liveCommand = actionCommand(for: items[index])
+            if liveCommand != plannedCommand {
+                skippedDueToChanges += 1
+                items[index].isSelected = false
+                appendLog("\(items[index].name): changed since you confirmed, not run")
+                continue
+            }
             let installing = items[index].canInstall
             let verb = installing ? "Installing" : "Updating"
             items[index].status = .updating
@@ -647,6 +706,8 @@ final class AppState: ObservableObject {
                 stashRepos: stashReposBeforeUpdate
             )
             items[index].status = result.status
+            items[index].gateReasons = []
+            items[index].blockReason = nil
             if result.status == .updated {
                 items[index].isInstalled = true
             }
@@ -680,9 +741,9 @@ final class AppState: ObservableObject {
             case .updatePending:
                 successCount += 1
                 appendLog("↪ \(target.name): \(result.message ?? "Finish update in app")")
-            case .updateAvailable:
+            case .failedVerification:
                 failCount += 1
-                appendLog("↪ \(target.name): \(result.message ?? "Still behind latest")")
+                appendLog("↪ \(target.name): \(result.message ?? "Verification failed after update")")
             default:
                 failCount += 1
                 appendLog("✗ \(target.name): \(result.message ?? "failed")")
@@ -691,6 +752,9 @@ final class AppState: ObservableObject {
 
         isUpdating = false
         appendLog("Action run finished")
+        if successCount == 0, failCount == 0, skippedDueToChanges == targets.count {
+            appendLog("Nothing run: all items changed since you confirmed")
+        }
         publishWidgetSnapshot()
         appDelegate?.refreshStatusBar()
 
@@ -742,6 +806,7 @@ final class AppState: ObservableObject {
     func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
         guard !ids.isEmpty else { return }
         let appFolders = settingsStore.settings.applicationFolders
+        let prefs = settingsStore.settings.itemPreferences
         let idSet = Set(ids)
 
         for index in items.indices where idSet.contains(items[index].id) {
@@ -752,32 +817,50 @@ final class AppState: ObservableObject {
             guard let config = configs.first(where: { $0.id == items[index].id }) else { continue }
             if items[index].permanentlyIgnored || items[index].isSnoozed { continue }
 
-            let (installed, detectMsg) = await DetectionService.detect(config, applicationFolders: appFolders)
-            items[index].isInstalled = installed
-            if !installed {
+            let detection = await DetectionService.detect(config, applicationFolders: appFolders)
+            if detection.blockReason == .unsafeCheckCommand {
+                items[index].status = .blocked
+                items[index].statusMessage = detection.message ?? "Blocked unsafe detect command"
+                items[index].blockReason = .unsafeCheckCommand
+                items[index].isSelected = false
+                continue
+            }
+            items[index].isInstalled = detection.installed
+            if !detection.installed {
                 items[index].status = .notInstalled
-                items[index].statusMessage = detectMsg
+                items[index].statusMessage = detection.message
                 continue
             }
 
-            let (status, current, latest, message) = await UpdateCheckService.check(config, installed: installed)
+            let check = await UpdateCheckService.check(
+                config,
+                installed: detection.installed,
+                reviewedCommandHash: prefs[config.id]?.reviewedCommandHash
+            )
             let reconciled = reconcileAfterUpdate(
                 wasSuccessfulUpdate: successfulIDs.contains(items[index].id),
-                checkStatus: status,
-                current: current,
-                latest: latest
+                checkStatus: check.status,
+                current: check.currentVersion,
+                latest: check.latestVersion
             )
             items[index].status = reconciled
-            items[index].currentVersion = current
-            items[index].latestVersion = latest
-            if let message {
+            items[index].currentVersion = check.currentVersion
+            items[index].currentVersionRaw = check.currentVersionRaw
+            items[index].latestVersion = check.latestVersion
+            items[index].gateReasons = check.gateReasons
+            items[index].blockReason = check.blockReason
+            items[index].needsReview = check.gateReasons.contains(.needsReview)
+            applyPinnedGateIfNeeded(to: &items[index])
+            if items[index].status == .gated,
+               items[index].statusMessage == nil {
+                let labels = items[index].gateReasons.map(\.label).joined(separator: ", ")
+                items[index].statusMessage = labels.isEmpty ? "Gated" : "Gated: \(labels)"
+            } else if let message = check.message {
                 items[index].statusMessage = message
             } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
             }
-            if items[index].canRetryUpdate && !items[index].isBulkOperation {
-                items[index].isSelected = true
-            }
+            items[index].isSelected = items[index].status == .updateAvailable && !items[index].isBulkOperation
         }
 
         refreshDuplicates()
@@ -797,7 +880,7 @@ final class AppState: ObservableObject {
            VersionComparator.isAtLeast(current: current, latest: latest) {
             return .upToDate
         }
-        if checkStatus == .updateAvailable,
+        if checkStatus == .updateAvailable || checkStatus == .gated,
            let current,
            let latest,
            VersionComparator.isAtLeast(current: current, latest: latest) {
@@ -838,13 +921,13 @@ final class AppState: ObservableObject {
                 !items[index].isSnoozed &&
                 !items[index].permanentlyIgnored &&
                 !items[index].isBulkOperation &&
-                (items[index].status == .updateAvailable || items[index].status == .updatePending)
+                items[index].status == .updateAvailable
         }
         await requestUpdateSelected()
     }
 
     private func requiresForcedConfirmation(for targets: [UpdateItem]) -> Bool {
-        targets.contains(where: \.isBulkOperation)
+        targets.contains { $0.isBulkOperation || $0.isRemoteScriptOperation || $0.requiresCommandReview }
     }
 
     private func presentDryRun(for targets: [UpdateItem]) {
@@ -951,6 +1034,23 @@ final class AppState: ObservableObject {
     private func saveSettings() {
         UserDefaults.standard.set(lastCheckDate, forKey: "lastCheckDate")
     }
+}
+
+private func applyPinnedGateIfNeeded(to item: inout UpdateItem) {
+    guard let pinned = item.pinnedVersion?.nilIfEmpty,
+          let target = item.latestVersion?.nilIfEmpty,
+          !GatePolicy.versionsMatch(target, pinned) else {
+        return
+    }
+    guard item.status == .updateAvailable || item.status == .gated else {
+        return
+    }
+    if !item.gateReasons.contains(.pinned) {
+        item.gateReasons.append(.pinned)
+    }
+    item.status = .gated
+    let labels = item.gateReasons.map(\.label).joined(separator: ", ")
+    item.statusMessage = labels.isEmpty ? "Gated" : "Gated: \(labels)"
 }
 
 private extension String {

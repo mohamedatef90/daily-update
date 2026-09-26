@@ -45,9 +45,9 @@ struct UpdateResult {
         )
     }
 
-    static func stillBehind(current: String?, latest: String?, reason: String) -> UpdateResult {
+    static func failedVerification(current: String?, latest: String?, reason: String) -> UpdateResult {
         UpdateResult(
-            status: .updateAvailable,
+            status: .failedVerification,
             currentVersion: current,
             latestVersion: latest,
             message: reason,

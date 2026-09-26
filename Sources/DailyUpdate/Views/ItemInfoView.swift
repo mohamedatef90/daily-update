@@ -37,6 +37,9 @@ struct ItemInfoView: View {
             infoRow("Source", item.sourceLabel)
             infoRow("Status", item.status.label)
             infoRow("Version", item.displayVersion, monospaced: true)
+            if let currentVersionRaw = item.currentVersionRaw, !currentVersionRaw.isEmpty {
+                infoRow("Current Raw Output", currentVersionRaw, monospaced: true)
+            }
             if let latest = item.latestVersion, !latest.isEmpty {
                 infoRow("Latest Available", latest, monospaced: true)
             }
@@ -48,6 +51,12 @@ struct ItemInfoView: View {
             if let message = item.statusMessage, !message.isEmpty {
                 infoRow("Message", message)
             }
+            if !item.gateReasons.isEmpty {
+                infoRow("Gate Reasons", item.gateReasons.map(\.label).joined(separator: ", "))
+            }
+            if let blockReason = item.blockReason {
+                infoRow("Block Reason", blockReason.label)
+            }
             if let workingDirectory = item.workingDirectory, !workingDirectory.isEmpty {
                 infoRow("Working Directory", workingDirectory, monospaced: true)
             }
@@ -57,7 +66,7 @@ struct ItemInfoView: View {
                 infoRow("Install Command", item.installCommand, monospaced: true)
             }
 
-            if item.autoUpdate || item.isSnoozed || item.pinnedVersion != nil || item.duplicateGroupID != nil {
+            if item.autoUpdate || item.isSnoozed || item.pinnedVersion != nil || item.duplicateGroupID != nil || item.needsReview {
                 Divider()
                 flagsSection
             }
@@ -80,6 +89,9 @@ struct ItemInfoView: View {
             }
             if item.duplicateGroupID != nil {
                 flagRow(icon: "doc.on.doc", text: "Possible duplicate", color: .orange)
+            }
+            if item.needsReview {
+                flagRow(icon: "exclamationmark.triangle.fill", text: "Needs review", color: .orange)
             }
         }
     }

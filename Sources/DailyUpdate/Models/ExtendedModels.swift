@@ -5,6 +5,7 @@ struct ItemPreference: Codable, Equatable {
     var snoozedUntil: Date? = nil
     var pinnedVersion: String? = nil
     var permanentlyIgnored: Bool = false
+    var reviewedCommandHash: String? = nil
 }
 
 struct UpdateHistoryEntry: Codable, Identifiable {

@@ -12,10 +12,12 @@ struct DetectorConfig: Codable, Identifiable {
     var source: ItemSource?
     let detect: DetectRule?
     let versionCommand: String?
+    var versionPattern: String? = nil
     let checkCommand: String?
     let installCommand: String?
     let updateCommand: String
     let workingDirectory: String?
+    var needsReview: Bool? = nil
 
     var isUserDefined: Bool {
         source == .user
@@ -59,10 +61,13 @@ extension DetectorConfig {
             iconPath: category == .app ? detect?.paths?.first : nil,
             detectCommand: detect?.command,
             versionCommand: versionCommand,
+            versionPattern: versionPattern,
             checkCommand: checkCommand,
             installCommand: installCommand ?? InstallCommandResolver.resolve(id: id, installCommand: nil, updateCommand: updateCommand),
             updateCommand: updateCommand,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            detectedPaths: detect?.paths ?? [],
+            needsReview: needsReview ?? false
         )
     }
 }

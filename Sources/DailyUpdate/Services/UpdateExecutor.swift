@@ -76,22 +76,22 @@ enum UpdateExecutor {
             )
         }
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
+        if usesInAppUpdateFlow(command) {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
         } else {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
         }
 
         let afterVersion = await DetectionService.getVersion(config)
-        let (checkStatus, _, refreshedLatest, _) = await UpdateCheckService.check(config, installed: true)
+        let check = await UpdateCheckService.check(config, installed: true)
         let latest = resolvedLatest(
             afterVersion: afterVersion,
-            checkLatest: refreshedLatest,
+            checkLatest: check.latestVersion,
             targetLatest: targetLatest,
-            checkStatus: checkStatus
+            checkStatus: check.status
         )
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
+        if usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
@@ -102,25 +102,25 @@ enum UpdateExecutor {
 
         if versionChanged(from: beforeVersion, to: afterVersion) {
             let latestLabel = latest ?? "latest"
-            return .stillBehind(
+            return .failedVerification(
                 current: afterVersion,
                 latest: latest,
                 reason: "Updated to \(afterVersion ?? "unknown") but latest is \(latestLabel)"
             )
         }
 
-        if UpdateCommandSemantics.usesInAppUpdateFlow(command) {
+        if usesInAppUpdateFlow(command) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
-        if UpdateCommandSemantics.hasInAppFallback(command),
-           checkStatus == .updateAvailable || checkStatus == .updatePending {
+        if hasInAppFallback(command),
+           check.status == .updateAvailable || check.status == .updatePending {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
         }
 
         let latestLabel = latest ?? "unknown"
         let currentLabel = afterVersion ?? beforeVersion ?? "unknown"
-        return .stillBehind(
+        return .failedVerification(
             current: afterVersion ?? beforeVersion,
             latest: latest,
             reason: "Version still \(currentLabel) — latest is \(latestLabel). The update command may need to run outside Daily Update."
@@ -136,6 +136,7 @@ enum UpdateExecutor {
             source: item.source,
             detect: nil,
             versionCommand: item.versionCommand,
+            versionPattern: item.versionPattern,
             checkCommand: item.checkCommand,
             installCommand: item.installCommand,
             updateCommand: item.updateCommand,
@@ -193,6 +194,28 @@ enum UpdateExecutor {
         guard let after, !after.isEmpty else { return false }
         guard let before, !before.isEmpty else { return true }
         return VersionComparator.normalize(before) != VersionComparator.normalize(after)
+    }
+
+    private static func usesInAppUpdateFlow(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        if lower.contains("if brew"), hasInAppFallback(command) {
+            return false
+        }
+        let primary = command.components(separatedBy: "||").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? lower
+        if primary.contains("open -a") || primary.contains("open \"-a") || primary.hasPrefix("open ") {
+            return true
+        }
+        return primary.contains("macappstore://") || primary.contains("apps.apple.com")
+    }
+
+    private static func hasInAppFallback(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        return lower.contains("|| open -a") ||
+            lower.contains("|| open ") ||
+            lower.contains("else open -a") ||
+            lower.contains("else open ")
     }
 
     private static func looksLikeGuidanceOnly(_ output: String) -> Bool {

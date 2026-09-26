@@ -10,12 +10,12 @@ protocol CLIRunnerState: AnyObject {
     func selectAllUpdates(limitTo ids: [String]?)
     func deselectAll(limitTo ids: [String]?)
     func setSelection(for id: String, selected: Bool)
-    func updateSelected(skipDryRun: Bool) async
+    func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async
 }
 
 extension AppState: CLIRunnerState {
-    func updateSelected(skipDryRun: Bool) async {
-        await updateSelected(skipDryRun: skipDryRun, retryItemID: nil)
+    func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async {
+        await updateSelected(skipDryRun: skipDryRun, retryItemID: nil, explicitTargetIDs: explicitTargetIDs)
     }
 }
 
@@ -140,11 +140,16 @@ enum CLIRunner {
             return state.items.contains(where: { $0.status == .checkFailed }) ? 1 : 0
         case .installAll:
             await state.checkAll()
+            let skipped = state.items.filter { $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand) }
+            for item in skipped {
+                output("skipped \(item.id): remote-script install must be confirmed in the app")
+            }
             state.selectAllInstallable()
             return await runSelectedActions(
                 state: state,
                 requireExplicitConfirmation: state.confirmBeforeUpdate,
                 confirmed: parsed.yes,
+                emptySelectionExitCode: skipped.isEmpty ? 0 : 2,
                 output: output
             )
         case .updateAll:
@@ -263,7 +268,15 @@ enum CLIRunner {
         failOnAnyCheckFailure: Bool = false,
         output: (String) -> Void
     ) async -> Int32 {
-        let entries = state.selectedActionableItems.map { item in
+        let remoteInstalls = state.selectedActionableItems.filter {
+            $0.canInstall && ActionCommandPolicy.isRemoteScriptInstaller($0.installCommand)
+        }
+        for item in remoteInstalls {
+            state.setSelection(for: item.id, selected: false)
+            output("skipped \(item.id): remote-script install must be confirmed in the app")
+        }
+        let excludedIDs = Set(remoteInstalls.map(\.id))
+        let entries = state.selectedActionableItems.filter { !excludedIDs.contains($0.id) }.map { item in
             DryRunEntry(
                 id: item.id,
                 name: item.name,
@@ -277,10 +290,15 @@ enum CLIRunner {
             if failOnAnyCheckFailure && state.items.contains(where: { $0.status == .checkFailed }) {
                 return 1
             }
-            return emptySelectionExitCode
+            return remoteInstalls.isEmpty ? emptySelectionExitCode : 2
         }
 
-        if requireExplicitConfirmation {
+        let requiresRiskConfirmation = entries.contains { entry in
+            guard let item = state.items.first(where: { $0.id == entry.id }) else { return false }
+            return item.isBulkOperation || item.isRemoteScriptOperation || item.requiresCommandReview
+        }
+
+        if requireExplicitConfirmation || requiresRiskConfirmation {
             printDryRunPlan(entries: entries, output: output)
             guard confirmed else {
                 output("Confirmation required. Re-run with --yes to execute these actions.")
@@ -289,7 +307,7 @@ enum CLIRunner {
         }
 
         let targetIDs = Set(entries.map(\.id))
-        await state.updateSelected(skipDryRun: true)
+        await state.updateSelected(skipDryRun: true, explicitTargetIDs: nil)
         return actionExitCode(
             state: state,
             targetIDs: targetIDs,
@@ -311,7 +329,38 @@ enum CLIRunner {
             printAvailableIDs(state: state, for: action, output: output)
             return 1
         }
-        guard action.matches(item) else {
+        // Remote-script and unparseable updates are refused on one path, with
+        // or without --yes, whatever gate or loop shape put them there.
+        if action == .update, item.status == .gated || action.matches(item),
+           ActionCommandPolicy.isRemoteScriptInstaller(item.updateCommand) {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This update runs a remote script and must be confirmed in the app.")
+            return 2
+        }
+        if action == .update, item.status == .gated, GatePolicy.canRunScopedUpdateWithYes(item), !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This update is gated. Re-run with --yes to execute it.")
+            return 2
+        }
+        let isNormalAction = action.matches(item)
+        let isScopedGatedUpdate = action == .update && confirmed && GatePolicy.canRunScopedUpdateWithYes(item)
+        guard isNormalAction || isScopedGatedUpdate else {
             output("Item '\(itemID)' is not available for \(action.noun).")
             printAvailableIDs(state: state, for: action, output: output)
             return 1
@@ -331,7 +380,7 @@ enum CLIRunner {
             return 2
         }
 
-        if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand), !confirmed {
+        if case .install = action, ActionCommandPolicy.isRemoteScriptInstaller(item.installCommand) {
             printDryRunPlan(entries: [
                 DryRunEntry(
                     id: item.id,
@@ -341,12 +390,26 @@ enum CLIRunner {
                     category: item.category
                 )
             ], output: output)
-            output("This install command runs a remote script. Re-run with --yes to allow it.")
+            output("This install runs a remote script and must be confirmed in the app.")
+            return 2
+        }
+
+        if item.requiresCommandReview, !confirmed {
+            printDryRunPlan(entries: [
+                DryRunEntry(
+                    id: item.id,
+                    name: item.name,
+                    command: action == .install ? item.installCommand : item.updateCommand,
+                    action: item.actionLabel,
+                    category: item.category
+                )
+            ], output: output)
+            output("This command needs review. Re-run with --yes to execute it.")
             return 2
         }
 
         state.setSelection(for: item.id, selected: true)
-        await state.updateSelected(skipDryRun: true)
+        await state.updateSelected(skipDryRun: true, explicitTargetIDs: [item.id])
         return actionExitCode(state: state, targetIDs: Set([item.id]))
     }
 
@@ -357,7 +420,7 @@ enum CLIRunner {
         output: (String) -> Void
     ) {
         let ids = state.items
-            .filter { action.matches($0) }
+            .filter { action.matches($0) || (action == .update && GatePolicy.canRunScopedUpdateWithYes($0)) }
             .map(\.id)
             .sorted()
         if ids.isEmpty {
@@ -423,7 +486,9 @@ enum CLIRunner {
         _ state: any CLIRunnerState,
         output: (String) -> Void = { print($0) }
     ) {
-        let updateCount = state.items.filter { $0.status == .updateAvailable || $0.status == .updatePending }.count
+        let updateCount = state.items.filter {
+            $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending
+        }.count
         output("Daily Update — \(updateCount) update(s) available\n")
         for item in state.items {
             let status = item.status.label
@@ -443,8 +508,11 @@ enum CLIRunner {
                 "name": item.name,
                 "category": item.category.rawValue,
                 "status": item.status.rawValue,
+                "currentVersionRaw": item.currentVersionRaw ?? "",
                 "currentVersion": item.currentVersion ?? "",
-                "latestVersion": item.latestVersion ?? ""
+                "latestVersion": item.latestVersion ?? "",
+                "gateReasons": item.gateReasons.map(\.rawValue),
+                "blockReason": item.blockReason?.rawValue ?? ""
             ]
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),

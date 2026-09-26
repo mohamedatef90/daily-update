@@ -30,12 +30,69 @@ enum ItemCategory: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum GateReason: String, Codable, CaseIterable, Hashable {
+    case bulk
+    case remoteScript
+    case privileged
+    case destructive
+    case needsReview
+    case pinned
+
+    var label: String {
+        switch self {
+        case .bulk: return "Bulk update"
+        case .remoteScript: return "Remote script"
+        case .privileged: return "Needs admin privileges"
+        case .destructive: return "Destructive command"
+        case .needsReview: return "Needs review"
+        case .pinned: return "Pinned version"
+        }
+    }
+}
+
+enum BlockReason: String, Codable, Hashable {
+    case unknownOwner
+    case noStrategy
+    case systemOwned
+    case vendorInstaller
+    case managedByVersionManager
+    case bundledWith
+    case needsPrivilege
+    case untrustedPath
+    case ownerMismatch
+    case noReadOnlyLatestSource
+    case unverifiedSelfUpdater
+    case unsafeCheckCommand
+    case manualOnly
+
+    var label: String {
+        switch self {
+        case .unsafeCheckCommand: return "Unsafe check command"
+        case .needsPrivilege: return "Needs administrator permissions"
+        case .systemOwned: return "Managed by system"
+        case .managedByVersionManager: return "Managed by version manager"
+        case .bundledWith: return "Bundled with another tool"
+        case .manualOnly: return "Manual update only"
+        case .noReadOnlyLatestSource: return "No read-only latest source"
+        case .unverifiedSelfUpdater: return "Unverified self-updater"
+        case .ownerMismatch: return "Owner mismatch"
+        case .untrustedPath: return "Untrusted path"
+        case .vendorInstaller: return "Managed by vendor installer"
+        case .noStrategy: return "No update strategy"
+        case .unknownOwner: return "Unknown owner"
+        }
+    }
+}
+
 enum ItemStatus: String, Codable {
     case unknown
     case checking
     case checkFailed
     case upToDate
     case updateAvailable
+    case gated
+    case blocked
+    case failedVerification
     case updatePending
     case notInstalled
     case error
@@ -47,8 +104,11 @@ enum ItemStatus: String, Codable {
         case .unknown: return "Unknown"
         case .checking: return "Checking…"
         case .checkFailed: return "Check failed"
-        case .upToDate: return "Up to date"
+        case .upToDate: return "Current"
         case .updateAvailable: return "Update available"
+        case .gated: return "Needs you"
+        case .blocked: return "Can't update here"
+        case .failedVerification: return "Didn't update"
         case .updatePending: return "Finish in app"
         case .notInstalled: return "Not installed"
         case .error: return "Update failed"
@@ -63,10 +123,13 @@ struct UpdateItem: Identifiable, Hashable {
     let name: String
     let category: ItemCategory
     let description: String?
+    var currentVersionRaw: String? = nil
     var currentVersion: String?
     var latestVersion: String?
     var status: ItemStatus
     var statusMessage: String?
+    var gateReasons: [GateReason] = []
+    var blockReason: BlockReason?
     var isInstalled: Bool
     var isSelected: Bool
     var isUserDefined: Bool
@@ -79,10 +142,13 @@ struct UpdateItem: Identifiable, Hashable {
     let iconPath: String?
     let detectCommand: String?
     let versionCommand: String?
+    var versionPattern: String? = nil
     let checkCommand: String?
     let installCommand: String
     let updateCommand: String
     let workingDirectory: String?
+    var detectedPaths: [String] = []
+    var needsReview: Bool = false
 
     var isSnoozed: Bool {
         guard let snoozedUntil else { return false }
@@ -90,8 +156,13 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var isPinnedMismatch: Bool {
-        guard let pinnedVersion, let currentVersion else { return false }
-        return !currentVersion.contains(pinnedVersion) && pinnedVersion != currentVersion
+        guard let pinnedVersion = pinnedVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !pinnedVersion.isEmpty,
+              let targetVersion = latestVersion?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !targetVersion.isEmpty else {
+            return false
+        }
+        return targetVersion != pinnedVersion
     }
 
     var displayVersion: String {
@@ -113,14 +184,20 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var canUpdate: Bool {
-        isInstalled && (status == .updateAvailable || status == .updatePending)
+        isInstalled && status == .updateAvailable
     }
 
     var canRetryUpdate: Bool {
-        isInstalled && (status == .error || status == .updatePending || (status == .updateAvailable && statusMessage != nil))
+        isInstalled && (
+            status == .error ||
+            status == .updatePending ||
+            status == .failedVerification ||
+            (status == .updateAvailable && statusMessage != nil)
+        )
     }
 
     var needsAdministratorPermission: Bool {
+        if blockReason == .needsPrivilege { return true }
         guard status == .error, let message = statusMessage?.lowercased() else { return false }
         return message.contains("needs permission") ||
             message.contains("permission denied") ||
@@ -130,7 +207,20 @@ struct UpdateItem: Identifiable, Hashable {
     }
 
     var isBulkOperation: Bool {
-        BulkUpdatePolicy.isBulkOperation(itemID: id)
+        gateReasons.contains(.bulk) || ActionCommandPolicy.matchesBulkPattern(updateCommand)
+    }
+
+    var isRemoteScriptOperation: Bool {
+        ActionCommandPolicy.isRemoteScriptInstaller(updateCommand) ||
+            ActionCommandPolicy.isRemoteScriptInstaller(installCommand)
+    }
+
+    var commandReviewHash: String {
+        GatePolicy.reviewedCommandHash(updateCommand: updateCommand, installCommand: installCommand)
+    }
+
+    var requiresCommandReview: Bool {
+        needsReview || gateReasons.contains(.needsReview)
     }
 
     var isActionable: Bool {
@@ -147,9 +237,13 @@ struct UpdateItem: Identifiable, Hashable {
         hasher.combine(id)
         hasher.combine(isSelected)
         hasher.combine(status)
+        hasher.combine(gateReasons)
+        hasher.combine(blockReason)
         hasher.combine(currentVersion)
+        hasher.combine(currentVersionRaw)
         hasher.combine(latestVersion)
         hasher.combine(statusMessage)
+        hasher.combine(versionPattern)
     }
 
     static func == (lhs: UpdateItem, rhs: UpdateItem) -> Bool {
@@ -157,13 +251,18 @@ struct UpdateItem: Identifiable, Hashable {
             lhs.isSelected == rhs.isSelected &&
             lhs.status == rhs.status &&
             lhs.statusMessage == rhs.statusMessage &&
+            lhs.gateReasons == rhs.gateReasons &&
+            lhs.blockReason == rhs.blockReason &&
+            lhs.currentVersionRaw == rhs.currentVersionRaw &&
             lhs.currentVersion == rhs.currentVersion &&
             lhs.latestVersion == rhs.latestVersion &&
+            lhs.versionPattern == rhs.versionPattern &&
             lhs.isInstalled == rhs.isInstalled &&
             lhs.autoUpdate == rhs.autoUpdate &&
             lhs.isSnoozed == rhs.isSnoozed &&
             lhs.permanentlyIgnored == rhs.permanentlyIgnored &&
             lhs.duplicateGroupID == rhs.duplicateGroupID &&
-            lhs.pinnedVersion == rhs.pinnedVersion
+            lhs.pinnedVersion == rhs.pinnedVersion &&
+            lhs.needsReview == rhs.needsReview
     }
 }
