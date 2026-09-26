@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class GatePolicyTests: XCTestCase {
+final class GatePolicyTests: HermeticTestCase {
     func testSelectionMatrixRowS1OnlyUpdateAvailableAutoSelects() {
         let statuses: [ItemStatus] = [
             .unknown, .checking, .checkFailed, .upToDate, .updateAvailable, .gated,
@@ -528,7 +528,7 @@ final class GatePolicyTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
         ConfigLoader.setAppSupportDirectoryForTesting(tempRoot)
         defer {
-            ConfigLoader.setAppSupportDirectoryForTesting(nil)
+            ConfigLoader.setAppSupportDirectoryForTesting(TestAppSupport.root)
             try? FileManager.default.removeItem(at: tempRoot)
         }
 

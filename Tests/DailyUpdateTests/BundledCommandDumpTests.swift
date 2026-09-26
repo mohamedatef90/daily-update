@@ -4,7 +4,7 @@ import XCTest
 /// Writes one line per bundled command (raw risks, the check-path unsafe flag and
 /// `isRemoteScriptInstaller`), plus each item's gate reasons and typed identity, so a
 /// change can be diffed row by row. Runs only when `DAILY_UPDATE_DUMP` names an output file.
-final class BundledCommandDumpTests: XCTestCase {
+final class BundledCommandDumpTests: HermeticTestCase {
     func testDumpBundledCommands() throws {
         guard let path = ProcessInfo.processInfo.environment["DAILY_UPDATE_DUMP"], !path.isEmpty else {
             throw XCTSkip("Set DAILY_UPDATE_DUMP=<file> to write the bundled-command dump")

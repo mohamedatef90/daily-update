@@ -4,7 +4,7 @@ import XCTest
 /// PR-B2b: the catalog and strategy items deferred from Phase 1 (TIF-10 items 12 and 13).
 /// Only stubs run: a stub `brew`, a stub `opencode` and a stub `cursor-agent`, and the
 /// release lookups are a planner input, so nothing is fetched and nothing is upgraded.
-final class PRB2bCatalogTests: XCTestCase {
+final class PRB2bCatalogTests: HermeticTestCase {
     private var root: URL!
 
     override func setUpWithError() throws {
@@ -218,6 +218,24 @@ final class PRB2bCatalogTests: XCTestCase {
         let (fits, _) = recordingFetcher([url: #"{"tag_name":"\#(exact)"}"#])
         let shown = await UpdateCheckService.check(openCodeConfig, installed: true, pathLookup: lookup, fetchRelease: fits)
         XCTAssertEqual(shown.message, "OpenCode release tag is not strict semver: " + exact)
+    }
+
+    /// PR-B2c item 6: the echoed tag is at most 32 scalars of printable ASCII.
+    func testOpenCodeFailureShowsOnlyPrintableASCII() async throws {
+        let (binary, _) = try makeOpenCode(version: "1.18.32")
+        let url = StrategyPlanner.openCodeLatestReleaseRequest.arguments.last!
+        let lookup = CommandPathLookup(candidatesByName: ["opencode": [binary.path]], layout: layout)
+        let rows: [(String, String)] = [
+            (#"1.2\u001b[31m\u202ex\ny"#, "1.2?[31m?x?y"),
+            ("a" + String(repeating: #"\u0301"#, count: 200), "a" + String(repeating: "?", count: 31) + "…"),
+            (#"v1.é"#, "v1.?"),
+        ]
+        for (json, shown) in rows {
+            let (fetcher, _) = recordingFetcher([url: #"{"tag_name":""# + json + #""}"#])
+            let check = await UpdateCheckService.check(openCodeConfig, installed: true, pathLookup: lookup, fetchRelease: fetcher)
+            XCTAssertEqual(check.status, .checkFailed, json)
+            XCTAssertEqual(check.message, "OpenCode release tag is not strict semver: " + shown, json)
+        }
     }
 
     func testOpenCodeFromNpmUsesTheNpmStrategyAndOtherPackagesMismatch() throws {

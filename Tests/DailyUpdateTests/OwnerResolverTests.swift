@@ -1,7 +1,7 @@
 import XCTest
 @testable import DailyUpdate
 
-final class OwnerResolverTests: XCTestCase {
+final class OwnerResolverTests: HermeticTestCase {
     func testOwnerResolverClassifiesNativeClaudeThroughSymlink() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
