@@ -195,6 +195,31 @@ final class PRB2bCatalogTests: XCTestCase {
         XCTAssertEqual(failed.message, "Could not determine latest version")
     }
 
+    /// Rebase onto #7: ICU's `$` also matches before a final newline, so the pattern ends in `\z`.
+    func testStrictSemVerRejectsATrailingNewline() {
+        XCTAssertTrue(StrategyPlanner.isStrictSemVer("1.18.33"))
+        XCTAssertTrue(StrategyPlanner.isStrictSemVer("1.18.33-beta.1+build.7"))
+        XCTAssertFalse(StrategyPlanner.isStrictSemVer("1.18.33\n"))
+        XCTAssertFalse(StrategyPlanner.isStrictSemVer("1.18.33 "))
+        XCTAssertFalse(StrategyPlanner.isStrictSemVer("\n1.18.33"))
+    }
+
+    /// The failure message shows at most 32 characters of the raw tag.
+    func testOpenCodeFailureShortensALongTag() async throws {
+        let (binary, _) = try makeOpenCode(version: "1.18.32")
+        let url = StrategyPlanner.openCodeLatestReleaseRequest.arguments.last!
+        let lookup = CommandPathLookup(candidatesByName: ["opencode": [binary.path]], layout: layout)
+        let long = String(repeating: "a", count: 32) + String(repeating: "b", count: 200)
+        let (fetcher, _) = recordingFetcher([url: #"{"tag_name":"\#(long)"}"#])
+        let bad = await UpdateCheckService.check(openCodeConfig, installed: true, pathLookup: lookup, fetchRelease: fetcher)
+        XCTAssertEqual(bad.status, .checkFailed)
+        XCTAssertEqual(bad.message, "OpenCode release tag is not strict semver: " + String(repeating: "a", count: 32) + "…")
+        let exact = String(repeating: "c", count: 32)
+        let (fits, _) = recordingFetcher([url: #"{"tag_name":"\#(exact)"}"#])
+        let shown = await UpdateCheckService.check(openCodeConfig, installed: true, pathLookup: lookup, fetchRelease: fits)
+        XCTAssertEqual(shown.message, "OpenCode release tag is not strict semver: " + exact)
+    }
+
     func testOpenCodeFromNpmUsesTheNpmStrategyAndOtherPackagesMismatch() throws {
         let prefix = root.appendingPathComponent(".nvm/versions/node/v24.0.0")
         try write("#!/bin/sh\n", to: prefix.appendingPathComponent("bin/node"))
@@ -277,6 +302,25 @@ final class PRB2bCatalogTests: XCTestCase {
         let unknown = await UpdateCheckService.check(cursorConfig, installed: true, pathLookup: lookup, fetchRelease: garbage)
         XCTAssertEqual(unknown.status, .checkFailed)
         XCTAssertEqual(unknown.message, "Could not determine latest version")
+    }
+
+    /// Rebase onto #7: the build is the component just after `cursorAgentNativeRoot`, not after
+    /// the first `/versions/` anywhere in the path.
+    func testCursorAgentBuildIsReadJustAfterTheNativeRoot() async throws {
+        let home = root.appendingPathComponent("versions/home")
+        let homeLayout = EcosystemLayout.fixture(home: home.path)
+        let target = home.appendingPathComponent(".local/share/cursor-agent/versions/2026.09.23-86fc751/cursor-agent")
+        try write("#!/bin/sh\n", to: target)
+        let link = home.appendingPathComponent(".local/bin/cursor-agent")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
+        let url = StrategyPlanner.cursorAgentInstallerRequest.arguments.last!
+        let (fetcher, _) = recordingFetcher([url: installer("2026.09.25-1a2b3c4")])
+        let lookup = CommandPathLookup(candidatesByName: ["cursor-agent": [link.path]], layout: homeLayout)
+        let check = await UpdateCheckService.check(cursorConfig, installed: true, pathLookup: lookup, fetchRelease: fetcher)
+        XCTAssertEqual(check.status, .updateAvailable)
+        XCTAssertEqual(check.currentVersion, "2026.09.23-86fc751")
+        XCTAssertEqual(check.latestVersion, "2026.09.25-1a2b3c4")
     }
 
     /// The catalog lists no package for cursor-agent, so only its native installer is accepted.

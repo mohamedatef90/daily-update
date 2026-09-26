@@ -44,6 +44,10 @@ enum StrategyPlanner {
         return result.succeeded ? result.stdout : nil
     }
 
+    static func isStrictSemVer(_ value: String) -> Bool {
+        value.range(of: strictSemVerPattern, options: .regularExpression) != nil
+    }
+
     static func usesTypedEngine(config: DetectorConfig) -> Bool {
         config.source == .bundled && config.hasTypedEngineFields
     }
@@ -387,7 +391,7 @@ enum StrategyPlanner {
                     return .unknownOwner("Untrusted Cursor Agent executable path")
                 }
                 return .strategy(CursorAgentNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
-                    fetchRelease: fetchRelease))
+                    nativeRoot: layout.cursorAgentNativeRoot, fetchRelease: fetchRelease))
             }
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
@@ -771,7 +775,8 @@ private struct ClaudeNativeStrategy: Strategy {
     }
 }
 
-private let strictSemVerPattern = #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"#
+/// `\A`/`\z` so a trailing newline can never pass. ICU's `$` also matches just before one.
+private let strictSemVerPattern = #"\A[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\z"#
 
 /// `~/.opencode/bin/opencode`: its own `upgrade <version>` command, pinned to the latest GitHub release.
 private struct OpenCodeNativeStrategy: Strategy {
@@ -784,7 +789,7 @@ private struct OpenCodeNativeStrategy: Strategy {
         let result = await ShellRunner.run(CommandSpec(executablePath: executable, arguments: ["--version"]), timeout: 15)
         guard result.succeeded else { return nil }
         let version = Self.withoutV(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
-        return version.range(of: strictSemVerPattern, options: .regularExpression) == nil ? nil : version
+        return StrategyPlanner.isStrictSemVer(version) ? version : nil
     }
 
     func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
@@ -795,8 +800,9 @@ private struct OpenCodeNativeStrategy: Strategy {
             return LatestVersionOutcome(latestVersion: nil)
         }
         let version = Self.withoutV(tag)
-        guard version.range(of: strictSemVerPattern, options: .regularExpression) != nil else {
-            return LatestVersionOutcome(latestVersion: nil, failureMessage: "OpenCode release tag is not strict semver: \(tag)")
+        guard StrategyPlanner.isStrictSemVer(version) else {
+            let shown = tag.count > 32 ? tag.prefix(32) + "…" : tag
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "OpenCode release tag is not strict semver: \(shown)")
         }
         return LatestVersionOutcome(latestVersion: version)
     }
@@ -804,7 +810,7 @@ private struct OpenCodeNativeStrategy: Strategy {
     /// `--method curl` keeps the upgrade on the native installer that owns this binary.
     func updateCommand(targetVersion: String?) -> CommandSpec? {
         guard let targetVersion = targetVersion?.nilIfEmpty,
-              targetVersion.range(of: strictSemVerPattern, options: .regularExpression) != nil else { return nil }
+              StrategyPlanner.isStrictSemVer(targetVersion) else { return nil }
         return CommandSpec(executablePath: executable, arguments: ["upgrade", targetVersion, "--method", "curl"])
     }
 
@@ -819,6 +825,7 @@ private struct OpenCodeNativeStrategy: Strategy {
 private struct CursorAgentNativeStrategy: Strategy {
     let executable: String
     let resolvedPath: String
+    let nativeRoot: String
     let fetchRelease: StrategyPlanner.ReleaseFetcher
     let requiresLatestVersion = true
     let requiresTargetVersion = false
@@ -826,8 +833,9 @@ private struct CursorAgentNativeStrategy: Strategy {
     private static let buildPattern = #"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7,40}$"#
 
     func currentVersion() async -> String? {
-        guard let range = resolvedPath.range(of: "/versions/"),
-              let build = resolvedPath[range.upperBound...].split(separator: "/").first.map(String.init),
+        let prefix = nativeRoot.hasSuffix("/") ? nativeRoot : nativeRoot + "/"
+        guard resolvedPath.hasPrefix(prefix),
+              let build = resolvedPath.dropFirst(prefix.count).split(separator: "/").first.map(String.init),
               build.range(of: Self.buildPattern, options: .regularExpression) != nil else { return nil }
         return build
     }
