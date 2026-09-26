@@ -314,17 +314,23 @@ enum CommandShapeClassifier {
     /// Any of them could run.
     private static func commandWordsBehindUnknownExecutable(_ words: [String]) -> [String] {
         guard let args = wrappedArguments(stripWrappersRaw(words)) else { return [] }
-        return args.map { $0.hasPrefix("-") ? optionValue($0) : $0 }
-            .filter { !$0.isEmpty }.map(normalizedExecutableName).filter(commandWords.contains)
+        return args.flatMap { $0.hasPrefix("-") ? optionValues($0) : [$0] }
+            .map(normalizedExecutableName).filter(commandWords.contains)
     }
 
-    /// The value an option word carries: after `=` (`--cmd=sh`), or attached to a short
+    /// The values an option word may carry: after `=` (`--cmd=sh`), or attached to a short
     /// option (`-csh`; `-c'sudo id'` lexes as `-csudo id`), which getopt reads as `-c sh`.
-    /// Empty for a bare option (`--shell`, `-c`).
-    private static func optionValue(_ option: String) -> String {
-        if let equals = option.firstIndex(of: "=") { return String(option[option.index(after: equals)...]) }
-        guard !option.hasPrefix("--"), option.count > 2 else { return "" }
-        return String(option.dropFirst(2))
+    /// Short options group (`-yc'sudo id'` is `-y -c 'sudo id'`) and which letter takes a
+    /// value is unknown, so every suffix after the second character is a candidate, longest
+    /// first (`-xcbash` → `cbash`, `bash`, `ash`, `sh`, `h`). Empty for a bare option
+    /// (`--shell`, `-c`).
+    private static func optionValues(_ option: String) -> [String] {
+        if let equals = option.firstIndex(of: "=") {
+            let value = String(option[option.index(after: equals)...])
+            return value.isEmpty ? [] : [value]
+        }
+        guard !option.hasPrefix("--"), option.count > 2 else { return [] }
+        return (2..<option.count).map { String(option.dropFirst($0)) }
     }
 
     /// Shell operators that make one argument a command line rather than a word.
@@ -341,14 +347,18 @@ enum CommandShapeClassifier {
         let stripped = stripWrappersRaw(words)
         guard let args = wrappedArguments(stripped) ?? (xargsInputPicksVerb(words) ? Array(stripped.dropFirst()) : nil)
         else { return [] }
-        return args.map { arg in
-            guard arg.hasPrefix("-") else { return arg }
-            let value = optionValue(arg)
-            return value.isEmpty ? arg : value
-        }.filter { value in
-            value.contains(where: commandLineOperators.contains) || value.contains("$") || (value.contains(where: \.isWhitespace)
-                && ShellLexer.words(from: ShellLexer.lex(value)).map(normalizedExecutableName).contains(where: commandWords.contains))
+        // The longest candidate of an option that is a command line: `-yc'sudo id'` gives
+        // `sudo id`, not also `udo id`.
+        return args.compactMap { arg in
+            guard arg.hasPrefix("-") else { return isCommandLine(arg) ? arg : nil }
+            let values = optionValues(arg)
+            return (values.isEmpty ? [arg] : values).first(where: isCommandLine)
         }
+    }
+
+    private static func isCommandLine(_ value: String) -> Bool {
+        value.contains(where: commandLineOperators.contains) || value.contains("$") || (value.contains(where: \.isWhitespace)
+            && ShellLexer.words(from: ShellLexer.lex(value)).map(normalizedExecutableName).contains(where: commandWords.contains))
     }
 
     private static func containsDestructiveOperation(words: [String]) -> Bool {
