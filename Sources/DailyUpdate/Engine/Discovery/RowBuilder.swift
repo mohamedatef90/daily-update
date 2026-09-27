@@ -79,13 +79,16 @@ enum RowBuilder {
             // S4/RC2 item 3: the command join trusts `whence`'s candidate paths, which is exactly
             // what an unknown or empty login PATH means discovery can't trust; skip it, but the
             // package-identifier join below doesn't depend on PATH at all, so it still runs.
+            // CR#5: with no ranking signal, this row may not be the install the user meant — say
+            // so, so an update never silently targets an install nobody chose.
+            let unknownPathDescription = loginPathKnown ? nil : "PATH unknown"
             if let joined = joinCatalogEntry(
                 for: winner, catalog: catalog, lookup: input.lookup, fileSystem: fileSystem,
                 allowCommandJoin: loginPathKnown
             ), claimedCatalogIDs.insert(joined.id).inserted {
-                rows.append(makeJoinedRow(catalogEntry: joined, record: winner))
+                rows.append(makeJoinedRow(catalogEntry: joined, record: winner, descriptionOverride: unknownPathDescription))
             } else {
-                rows.append(makeInventoryRow(record: winner))
+                rows.append(makeInventoryRow(record: winner, description: unknownPathDescription))
             }
         }
 
@@ -223,20 +226,35 @@ enum RowBuilder {
         )
     }
 
-    private static func makeJoinedRow(catalogEntry: DetectorConfig, record: InstalledPackage) -> DetectorConfig {
+    /// CR#5: `descriptionOverride` (unknown-PATH mode's "PATH unknown") replaces the catalog
+    /// entry's own description. `description` is a `let`, so this rebuilds the value rather than
+    /// mutating `row` in place.
+    private static func makeJoinedRow(
+        catalogEntry: DetectorConfig,
+        record: InstalledPackage,
+        descriptionOverride: String? = nil
+    ) -> DetectorConfig {
         var row = catalogEntry
         row.source = .inventory
         row.inventory = identity(for: record)
         row.handle = "\(record.ecosystem.rawValue):\(record.packageID)"
-        return row
+        guard let descriptionOverride else { return row }
+        return DetectorConfig(
+            id: row.id, name: row.name, category: row.category, description: descriptionOverride,
+            schemaVersion: row.schemaVersion, source: row.source, command: row.command, packages: row.packages,
+            selfUpdater: row.selfUpdater, appcastURL: row.appcastURL, autoUpdates: row.autoUpdates,
+            inventory: row.inventory, handle: row.handle, detect: row.detect, versionCommand: row.versionCommand,
+            versionPattern: row.versionPattern, checkCommand: row.checkCommand, installCommand: row.installCommand,
+            updateCommand: row.updateCommand, workingDirectory: row.workingDirectory, needsReview: row.needsReview
+        )
     }
 
-    private static func makeInventoryRow(record: InstalledPackage) -> DetectorConfig {
+    private static func makeInventoryRow(record: InstalledPackage, description: String? = nil) -> DetectorConfig {
         let recordIdentity = identity(for: record)
         let id = ItemBuilder.stableID(prefix: "inv-\(record.ecosystem.rawValue)", path: "\(record.root.path)\u{0}\(record.packageID)")
         let name = PackageNameRules.sanitize(record.displayName ?? record.packageID)
         return DetectorConfig(
-            id: id, name: name, category: .cli, description: nil, schemaVersion: nil, source: .inventory,
+            id: id, name: name, category: .cli, description: description, schemaVersion: nil, source: .inventory,
             command: nil, packages: nil, selfUpdater: nil, appcastURL: nil, autoUpdates: nil,
             inventory: recordIdentity, handle: "\(record.ecosystem.rawValue):\(record.packageID)",
             detect: nil, versionCommand: nil, versionPattern: nil, checkCommand: nil, installCommand: nil,

@@ -229,6 +229,10 @@ final class RowBuilderTests: HermeticTestCase {
         XCTAssertEqual(rows.count, 4)
         XCTAssertEqual(Set(rows.map(\.id)), expectedIDs)
         XCTAssertTrue(rows.contains { $0.inventory?.rootPath == inactiveRoot.path })
+        // CR#5: no ranking signal means this may not be the install the user meant.
+        let inventoryRows = rows.filter { $0.inventory?.isErrorMarker != true }
+        XCTAssertEqual(inventoryRows.count, 3)
+        XCTAssertTrue(inventoryRows.allSatisfy { $0.description == "PATH unknown" })
     }
 
     // MARK: D20 variant: empty PATH — R1 still merges exact file duplicates, nothing else collapses
@@ -255,6 +259,10 @@ final class RowBuilderTests: HermeticTestCase {
         // 3 rows, not 4: the exact FileID duplicate under rootA merges to one row.
         XCTAssertEqual(rows.count, 3)
         XCTAssertEqual(Set(rows.map(\.id)), expectedIDs)
+        // CR#5: no ranking signal means this may not be the install the user meant.
+        let inventoryRows = rows.filter { $0.inventory?.isErrorMarker != true }
+        XCTAssertEqual(inventoryRows.count, 2)
+        XCTAssertTrue(inventoryRows.allSatisfy { $0.description == "PATH unknown" })
     }
 
     // MARK: D18-style: repeated builds over the same input are byte-identical; IDs are stable
