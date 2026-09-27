@@ -156,9 +156,37 @@ struct CommandPathLookup: Equatable, Sendable {
     let candidatesByName: [String: [String]]
     var failureMessage: String? = nil
     var layout: EcosystemLayout? = nil
+    /// RC2: the login PATH this batch saw, in its three states. Discovery's D5 activity and R2/R3
+    /// grouping key off this; Phase 1 callers that don't care can ignore it.
+    var loginPath: LoginPath = .unknown("Not queried")
+    /// F4: the `*_HOME`/`*_DIR` override snapshot (plus `HOMEBREW_PREFIX`, `HOMEBREW_CACHE`,
+    /// `PYENV_VERSION` and the `UV_*INDEX*` variables), read from the same login shell — never
+    /// from this process's own environment — so the GUI and the CLI see the same roots.
+    var environmentSnapshot: [String: String] = [:]
 
     func candidates(for commandName: String) -> [String] {
         candidatesByName[commandName] ?? []
+    }
+}
+
+/// F4: the fixed list the whence script also captures. Absolute-path variables are validated as
+/// paths (dropped otherwise); `PYENV_VERSION` and the `UV_*INDEX*` variables are plain values, so
+/// they're only checked for shape (no newline, within the size cap).
+enum LoginEnvironmentOverrides {
+    static let pathVariableNames = [
+        "HOMEBREW_PREFIX", "HOMEBREW_CACHE", "NPM_CONFIG_PREFIX", "PNPM_HOME", "BUN_INSTALL",
+        "PIPX_HOME", "UV_TOOL_DIR", "CARGO_INSTALL_ROOT", "CARGO_HOME", "GEM_HOME", "NVM_DIR",
+        "FNM_DIR", "MISE_DATA_DIR", "ASDF_DATA_DIR", "PYENV_ROOT", "RUSTUP_HOME", "VOLTA_HOME",
+        "XDG_DATA_HOME", "PYTHONUSERBASE",
+    ]
+    static let valueVariableNames = ["PYENV_VERSION", "UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX", "UV_EXTRA_INDEX_URL"]
+    static let allVariableNames = pathVariableNames + valueVariableNames
+    static let maxValueBytes = 1024
+
+    static func isValid(name: String, value: String) -> Bool {
+        guard !value.isEmpty, !value.contains("\n"), value.utf8.count <= maxValueBytes else { return false }
+        guard pathVariableNames.contains(name) else { return true }
+        return value.hasPrefix("/")
     }
 }
 
@@ -169,33 +197,105 @@ enum OwnerResolver {
         pattern: #"^(?:@(?:[a-z0-9-~][a-z0-9-._~]*)/[a-z0-9-~][a-z0-9-._~]*|[a-z0-9-~][a-z0-9-._~]*)$"#
     )
 
-    static func lookup(commandNames: [String]) async -> CommandPathLookup {
+    static func lookup(commandNames: [String], layout: EcosystemLayout = .live()) async -> CommandPathLookup {
         let uniqueNames = Array(Set(commandNames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
             .filter { !$0.isEmpty }
             .sorted()
         let validNames = uniqueNames.filter { isValidCommandName($0) }
         guard !validNames.isEmpty else {
-            return CommandPathLookup(candidatesByName: [:])
+            return CommandPathLookup(candidatesByName: [:], layout: layout)
         }
 
+        let overrideNameList = LoginEnvironmentOverrides.allVariableNames.joined(separator: " ")
         let script = """
         for name in "$@"; do
           printf '%s%s\\n' "\(markerPrefix)BEGIN:" "$name"
           whence -ap -- "$name" 2>/dev/null || true
           printf '%s%s\\n' "\(markerPrefix)END:" "$name"
         done
+        printf '%s\\n' "\(markerPrefix)PATH_BEGIN"
+        printf '%s\\n' "$PATH"
+        printf '%s\\n' "\(markerPrefix)PATH_END"
+        printf '%s\\n' "\(markerPrefix)ENV_BEGIN"
+        for name in \(overrideNameList); do
+          eval "value=\\${$name}"
+          printf '%s=%s\\n' "$name" "$value"
+        done
+        printf '%s\\n' "\(markerPrefix)ENV_END"
         """
 
-        let result = await ShellRunner.runProcess(
-            executablePath: "/bin/zsh",
+        // RC2: only `whence` uses the inherited (login-profile) environment; every enricher under
+        // Engine/Discovery/ builds its own from scratch instead.
+        let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
+            executable: "/bin/zsh",
             arguments: ["-lc", script, "--"] + validNames,
-            timeout: 20
-        )
-        guard result.succeeded else {
-            return CommandPathLookup(candidatesByName: [:], failureMessage: "Command lookup failed (exit \(result.exitCode)): \(result.stderr)")
+            environment: .inherited,
+            timeout: 20,
+            maxStdoutBytes: 1024 * 1024
+        ))
+
+        guard case .exited(0) = outcome.evidence.termination else {
+            let reason = failureReason(for: outcome.evidence.termination, stderr: outcome.evidence.stderr)
+            return CommandPathLookup(
+                candidatesByName: [:],
+                failureMessage: "Command lookup failed: \(reason)",
+                layout: layout,
+                loginPath: .unknown(reason)
+            )
         }
 
-        return CommandPathLookup(candidatesByName: parseWhenceOutput(result.stdout), layout: await EcosystemLayout.discover())
+        let output = String(data: outcome.stdout, encoding: .utf8) ?? ""
+        return CommandPathLookup(
+            candidatesByName: parseWhenceOutput(output),
+            layout: layout,
+            loginPath: parseLoginPath(output),
+            environmentSnapshot: parseEnvironmentSnapshot(output)
+        )
+    }
+
+    private static func failureReason(for termination: Termination, stderr: String) -> String {
+        switch termination {
+        case .exited(let code): return "exit \(code): \(stderr)"
+        case .signaled(let signal): return "killed by signal \(signal)"
+        case .timedOut: return "timed out"
+        case .outputCapExceeded: return "output too large"
+        case .launchFailed(let reason): return reason
+        }
+    }
+
+    private static func parseLoginPath(_ output: String) -> LoginPath {
+        guard let block = markedBlock(in: output, prefix: "PATH_BEGIN", suffix: "PATH_END") else {
+            return .unknown("missing PATH marker")
+        }
+        let entries = block
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+            .filter { $0.hasPrefix("/") }
+        return entries.isEmpty ? .empty : .known(entries)
+    }
+
+    private static func parseEnvironmentSnapshot(_ output: String) -> [String: String] {
+        guard let block = markedBlock(in: output, prefix: "ENV_BEGIN", suffix: "ENV_END") else { return [:] }
+        var snapshot: [String: String] = [:]
+        for line in block.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let separator = line.firstIndex(of: "=") else { continue }
+            let name = String(line[line.startIndex..<separator])
+            let value = String(line[line.index(after: separator)...])
+            guard LoginEnvironmentOverrides.allVariableNames.contains(name),
+                  LoginEnvironmentOverrides.isValid(name: name, value: value) else { continue }
+            snapshot[name] = value
+        }
+        return snapshot
+    }
+
+    /// Both marker lines carry the shared `markerPrefix`, so the content between them is
+    /// whatever the shell printed for that block, one line per printed value.
+    private static func markedBlock(in output: String, prefix: String, suffix: String) -> String? {
+        guard let beginRange = output.range(of: "\(markerPrefix)\(prefix)\n"),
+              let endRange = output.range(of: "\(markerPrefix)\(suffix)", range: beginRange.upperBound..<output.endIndex) else {
+            return nil
+        }
+        return String(output[beginRange.upperBound..<endRange.lowerBound])
     }
 
     static func resolve(
