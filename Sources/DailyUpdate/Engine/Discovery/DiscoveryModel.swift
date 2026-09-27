@@ -245,4 +245,15 @@ struct InventoryIdentity: Codable, Hashable, Sendable {
         self.packageDirectory = packageDirectory
         self.toolPath = toolPath
     }
+
+    /// D3/RowBuilder: a `partial`/`failed` enumeration adds a visible Check Failed row instead of
+    /// a real package. `StrategyPlanner` recognizes this marker and reports Check Failed directly
+    /// from the row's `description`, without ever calling an enumerator's `resolve`.
+    static let errorMarkerPackageID = "__discovery_error__"
+
+    var isErrorMarker: Bool { packageID == Self.errorMarkerPackageID }
+
+    static func errorMarker(ecosystem: Ecosystem, rootPath: String) -> InventoryIdentity {
+        InventoryIdentity(ecosystem: ecosystem, packageID: errorMarkerPackageID, rootPath: rootPath, packageDirectory: rootPath)
+    }
 }

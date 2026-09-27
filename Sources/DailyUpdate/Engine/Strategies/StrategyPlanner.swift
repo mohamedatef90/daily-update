@@ -49,7 +49,50 @@ enum StrategyPlanner {
     }
 
     static func usesTypedEngine(config: DetectorConfig) -> Bool {
-        config.source == .bundled && config.hasTypedEngineFields
+        (config.source == .bundled && config.hasTypedEngineFields) ||
+            (config.source == .inventory && config.inventory != nil)
+    }
+
+    /// P2-1: the inventory branch. Resolves through whatever `InventoryResolver`-backed closure
+    /// the caller injects (P2-5 wires the real enumerator registry into `DetectionService` and
+    /// `UpdateCheckService`; tests inject a fake), then hands off to the existing
+    /// `checkPlan(config:currentVersion:resolution:layout:fetchRelease:)` the same way the
+    /// bundled path already does. A row carrying the error marker (an unreadable ecosystem root,
+    /// §1's "Enumerations that are partial or failed") is reported Check Failed directly from its
+    /// `description`, without ever calling the resolver.
+    static func checkPlan(
+        config: DetectorConfig,
+        currentVersion: String?,
+        resolve: (InventoryIdentity) async -> InstalledPackage?,
+        layout: EcosystemLayout = .live(),
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
+    ) async -> StrategyPlan? {
+        guard config.source == .inventory, let identity = config.inventory else { return nil }
+
+        if identity.isErrorMarker {
+            return StrategyPlan(
+                ownerResolution: OwnerResolution(commandName: "", active: nil, competing: [], resolveError: .lookupFailed(config.description ?? "Couldn't read this install")),
+                currentVersion: nil, latestVersion: nil, updateCommandSpec: nil, gateReasons: [],
+                blockReason: nil, failureMessage: config.description ?? "Couldn't read this install"
+            )
+        }
+
+        guard let record = await resolve(identity) else {
+            let message = "\(config.name): this install is no longer where it was found"
+            return StrategyPlan(
+                ownerResolution: OwnerResolution(commandName: identity.packageID, active: nil, competing: [], resolveError: .lookupFailed(message)),
+                currentVersion: currentVersion, latestVersion: nil, updateCommandSpec: nil, gateReasons: [],
+                blockReason: nil, failureMessage: message
+            )
+        }
+
+        let executable = record.executables.first ?? record.packageDirectory
+        let resolution = OwnerResolution(
+            commandName: identity.packageID,
+            active: OwnerCandidate(commandPath: executable, resolvedPath: executable, owner: record.owner),
+            competing: []
+        )
+        return await checkPlan(config: config, currentVersion: currentVersion, resolution: resolution, layout: layout, fetchRelease: fetchRelease)
     }
 
     static func checkPlan(
