@@ -200,6 +200,7 @@ enum CommandShapeClassifier {
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
                     || shellScriptFollowsOption(words) || changesShellEvaluation(words)
+                    || runsHiddenPackage(words) || writesManagerConfig(words)
                     || !commandWordsBehindUnknownExecutable(words).isEmpty || !embeddedCommandLines(words).isEmpty {
                     failsClosed = true
                 }
@@ -609,6 +610,37 @@ enum CommandShapeClassifier {
         return paths.contains { path in
             verbIndex(args, path: path).map { !operands(args[($0 + 1)...]).isEmpty } ?? false
         }
+    }
+
+    /// A bare `npx` or `npm exec` runs the `call` config from `.npmrc` or the environment,
+    /// which the command text does not show.
+    private static func runsHiddenPackage(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), !isCommandLookup(words, stripped: stripped)
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        if executable == "npx" { return operands(args[...]).isEmpty }
+        guard executable == "npm" else { return false }
+        return [["exec"], ["x"]].contains { path in
+            verbIndex(args, path: path).map { operands(args[($0 + 1)...]).isEmpty } ?? false
+        }
+    }
+
+    /// Verbs that change package-manager config. An update command never needs to, and
+    /// `call` or `script-shell` makes a later command run something else.
+    private static let configWriteVerbs: [String: [[String]]] = [
+        "npm": [["config", "set"], ["config", "edit"], ["config", "delete"], ["c", "set"], ["c", "edit"],
+            ["c", "delete"], ["set"]],
+        "pnpm": [["config", "set"], ["config", "delete"]],
+        "yarn": [["config", "set"], ["config", "delete"], ["config", "unset"]],
+    ]
+
+    private static func writesManagerConfig(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), let paths = configWriteVerbs[executable]
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        return paths.contains { verbIndex(args, path: $0) != nil }
     }
 
     /// `command -v`/`-V` prints what a name resolves to; it runs nothing.

