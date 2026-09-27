@@ -79,6 +79,10 @@ final class FixtureFileSystem {
     @discardableResult
     func makeHardLink(at relative: String, to original: String) -> String {
         let full = path(relative)
+        try! FileManager.default.createDirectory(
+            atPath: (full as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
         try! FileManager.default.linkItem(atPath: original, toPath: full)
         return full
     }
