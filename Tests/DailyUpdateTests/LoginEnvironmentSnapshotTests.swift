@@ -25,13 +25,11 @@ final class LoginEnvironmentSnapshotTests: HermeticTestCase {
     }
 
     func testKnownLoginPathKeepsOnlyAbsoluteEntries() async throws {
-        await withZshProfile("export PATH=/usr/bin:/bin:relative:\n") {
+        await withZshProfile("export PATH=/usr/bin:/bin:relative\n") {
             let lookup = await OwnerResolver.lookup(commandNames: ["ls"])
-            guard case .known(let entries) = lookup.loginPath else {
-                return XCTFail("expected .known, got \(lookup.loginPath)")
-            }
-            XCTAssertTrue(entries.contains("/usr/bin"))
-            XCTAssertFalse(entries.contains("relative"))
+            // CR#3: exact value, not `contains` — the trailing newline the script's own
+            // `printf '%s\n'` adds must never survive onto the last entry (no `/bin\n`).
+            XCTAssertEqual(lookup.loginPath, .known(["/usr/bin", "/bin"]))
         }
     }
 

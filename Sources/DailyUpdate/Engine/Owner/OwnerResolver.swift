@@ -306,7 +306,12 @@ enum OwnerResolver {
         guard let block = markedBlock(in: output, prefix: "PATH_BEGIN", suffix: "PATH_END") else {
             return .unknown("missing PATH marker")
         }
+        // CR#3: `block` is `"$PATH\n"` (the script's own trailing `printf '%s\n'`). Trimming
+        // before splitting keeps that newline off the last PATH entry — split(separator: ":")
+        // only breaks on colons, so an untrimmed block turned a clean ".../bin" into ".../bin\n",
+        // and no ranking or lookup ever matched that root's bin directory again.
         let entries = block
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: ":", omittingEmptySubsequences: true)
             .map(String.init)
             .filter { $0.hasPrefix("/") }
