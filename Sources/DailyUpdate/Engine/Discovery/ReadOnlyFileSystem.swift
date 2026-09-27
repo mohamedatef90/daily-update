@@ -47,13 +47,20 @@ enum ReadOnlyFileSystemError: Error, Equatable, Sendable {
     case unreadable(String)
     case notRegularFile(String)
     case tooLarge(String)
+    /// S3: a symlink chain deeper than the OS's own resolution limit (`ELOOP` from `realpath` or
+    /// `open`) — including an actual cycle, which is just the same limit hit immediately. This is
+    /// a cap, not a generic I/O failure, so it must be visible as `capReached`, never folded into
+    /// `unreadable`.
+    case capReached(String)
 }
 
 /// ADR-002 §7.1: the only I/O an enumerator may do. Every method here is read-only by
 /// construction — there is no path to a write, create, remove, move or copy call through this
 /// protocol, so an enumerator built on it can never mutate anything it reads.
 protocol ReadOnlyFileSystem: Sendable {
-    func contentsOfDirectory(_ path: String) throws -> [String]
+    /// §7.3/S3: `truncated` is true when the real directory has more entries than
+    /// `LiveFileSystem`'s cap — the cap always shows up in the return value, never silently.
+    func contentsOfDirectory(_ path: String) throws -> (entries: [String], truncated: Bool)
     /// RC3: opens the canonical path only, refuses anything that isn't a regular file, and never
     /// blocks on a FIFO, a socket or a stalled network mount.
     func readFile(_ path: String, maxBytes: Int) throws -> Data
@@ -75,10 +82,10 @@ struct LiveFileSystem: ReadOnlyFileSystem {
         self.maxDirectoryEntries = maxDirectoryEntries
     }
 
-    func contentsOfDirectory(_ path: String) throws -> [String] {
+    func contentsOfDirectory(_ path: String) throws -> (entries: [String], truncated: Bool) {
         do {
             let entries = try FileManager.default.contentsOfDirectory(atPath: path)
-            return Array(entries.prefix(maxDirectoryEntries))
+            return (Array(entries.prefix(maxDirectoryEntries)), entries.count > maxDirectoryEntries)
         } catch {
             throw ReadOnlyFileSystemError.unreadable(path)
         }
@@ -90,14 +97,20 @@ struct LiveFileSystem: ReadOnlyFileSystem {
     /// writer, or a stalled network mount, can never hang this call — it either opens instantly or
     /// fails instantly. The size cap is checked twice: once from `fstat` before any read (so a
     /// file already over the cap is never read at all), and again while reading (so a file that
-    /// grows past the cap during the read is still caught).
+    /// grows past the cap during the read is still caught). S3: either call failing with `ELOOP`
+    /// (a symlink chain deeper than the OS will resolve, cyclic or not) is a cap, not a generic
+    /// read failure.
     func readFile(_ path: String, maxBytes: Int) throws -> Data {
-        guard let canonical = realpath(path) else {
+        errno = 0
+        guard let canonical = posixRealpath(path) else {
+            if errno == ELOOP { throw ReadOnlyFileSystemError.capReached(path) }
             throw ReadOnlyFileSystemError.unreadable(path)
         }
 
+        errno = 0
         let fd = posixOpenReadOnly(canonical)
         guard fd >= 0 else {
+            if errno == ELOOP { throw ReadOnlyFileSystemError.capReached(path) }
             throw ReadOnlyFileSystemError.unreadable(path)
         }
         defer { close(fd) }

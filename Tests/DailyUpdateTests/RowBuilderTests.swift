@@ -220,7 +220,7 @@ private struct StubFileSystem: ReadOnlyFileSystem {
     let realpaths: [String: String]
     let stats: [String: FileID]
 
-    func contentsOfDirectory(_ path: String) throws -> [String] { [] }
+    func contentsOfDirectory(_ path: String) throws -> (entries: [String], truncated: Bool) { ([], false) }
     func readFile(_ path: String, maxBytes: Int) throws -> Data { Data() }
     func lstat(_ path: String) -> FileStat? { nil }
     func stat(_ path: String) -> FileStat? {

@@ -22,11 +22,25 @@ final class ReadOnlyFileSystemTests: HermeticTestCase {
         XCTAssertEqual(try String(data: fixture.fileSystem.readFile(absolute, maxBytes: 1024), encoding: .utf8), "1.2.3")
     }
 
+    /// S3: a cycle is `ELOOP` from `realpath`, which is a cap on symlink depth, not a generic read
+    /// failure — it must map to `capReached`, never `unreadable`.
     func testSymlinkLoopFailsWithoutHanging() {
         let fixture = FixtureFileSystem()
         fixture.makeSymlinkLoop(at: "loop-a", pointingTo: "loop-b")
         XCTAssertThrowsError(try fixture.fileSystem.readFile(fixture.path("loop-a"), maxBytes: 1024)) { error in
-            XCTAssertEqual(error as? ReadOnlyFileSystemError, .unreadable(fixture.path("loop-a")))
+            XCTAssertEqual(error as? ReadOnlyFileSystemError, .capReached(fixture.path("loop-a")))
+        }
+    }
+
+    /// D22 (S3): a straight chain of 33 symlinks — no cycle — still exceeds Darwin's own
+    /// `MAXSYMLINKS` (32) and fails with `ELOOP`, purely from depth. This is the same cap as the
+    /// loop above, not a different failure mode.
+    func testSymlinkChainDeeperThanOSLimitIsCapReached() throws {
+        let fixture = FixtureFileSystem()
+        let target = fixture.makeFile(at: "real/version.json", contents: "1.2.3")
+        let head = fixture.makeSymlinkChain(target: target, hops: 33)
+        XCTAssertThrowsError(try fixture.fileSystem.readFile(head, maxBytes: 1024)) { error in
+            XCTAssertEqual(error as? ReadOnlyFileSystemError, .capReached(head))
         }
     }
 
@@ -97,8 +111,33 @@ final class ReadOnlyFileSystemTests: HermeticTestCase {
         let fixture = FixtureFileSystem()
         for index in 0..<10 { _ = fixture.makeFile(at: "many/\(index).txt", contents: "x") }
         let live = LiveFileSystem(maxDirectoryEntries: 3)
-        let entries = try live.contentsOfDirectory(fixture.path("many"))
-        XCTAssertEqual(entries.count, 3)
+        let result = try live.contentsOfDirectory(fixture.path("many"))
+        XCTAssertEqual(result.entries.count, 3)
+        XCTAssertTrue(result.truncated)
+    }
+
+    /// D22 (S3): a directory with more entries than the default cap (5,000) reports `truncated`,
+    /// never a silent `prefix(5000)` that looks the same as a `complete` read.
+    func testDirectoryOverDefaultCapReportsTruncated() throws {
+        let fixture = FixtureFileSystem()
+        let directory = fixture.makeDirectory("many")
+        for index in 0..<5001 {
+            FileManager.default.createFile(atPath: "\(directory)/\(index).txt", contents: Data())
+        }
+        let live = LiveFileSystem()
+        let result = try live.contentsOfDirectory(directory)
+        XCTAssertEqual(result.entries.count, 5000)
+        XCTAssertTrue(result.truncated)
+    }
+
+    /// A directory at or under the cap is reported complete, not truncated.
+    func testDirectoryAtOrUnderCapIsNotTruncated() throws {
+        let fixture = FixtureFileSystem()
+        for index in 0..<3 { _ = fixture.makeFile(at: "few/\(index).txt", contents: "x") }
+        let live = LiveFileSystem(maxDirectoryEntries: 3)
+        let result = try live.contentsOfDirectory(fixture.path("few"))
+        XCTAssertEqual(result.entries.count, 3)
+        XCTAssertFalse(result.truncated)
     }
 
     func testWorldWritableDetection() {

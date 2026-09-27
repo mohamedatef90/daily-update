@@ -76,6 +76,20 @@ final class FixtureFileSystem {
         try! FileManager.default.createSymbolicLink(atPath: secondPath, withDestinationPath: firstPath)
     }
 
+    /// S3/D22: a straight chain of `hops` symlinks — no cycle — ending at `target`. Darwin's own
+    /// `realpath`/`open` refuse to resolve more than `MAXSYMLINKS` (32) hops and fail with `ELOOP`
+    /// purely from depth, the same errno a cycle produces. Returns the head of the chain.
+    @discardableResult
+    func makeSymlinkChain(target: String, hops: Int) -> String {
+        var destination = target
+        for index in stride(from: hops - 1, through: 0, by: -1) {
+            let linkPath = path("chain-\(index)")
+            try! FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: destination)
+            destination = linkPath
+        }
+        return destination
+    }
+
     @discardableResult
     func makeHardLink(at relative: String, to original: String) -> String {
         let full = path(relative)
