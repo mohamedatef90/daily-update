@@ -182,6 +182,60 @@ final class RowBuilderTests: HermeticTestCase {
         XCTAssertEqual(rows.first?.description, "Your login shell reported an empty PATH")
     }
 
+    // MARK: D19 variant: unknown PATH — inactive included, no winner collapse, exact row IDs
+
+    /// S4: with an unknown login PATH, an `.inactive` root is treated as `.unknown` (no root is
+    /// demoted), there is no ranking signal so no winner collapse happens, and every distinct
+    /// file still gets its own row — two copies of one package survive as two rows.
+    func testUnknownLoginPathEmitsOneRowPerFileNoWinnerCollapseInactiveIncluded() {
+        let rootA = root(path: "/fixture/rootA", binDirectories: ["/fixture/rootA/bin"])
+        let rootB = root(path: "/fixture/rootB", binDirectories: ["/fixture/rootB/bin"])
+        let inactiveRoot = root(path: "/fixture/rootC", binDirectories: ["/fixture/rootC/bin"], activity: .inactive)
+        let copyA = record(ecosystem: .npm, packageID: "widget", root: rootA, inode: 201)
+        let copyB = record(ecosystem: .npm, packageID: "widget", root: rootB, inode: 202)
+        let inactiveCopy = record(ecosystem: .npm, packageID: "widget", root: inactiveRoot, inode: 203)
+        let lookup = CommandPathLookup(candidatesByName: [:], loginPath: .unknown("exit 1"))
+        let results = [EnumerationResult(ecosystem: .npm, records: [copyA, copyB, inactiveCopy], status: .complete)]
+
+        let rows = RowBuilder.build(input: .init(results: results, lookup: lookup))
+
+        let expectedIDs: Set<String> = [
+            "inv-error-login-path",
+            ItemBuilder.stableID(prefix: "inv-npm", path: "\(rootA.path)\u{0}widget"),
+            ItemBuilder.stableID(prefix: "inv-npm", path: "\(rootB.path)\u{0}widget"),
+            ItemBuilder.stableID(prefix: "inv-npm", path: "\(inactiveRoot.path)\u{0}widget"),
+        ]
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(Set(rows.map(\.id)), expectedIDs)
+        XCTAssertTrue(rows.contains { $0.inventory?.rootPath == inactiveRoot.path })
+    }
+
+    // MARK: D20 variant: empty PATH — R1 still merges exact file duplicates, nothing else collapses
+
+    /// S4: with an empty login PATH, two records naming the exact same file (matching `FileID`)
+    /// still merge into one row (R1), but two records that merely share a package identity under
+    /// different files do not collapse — there's no winner to pick without a PATH.
+    func testEmptyLoginPathMergesOnlyExactFileDuplicates() {
+        let rootA = root(path: "/fixture/rootD", binDirectories: ["/fixture/rootD/bin"])
+        let rootB = root(path: "/fixture/rootE", binDirectories: ["/fixture/rootE/bin"])
+        let sameFileFirstSeen = record(ecosystem: .brew, packageID: "gadget", root: rootA, inode: 301)
+        let sameFileAgain = record(ecosystem: .brew, packageID: "gadget", root: rootA, inode: 301)
+        let distinctFile = record(ecosystem: .brew, packageID: "gadget", root: rootB, inode: 302)
+        let lookup = CommandPathLookup(candidatesByName: [:], loginPath: .empty)
+        let results = [EnumerationResult(ecosystem: .brew, records: [sameFileFirstSeen, sameFileAgain, distinctFile], status: .complete)]
+
+        let rows = RowBuilder.build(input: .init(results: results, lookup: lookup))
+
+        let expectedIDs: Set<String> = [
+            "inv-error-login-path",
+            ItemBuilder.stableID(prefix: "inv-brew", path: "\(rootA.path)\u{0}gadget"),
+            ItemBuilder.stableID(prefix: "inv-brew", path: "\(rootB.path)\u{0}gadget"),
+        ]
+        // 3 rows, not 4: the exact FileID duplicate under rootA merges to one row.
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(Set(rows.map(\.id)), expectedIDs)
+    }
+
     // MARK: D18-style: repeated builds over the same input are byte-identical; IDs are stable
 
     func testRepeatedBuildsAreIdentical() {

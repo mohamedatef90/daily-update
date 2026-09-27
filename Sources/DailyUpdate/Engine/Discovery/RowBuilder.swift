@@ -37,29 +37,52 @@ enum RowBuilder {
         var rows = loginPathErrorRows(input.lookup.loginPath) + issueErrorRows(input.results)
 
         let customFileIDs = customItemFileIDs(settings.customItems, fileSystem: fileSystem)
+        let loginPathKnown: Bool
+        if case .known = input.lookup.loginPath { loginPathKnown = true } else { loginPathKnown = false }
 
-        // R3: a record in an inactive root gets no row of its own (D3, D4).
+        // R3: a record in an inactive root gets no row of its own (D3, D4) — but only once the
+        // login PATH is actually known. S4/RC2 item 1: an unknown or empty PATH means no root may
+        // ever be demoted (an `.inactive` root is treated as `.unknown` instead), so a record
+        // under it still surfaces rather than silently disappearing (the G2 failure).
         let candidates = input.results.flatMap(\.records).filter { record in
             !record.flags.contains(.dependency) &&
-                record.root.activity != .inactive &&
+                (loginPathKnown ? record.root.activity != .inactive : true) &&
                 isSane(record.packageID)
         }
 
-        var groups: [PackageKey: [InstalledPackage]] = [:]
-        for record in candidates {
-            groups[PackageKey(ecosystem: record.ecosystem, packageID: record.packageID), default: []].append(record)
+        let winners: [InstalledPackage]
+        if loginPathKnown {
+            var groups: [PackageKey: [InstalledPackage]] = [:]
+            for record in candidates {
+                groups[PackageKey(ecosystem: record.ecosystem, packageID: record.packageID), default: []].append(record)
+            }
+            winners = groups.keys.sorted(by: { $0.sortKey < $1.sortKey }).compactMap { key in
+                guard !settings.inventory.hiddenEcosystems.contains(key.ecosystem) else { return nil }
+                return rankByPathOrder(groups[key] ?? [], loginPath: input.lookup.loginPath).first
+            }
+        } else {
+            // S4/RC2 items 2-3: with no PATH signal there is no ranking, so there is no winner to
+            // collapse a group to — every surviving record gets its own row. R1 still merges exact
+            // duplicates: two records naming the same file (device + inode) are the same row.
+            var seenFileIDs = Set<FileID>()
+            winners = candidates
+                .filter { !settings.inventory.hiddenEcosystems.contains($0.ecosystem) }
+                .sorted { recordSortKey($0) < recordSortKey($1) }
+                .filter { seenFileIDs.insert($0.fileID).inserted }
         }
 
         var claimedCatalogIDs = Set<String>()
-        for key in groups.keys.sorted(by: { $0.sortKey < $1.sortKey }) {
-            guard !settings.inventory.hiddenEcosystems.contains(key.ecosystem) else { continue }
-            guard let winner = rankByPathOrder(groups[key] ?? [], loginPath: input.lookup.loginPath).first else { continue }
-
+        for winner in winners {
             // D13: a custom item's file always wins; the inventory row is hidden entirely.
             guard !customFileIDs.contains(winner.fileID) else { continue }
 
-            if let joined = joinCatalogEntry(for: winner, catalog: catalog, lookup: input.lookup, fileSystem: fileSystem),
-               claimedCatalogIDs.insert(joined.id).inserted {
+            // S4/RC2 item 3: the command join trusts `whence`'s candidate paths, which is exactly
+            // what an unknown or empty login PATH means discovery can't trust; skip it, but the
+            // package-identifier join below doesn't depend on PATH at all, so it still runs.
+            if let joined = joinCatalogEntry(
+                for: winner, catalog: catalog, lookup: input.lookup, fileSystem: fileSystem,
+                allowCommandJoin: loginPathKnown
+            ), claimedCatalogIDs.insert(joined.id).inserted {
                 rows.append(makeJoinedRow(catalogEntry: joined, record: winner))
             } else {
                 rows.append(makeInventoryRow(record: winner))
@@ -67,6 +90,12 @@ enum RowBuilder {
         }
 
         return assignHandles(rows)
+    }
+
+    /// A stable ordering for the unknown-PATH mode, where there's no PATH position to rank by.
+    private static func recordSortKey(_ record: InstalledPackage) -> String {
+        "\(record.ecosystem.rawValue)\u{0}\(record.packageID)\u{0}\(record.root.path)\u{0}" +
+            "\(record.fileID.device)\u{0}\(record.fileID.inode)\u{0}\(record.fileID.dispatchName ?? "")"
     }
 
     // MARK: - Error rows
@@ -147,19 +176,24 @@ enum RowBuilder {
         !packageID.isEmpty && !packageID.contains("\0") && !packageID.hasPrefix("-")
     }
 
-    /// §1 D6: by command, then by package. Never by display name.
+    /// §1 D6: by command, then by package. Never by display name. S4: the command join is skipped
+    /// when `allowCommandJoin` is false (an unknown or empty login PATH), since it trusts
+    /// `whence`'s candidate paths — exactly what discovery can't do without a known PATH.
     private static func joinCatalogEntry(
         for record: InstalledPackage,
         catalog: [DetectorConfig],
         lookup: CommandPathLookup,
-        fileSystem: ReadOnlyFileSystem
+        fileSystem: ReadOnlyFileSystem,
+        allowCommandJoin: Bool
     ) -> DetectorConfig? {
-        for entry in catalog {
-            guard let command = entry.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty,
-                  let candidatePath = lookup.candidates(for: command).first,
-                  let canonical = fileSystem.realpath(candidatePath),
-                  let stat = fileSystem.stat(canonical) else { continue }
-            if stat.fileID == record.fileID { return entry }
+        if allowCommandJoin {
+            for entry in catalog {
+                guard let command = entry.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty,
+                      let candidatePath = lookup.candidates(for: command).first,
+                      let canonical = fileSystem.realpath(candidatePath),
+                      let stat = fileSystem.stat(canonical) else { continue }
+                if stat.fileID == record.fileID { return entry }
+            }
         }
         for entry in catalog {
             if entry.packages?.identifier(for: record.ecosystem) == record.packageID { return entry }
