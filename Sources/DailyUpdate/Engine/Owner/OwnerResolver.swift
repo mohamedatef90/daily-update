@@ -1,6 +1,6 @@
 import Foundation
 
-enum ResolvedOwner: Equatable {
+enum ResolvedOwner: Equatable, Hashable {
     case brewFormula(String)
     case brewCask(String)
     case npm(prefix: String, package: String)
@@ -10,7 +10,7 @@ enum ResolvedOwner: Equatable {
     case unknown
 }
 
-enum NativeInstallerID: String, Equatable {
+enum NativeInstallerID: String, Equatable, Hashable {
     case claudeCode
     case opencode
     case cursorAgent
