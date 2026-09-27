@@ -147,6 +147,9 @@ enum CommandShapeClassifier {
             if isBulkOperation(words: words) {
                 risks.insert(.bulk)
             }
+            if isDownloadThenRun(words) {
+                risks.insert(.remoteScript)
+            }
         }
 
         if isRemoteScript(trimmed, tokens: tokens) {
@@ -570,6 +573,79 @@ enum CommandShapeClassifier {
             }
         }
         return false
+    }
+
+    // MARK: - Download-then-run
+
+    /// Runners whose first operand is a package to fetch and run: `npx cowsay`, `uvx ruff`.
+    private static let packageRunners: Set<String> = ["npx", "pnpx", "bunx", "uvx"]
+
+    /// Manager verbs that fetch a package and run it (`npm exec`, `pnpm dlx`, `uv tool run`).
+    private static let downloadThenRunVerbs: [String: [[String]]] = [
+        "npm": [["exec"], ["x"]], "pnpm": [["dlx"]], "yarn": [["dlx"]], "bun": [["x"]],
+        "uv": [["tool", "run"]], "pipx": [["run"]],
+    ]
+
+    /// A package runner or manager verb that downloads a package and runs it, through wrappers
+    /// and on absolute paths. A pinned version is still remote code.
+    private static func isDownloadThenRun(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), !isCommandLookup(words, stripped: stripped)
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        if packageRunners.contains(executable) { return !operands(args[...]).isEmpty }
+        return (downloadThenRunVerbs[executable] ?? []).contains { path in
+            verbIndex(args, path: path).map { !operands(args[($0 + 1)...]).isEmpty } ?? false
+        }
+    }
+
+    /// `command -v`/`-V` prints what a name resolves to; it runs nothing.
+    private static func isCommandLookup(_ words: [String], stripped: [String]) -> Bool {
+        let consumed = words.prefix(words.count - stripped.count)
+        guard let command = consumed.lastIndex(where: { normalizedExecutableName($0) == "command" }) else { return false }
+        return consumed[(command + 1)...].contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains(where: "vV".contains) }
+    }
+
+    /// Words that are neither an option nor `--`.
+    private static func operands(_ args: ArraySlice<String>) -> [String] {
+        args.filter { !$0.hasPrefix("-") }
+    }
+
+    /// Manager options known to take no value, so the word after them is an operand.
+    private static let valuelessManagerOptions: Set<String> = [
+        "-g", "--global", "-y", "--yes", "-q", "--quiet", "-s", "--silent", "-v", "--verbose", "-d", "--debug",
+        "-r", "--recursive", "--json", "--offline", "--no-cache", "-n", "--dry-run",
+    ]
+
+    /// Where a manager's verb may be: its first operand, and every operand before that which
+    /// follows an option that may take a value (`npm --prefix /tmp exec`, `uv --directory d tool run`).
+    private static func verbCandidates(_ args: ArraySlice<String>) -> [Int] {
+        var candidates: [Int] = []
+        var mayBeValue = false
+        for index in args.indices {
+            let arg = args[index]
+            if arg.hasPrefix("-") {
+                mayBeValue = arg != "--" && !arg.contains("=") && !valuelessManagerOptions.contains(arg)
+                continue
+            }
+            candidates.append(index)
+            if !mayBeValue { break }
+            mayBeValue = false
+        }
+        return candidates
+    }
+
+    /// The index of the last word of a verb path (`tool run`), each word a verb candidate
+    /// after the previous one; `nil` when the words do not start with it.
+    private static func verbIndex(_ args: [String], path: [String]) -> Int? {
+        var start = args.startIndex
+        var found: Int?
+        for verb in path {
+            guard let index = verbCandidates(args[start...]).first(where: { args[$0].lowercased() == verb }) else { return nil }
+            found = index
+            start = index + 1
+        }
+        return found
     }
 
     private static func isBulkOperation(words: [String]) -> Bool {
