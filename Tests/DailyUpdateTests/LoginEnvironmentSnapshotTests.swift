@@ -75,6 +75,17 @@ final class LoginEnvironmentSnapshotTests: HermeticTestCase {
         }
     }
 
+    /// CR#4 (F5): `EcosystemLayout.discover()` used to run `brew --prefix` to find a non-default
+    /// prefix; F5 removed that unsandboxed call with nothing to replace it, so a brew outside the
+    /// default prefixes silently lost formula/cask ownership. The snapshot's `HOMEBREW_PREFIX`
+    /// (from this same login-shell batch) now rebuilds the layout instead.
+    func testHomebrewPrefixFromLoginShellDefinesLayout() async throws {
+        await withZshProfile("export HOMEBREW_PREFIX=/custom/brew\n") {
+            let lookup = await OwnerResolver.lookup(commandNames: ["ls"])
+            XCTAssertEqual(lookup.layout?.brewPrefixes, ["/custom/brew", "/opt/homebrew", "/usr/local"])
+        }
+    }
+
     func testLoginEnvironmentOverridesValidation() {
         XCTAssertTrue(LoginEnvironmentOverrides.isValid(name: "HOMEBREW_PREFIX", value: "/opt/homebrew"))
         XCTAssertFalse(LoginEnvironmentOverrides.isValid(name: "HOMEBREW_PREFIX", value: "opt/homebrew"))

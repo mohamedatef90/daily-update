@@ -1712,16 +1712,6 @@ final class PartThreeRegressionTests: HermeticTestCase {
         XCTAssertNil(check.blockReason)
     }
 
-    func testT7HomebrewPrefixEnvironmentDefinesLayout() async throws {
-        let previous = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"]
-        setenv("HOMEBREW_PREFIX", "/custom/brew", 1)
-        defer { if let previous { setenv("HOMEBREW_PREFIX", previous, 1) } else { unsetenv("HOMEBREW_PREFIX") } }
-        let layout = await EcosystemLayout.discover()
-        // PR-B2a (Code Review suggestion 2): the configured prefix is added to the defaults.
-        XCTAssertEqual(layout.brewPrefixes, ["/custom/brew", "/opt/homebrew", "/usr/local"])
-        XCTAssertEqual(layout.brewCellars, ["/custom/brew/Cellar", "/opt/homebrew/Cellar", "/usr/local/Cellar"])
-    }
-
     func testCatalogV2MigrationAndInvalidEntryIsolation() {
         let items = ConfigLoader.loadConfigs(settings: .defaults).filter { $0.source == .bundled }
         // PR-B2b: cursor-agent and opencode have native-installer strategies now.
@@ -1927,22 +1917,6 @@ final class PRB2aFollowUpTests: HermeticTestCase {
         XCTAssertEqual(rosetta.brewPrefixes, ["/usr/local", "/opt/homebrew"])
         let standard = EcosystemLayout.live(home: "/Users/x", brewPrefix: "/opt/homebrew")
         XCTAssertEqual(standard.brewPrefixes, ["/opt/homebrew", "/usr/local"])
-    }
-
-    /// Suggestion 2: `brew --prefix` is spawned once per run, not once per lookup.
-    func testBrewPrefixIsProbedOncePerRun() async {
-        let probes = LookupProbe()
-        let discovery = BrewPrefixDiscovery()
-        let probe: @Sendable () async -> String? = { await probes.record("brew --prefix"); return "/custom/brew" }
-        let first = await discovery.prefix(probe: probe)
-        let second = await discovery.prefix(probe: probe)
-        XCTAssertEqual(first, "/custom/brew")
-        XCTAssertEqual(second, "/custom/brew")
-        let count = await probes.names.count
-        XCTAssertEqual(count, 1)
-        let failed = BrewPrefixDiscovery()
-        let none = await failed.prefix(probe: { nil })
-        XCTAssertNil(none)
     }
 
     /// Round 7: the Claude dist-tags lookup goes through the `fetchRelease` planner input, like `pathLookup`.

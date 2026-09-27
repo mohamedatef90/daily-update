@@ -129,11 +129,6 @@ struct EcosystemLayout: Equatable, Sendable {
 
     static let defaultBrewPrefixes = ["/opt/homebrew", "/usr/local"]
 
-    static func discover() async -> EcosystemLayout {
-        if ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] != nil { return .live() }
-        return live(brewPrefix: await BrewPrefixDiscovery.shared.prefix(probe: BrewPrefixDiscovery.runBrewPrefix))
-    }
-
     /// A discovered or configured prefix is added to the defaults, so formulas under a second
     /// (Rosetta) brew keep their owner.
     static func live(home: String = NSHomeDirectory(), brewPrefix: String? = nil) -> EcosystemLayout {
@@ -157,27 +152,6 @@ struct EcosystemLayout: Equatable, Sendable {
             voltaRoot: "\(home)/.volta",
             fnmRoots: ["\(home)/.fnm", "\(home)/.local/share/fnm"]
         )
-    }
-}
-
-/// Runs `brew --prefix` at most once per process; every lookup reuses the answer.
-actor BrewPrefixDiscovery {
-    static let shared = BrewPrefixDiscovery()
-
-    private var cached: String??
-
-    func prefix(probe: @Sendable () async -> String?) async -> String? {
-        if let cached { return cached }
-        let value = await probe()
-        cached = .some(value)
-        return value
-    }
-
-    static let runBrewPrefix: @Sendable () async -> String? = {
-        let result = await ShellRunner.run("brew --prefix", timeout: 10)
-        let prefix = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.succeeded, prefix.hasPrefix("/"), !prefix.contains("\n") else { return nil }
-        return prefix
     }
 }
 
@@ -284,12 +258,43 @@ enum OwnerResolver {
         }
 
         let output = String(data: outcome.stdout, encoding: .utf8) ?? ""
+        let candidatesByName = parseWhenceOutput(output)
+        let snapshot = parseEnvironmentSnapshot(output)
         return CommandPathLookup(
-            candidatesByName: parseWhenceOutput(output),
-            layout: layout,
+            candidatesByName: candidatesByName,
+            layout: resolvedLayout(base: layout, snapshot: snapshot, candidatesByName: candidatesByName),
             loginPath: parseLoginPath(output),
-            environmentSnapshot: parseEnvironmentSnapshot(output)
+            environmentSnapshot: snapshot
         )
+    }
+
+    /// CR#4 (F5, task 5): `EcosystemLayout.discover()` used to run `brew --prefix` to find a
+    /// non-default prefix; F5 removed that unsandboxed call, but nothing replaced it, so a brew
+    /// outside the default prefixes silently lost formula/cask ownership. The snapshot already
+    /// carries `HOMEBREW_PREFIX` from the same login-shell batch (F4); when that's absent, fall
+    /// back to the parent of the `bin` folder of the first trusted `brew` candidate on PATH.
+    private static func resolvedLayout(
+        base: EcosystemLayout,
+        snapshot: [String: String],
+        candidatesByName: [String: [String]]
+    ) -> EcosystemLayout {
+        if let prefix = snapshot["HOMEBREW_PREFIX"] {
+            return .live(home: base.homeDirectory, brewPrefix: prefix)
+        }
+        if let prefix = trustedBrewPrefix(from: candidatesByName["brew"] ?? []) {
+            return .live(home: base.homeDirectory, brewPrefix: prefix)
+        }
+        return base
+    }
+
+    private static func trustedBrewPrefix(from candidates: [String]) -> String? {
+        for candidate in candidates {
+            guard let absolute = normalizedAbsolutePath(for: candidate), PathTrust.isTrustedExecutable(absolute) else { continue }
+            let binDirectory = (absolute as NSString).deletingLastPathComponent
+            guard (binDirectory as NSString).lastPathComponent == "bin" else { continue }
+            return (binDirectory as NSString).deletingLastPathComponent
+        }
+        return nil
     }
 
     private static func failureReason(for termination: Termination, stderr: String) -> String {
