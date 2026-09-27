@@ -1157,10 +1157,10 @@ enum CommandShapeClassifier {
                     || arg.contains(where: nameExpansionCharacters.contains)
             }
         case "shopt":
-            // `shopt -o` sets `set -o` options; an expansion may split into `-o allexport`.
+            // `shopt -o` sets `set -o` options. An expansion (`shopt -s $X`, `X='-o allexport'`)
+            // already fails closed: `shopt` is not a known executable, so it is an embedded command line.
             let setsShellOption = args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("o") }
-            return args.contains { $0.contains(where: nameExpansionCharacters.contains) }
-                || (setsShellOption && args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("allexport") })
+            return setsShellOption && args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("allexport") }
         case "emulate":
             return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
         default:
