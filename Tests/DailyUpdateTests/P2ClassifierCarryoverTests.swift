@@ -118,4 +118,38 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("guard command -v npx", "command -v npx", [], false),
         ])
     }
+
+    /// X8–X10: `allexport` turned on through an expansion or `shopt -o`, and namerefs, which
+    /// reach a code variable under another name. All fail closed.
+    func testExpandedShellOptionsAndNamerefsFailClosed() {
+        assertRows([
+            ("X8 set -$F", "F=a; set -$F; npx", [.chained, .unparseable], true),
+            ("X8 set -$F alone", "set -$F", [.unparseable], true),
+            ("X8 set -o $O", "O=allexport; set -o $O", [.chained, .unparseable], true),
+            ("X8 set -o quoted", "set -o \"$O\"", [.unparseable], true),
+            ("X8 setopt $X", "setopt $X", [.unparseable], true),
+            ("X8 unsetopt braces", "unsetopt ${X}", [.unparseable], true),
+            ("X8 set glob", "set -o all*", [.unparseable], true),
+            ("X8 setopt bracket", "setopt [a]llexport", [.unparseable], true),
+            ("X8 set -? glob", "set -?", [.unparseable], true),
+            ("X8 backtick", "set -o `echo allexport`", [.unparseable], true),
+            ("X9 shopt -so", "shopt -so allexport", [.unparseable], true),
+            ("X9 shopt -s -o", "shopt -s -o allexport", [.unparseable], true),
+            ("X9 shopt -o expansion", "shopt -so $X", [.unparseable], true),
+            // `X='-o allexport'` splits into two words, so an expansion alone is enough.
+            ("X9 shopt -s expansion", "shopt -s $X", [.unparseable], true),
+            ("X10 declare -n", "declare -n r=npm_config_call", [.unparseable], true),
+            ("X10 typeset -n", "typeset -n r=x", [.unparseable], true),
+            ("X10 local -n", "local -n r=x", [.unparseable], true),
+            ("X10 declare -gn", "declare -gn r=x", [.unparseable], true),
+            ("X10 typeset -xn", "typeset -xn r=x", [.unparseable], true),
+            ("guard set -e", "set -e", [], false),
+            ("guard set -euo pipefail", "set -euo pipefail", [], false),
+            ("guard setopt nullglob", "setopt nullglob", [], false),
+            ("guard shopt -s nullglob", "shopt -s nullglob", [], false),
+            ("guard shopt -so pipefail", "shopt -so pipefail", [], false),
+            ("guard declare -x", "declare -x FOO=bar", [], false),
+            ("guard export -n", "export -n FOO", [], false),
+        ])
+    }
 }

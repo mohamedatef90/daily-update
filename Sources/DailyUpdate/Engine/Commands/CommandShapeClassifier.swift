@@ -1134,6 +1134,8 @@ enum CommandShapeClassifier {
         let args = Array(stripped.dropFirst())
         switch executable {
         case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
+            // A nameref (`declare -n r=npm_config_call`) reaches a code variable under another name.
+            if ["declare", "typeset", "local"].contains(executable), args.contains(where: isNamerefOption) { return true }
             // `setenv NAME value`: only the first operand is a name.
             let operands = args.filter { !$0.hasPrefix("-") }
             let names = (executable == "setenv" ? Array(operands.prefix(1)) : operands).map(assignedName)
@@ -1143,12 +1145,26 @@ enum CommandShapeClassifier {
                 let option = arg.lowercased().replacingOccurrences(of: "_", with: "")
                 let letters = (arg.hasPrefix("-") || arg.hasPrefix("+")) && !arg.hasPrefix("--") ? arg.dropFirst() : ""
                 return option.contains("globsubst") || option.contains("allexport") || letters.contains("a")
+                    || arg.contains(where: nameExpansionCharacters.contains)
             }
+        case "shopt":
+            // `shopt -o` sets `set -o` options; an expansion may split into `-o allexport`.
+            let setsShellOption = args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("o") }
+            return args.contains { $0.contains(where: nameExpansionCharacters.contains) }
+                || (setsShellOption && args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("allexport") })
         case "emulate":
             return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
         default:
             return false
         }
+    }
+
+    /// Characters that make a word expand to another option or name, as `isShellName` rejects them.
+    private static let nameExpansionCharacters = Set("$`{*?[")
+
+    /// An option cluster of `declare`/`typeset`/`local` with `n` (`-n`, `-gn`).
+    private static func isNamerefOption(_ arg: String) -> Bool {
+        arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.dropFirst().contains("n")
     }
 
     /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.
