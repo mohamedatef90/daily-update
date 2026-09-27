@@ -7,6 +7,22 @@ enum ResolvedOwner: Equatable, Hashable {
     case nativeInstaller(NativeInstallerID)
     case pipx(package: String)
     case uvTool(name: String)
+    // P2-1: the owners a discovery record can carry. None has a real update strategy yet — every
+    // arm in StrategyPlanner.makeStrategy below is `.blocked` until the PR that owns that
+    // ecosystem (P2-2 through P2-6b) replaces it.
+    case pnpm(home: String, package: String)
+    case yarnClassic(globalDir: String, package: String)
+    case bun(root: String, package: String)
+    case pipUser(site: String, distribution: String)
+    case cargo(root: String, crate: String)
+    case gem(gemDir: String, name: String, systemOwned: Bool)
+    case appStore(adamID: String)
+    case sparkleApp(feedURL: String)
+    case selfUpdatingApp(kind: String)
+    case versionManager(kind: VersionManagerKind, root: String)
+    case agentSkill(lockFile: String, name: String)
+    case agentPlugin(agent: String, marketplace: String, plugin: String)
+    case system(provider: String)
     case unknown
 }
 
@@ -59,6 +75,19 @@ struct OwnerResolution: Equatable {
         case .nativeInstaller(let id): return "native:\(id.rawValue)"
         case .pipx(let package): return "pipx:\(package)"
         case .uvTool(let name): return "uv:\(name)"
+        case .pnpm(let home, let package): return "pnpm:\(home):\(package)"
+        case .yarnClassic(let globalDir, let package): return "yarn:\(globalDir):\(package)"
+        case .bun(let root, let package): return "bun:\(root):\(package)"
+        case .pipUser(let site, let distribution): return "pip:\(site):\(distribution)"
+        case .cargo(let root, let crate): return "cargo:\(root):\(crate)"
+        case .gem(let gemDir, let name, _): return "gem:\(gemDir):\(name)"
+        case .appStore(let adamID): return "appStore:\(adamID)"
+        case .sparkleApp(let feedURL): return "sparkle:\(feedURL)"
+        case .selfUpdatingApp(let kind): return "selfUpdating:\(kind)"
+        case .versionManager(let kind, let root): return "versionManager:\(kind.rawValue):\(root)"
+        case .agentSkill(let lockFile, let name): return "skill:\(lockFile):\(name)"
+        case .agentPlugin(let agent, let marketplace, let plugin): return "plugin:\(agent):\(marketplace):\(plugin)"
+        case .system(let provider): return "system:\(provider)"
         case .unknown: return "unknown"
         }
     }

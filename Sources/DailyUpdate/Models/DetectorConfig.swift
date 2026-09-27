@@ -16,6 +16,8 @@ struct DetectorConfig: Codable, Identifiable {
     var selfUpdater: String? = nil
     var appcastURL: String? = nil
     var autoUpdates: Bool? = nil
+    /// D2: built fresh by `RowBuilder` every run; never loaded from settings or an import.
+    var inventory: InventoryIdentity? = nil
     let detect: DetectRule?
     let versionCommand: String?
     var versionPattern: String? = nil
@@ -34,7 +36,7 @@ struct DetectorConfig: Codable, Identifiable {
     }
 
     var hasTypedEngineFields: Bool {
-        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil
+        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil || inventory != nil
     }
 
     var requiresReviewBeforeAutomation: Bool {
@@ -54,6 +56,7 @@ struct DetectorConfig: Codable, Identifiable {
             selfUpdater: nil,
             appcastURL: nil,
             autoUpdates: nil,
+            inventory: nil,
             detect: detect,
             versionCommand: versionCommand,
             versionPattern: versionPattern,

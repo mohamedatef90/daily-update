@@ -282,6 +282,9 @@ enum StrategyPlanner {
         case strategy(Strategy)
         case unknownOwner(String)
         case noStrategy(String)
+        /// P2-1: an owner blocked for a reason more specific than "no strategy" — system-owned,
+        /// managed by a version manager, or manual-only.
+        case blocked(BlockReason, String)
     }
 
     private static func prepare(
@@ -315,6 +318,8 @@ enum StrategyPlanner {
             return .blocked(.unknownOwner, message)
         case .noStrategy(let message):
             return .blocked(.noStrategy, message)
+        case .blocked(let reason, let message):
+            return .blocked(reason, message)
         }
     }
 
@@ -395,6 +400,28 @@ enum StrategyPlanner {
             }
         case .pipx, .uvTool:
             return .noStrategy("Strategy deferred to PR-B2")
+        // P2-1: discovery owners. Each is Blocked until the PR that owns its ecosystem (noted
+        // per case) wires a real strategy; D7 lists exactly which owners ever get one.
+        case .pnpm, .yarnClassic, .bun, .pipUser:
+            return .noStrategy("Listed only")
+        case .cargo:
+            return .noStrategy("Listed only") // P2-3: a git/path source becomes .manualOnly instead.
+        case .gem(_, _, let systemOwned):
+            return systemOwned ? .blocked(.systemOwned, "Managed by system Ruby") : .noStrategy("Listed only")
+        case .appStore:
+            return .noStrategy("App Store handoff lands in P2-6a")
+        case .sparkleApp:
+            return .noStrategy("Sparkle strategy lands in P2-6b")
+        case .selfUpdatingApp:
+            return .noStrategy("Self-updating app handoff lands in P2-6a")
+        case .versionManager(let kind, _):
+            return .blocked(.managedByVersionManager, "Managed by \(kind.rawValue)")
+        case .agentSkill:
+            return .blocked(.manualOnly, "Managed by `npx skills`")
+        case .agentPlugin(let agent, _, _):
+            return .blocked(.manualOnly, "Managed by \(agent)")
+        case .system(let provider):
+            return .blocked(.systemOwned, "Managed by \(provider)")
         case .unknown:
             return .noStrategy("No strategy for resolved owner")
         }
@@ -423,7 +450,17 @@ enum StrategyPlanner {
             return packages.pipx != package
         case .uvTool(let name):
             return packages.uv != name
+        case .cargo(_, let crate):
+            return packages.cargo != crate
+        case .gem(_, let name, _):
+            return packages.gem != name
+        case .appStore(let adamID):
+            return packages.masAdamID != adamID
         case .nativeInstaller:
+            return false
+        // P2-1: the catalog schema has no field for these ecosystems yet, so there's nothing a
+        // catalog entry could declare that would conflict (D6: "a missing key isn't a mismatch").
+        case .pnpm, .yarnClassic, .bun, .pipUser, .sparkleApp, .selfUpdatingApp, .versionManager, .agentSkill, .agentPlugin, .system:
             return false
         case .unknown:
             return true

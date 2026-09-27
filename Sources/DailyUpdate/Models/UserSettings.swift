@@ -4,12 +4,16 @@ enum ItemSource: String, Codable {
     case bundled
     case user
     case discovered
+    /// P2-1 (D2): a row built by `RowBuilder` from an `InstalledPackage` record, not from the
+    /// bundled catalog, a custom item, or the legacy repo/app scanners.
+    case inventory
 
     var label: String {
         switch self {
         case .bundled: return "Built-in"
         case .user: return "Custom"
         case .discovered: return "Discovered"
+        case .inventory: return "Discovered"
         }
     }
 }
@@ -50,6 +54,14 @@ struct RepoScanSettings: Codable, Equatable {
     }
 }
 
+/// §1 R1B8's filters: an ecosystem the user hid entirely (its Homebrew row and every formula, for
+/// example), separate from `disabledItemIDs` which hides one row by ID.
+struct InventorySettings: Codable, Equatable {
+    var hiddenEcosystems: Set<Ecosystem> = []
+
+    static var defaults: InventorySettings { InventorySettings() }
+}
+
 struct AppDiscoverySettings: Codable, Equatable {
     var enabled: Bool = true
     var developerOnly: Bool = true
@@ -82,6 +94,7 @@ struct UserSettings: Codable {
     var rescanSkillsOnLaunch: Bool = true
     var appDiscovery: AppDiscoverySettings = .defaults
     var skillDiscovery: SkillDiscoverySettings = .defaults
+    var inventory: InventorySettings = .defaults
     var showMenuBarIcon: Bool = true
     var menuBarOnly: Bool = false
     var launchAtLogin: Bool = false

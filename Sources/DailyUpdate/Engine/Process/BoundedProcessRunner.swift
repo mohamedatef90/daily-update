@@ -151,8 +151,11 @@ enum BoundedProcessRunner {
         // output sitting in the pipe.
         drainOnce(stdoutFD, into: &stdoutData, cap: spec.maxStdoutBytes, exceeded: &stdoutCapExceeded)
         drainOnce(stderrFD, into: &stderrData, cap: spec.maxStderrBytes, exceeded: &stderrTruncated)
-        close(stdoutFD)
-        close(stderrFD)
+        // `Pipe`/`FileHandle` owns these descriptors; closing through it (not a raw `close(2)`)
+        // keeps its bookkeeping consistent so it never later closes a descriptor number the
+        // kernel has since handed to an unrelated pipe on another thread.
+        stdoutPipe.fileHandleForReading.closeFile()
+        stderrPipe.fileHandleForReading.closeFile()
 
         let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
         let termination: Termination
