@@ -148,8 +148,9 @@ struct InstalledPackage: Hashable, Sendable {
     }
 }
 
-/// RC1's process-contract types. Owned by Discovery; `ShellRunner` is never referenced from
-/// `Engine/Discovery/` (F10). Only `ReadOnlyQueries.swift` may reference `BoundedProcessRunner`.
+/// RC1's process-contract types. Owned by Discovery; the app's legacy shell runner is never
+/// referenced from this directory (F10). Only one file here may reference the bounded runner
+/// that replaces it (RC1), and the lint enforces that.
 enum Termination: Hashable, Codable, Sendable {
     case exited(Int32)
     case signaled(Int32)
