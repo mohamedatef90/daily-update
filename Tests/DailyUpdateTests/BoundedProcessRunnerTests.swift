@@ -79,13 +79,18 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         XCTAssertEqual(outcome.evidence.termination, .signaled(SIGSEGV))
     }
 
-    /// E5: stderr over 16 KB is truncated; stdout over the cap stops the process and is never
-    /// parsed as a full payload; a grandchild that keeps stdout open never blocks the return.
+    /// E5 (amendment): a child that writes 1 MB of stderr — far more than a pipe buffer holds —
+    /// then exits 3 must still be drained past the 16 KB cap and report its real exit status.
+    /// Before the fix, `drainOnce` stopped reading once the cap was hit, so the child blocked on
+    /// a full stderr pipe until the timeout and its `exit 3` was lost behind `timedOut`.
     func testStderrTruncationAndOutputCap() async throws {
-        let stub = try makeStub("#!/bin/sh\nyes err | head -c 20000 1>&2\n")
+        let stub = try makeStub("#!/bin/sh\nyes err | head -c 1000000 1>&2\nexit 3\n")
+        let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
             executable: stub, arguments: [], environment: .exactly([:]), timeout: 5, maxStdoutBytes: 1024
         ))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3.0)
+        XCTAssertEqual(outcome.evidence.termination, .exited(3))
         XCTAssertTrue(outcome.evidence.stderrTruncated)
         XCTAssertEqual(outcome.evidence.stderr.utf8.count, 16 * 1024)
     }

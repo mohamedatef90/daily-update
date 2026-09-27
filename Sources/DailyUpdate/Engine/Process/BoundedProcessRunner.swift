@@ -107,8 +107,11 @@ enum BoundedProcessRunner {
         var sentKill = false
         var timedOut = false
 
+        // S2: once a stream hits its cap, this keeps reading and discarding — it never stops
+        // draining the pipe. A child that keeps writing past the cap (stdout's terminate-on-cap
+        // path aside) must never see a full pipe buffer and block on write(2); that would hide
+        // its real exit status behind a timeout instead of reporting it.
         func drainOnce(_ fd: Int32, into data: inout Data, cap: Int, exceeded: inout Bool) {
-            guard !exceeded else { return }
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             while true {
                 let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
@@ -118,7 +121,7 @@ enum BoundedProcessRunner {
                 if data.count < cap {
                     data.append(buffer, count: min(bytesRead, cap - data.count))
                 }
-                if data.count >= cap { exceeded = true; break }
+                if data.count >= cap { exceeded = true }
             }
         }
 
@@ -179,7 +182,10 @@ enum BoundedProcessRunner {
             }
         }
 
-        let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
+        // S2: `String(decoding:as:)` never fails — it replaces invalid byte sequences instead of
+        // dropping the whole string, which mattered once the 16 KB cap could split a multi-byte
+        // character mid-sequence.
+        let stderrText = String(decoding: stderrData, as: UTF8.self)
         let sanitizedStderr = PackageNameRules.sanitize(homeRedacted(stderrText), maxLength: spec.maxStderrBytes)
 
         return QueryOutcome(
