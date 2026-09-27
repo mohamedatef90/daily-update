@@ -220,6 +220,16 @@ enum LoginEnvironmentOverrides {
 }
 
 enum OwnerResolver {
+    /// S1 (regression fix): `whence` starts from `ProcessInfo`'s environment like Phase 1 did, but
+    /// `PATH` is always `ShellRunner.defaultPath`, never the raw parent value. When the app is
+    /// launched from Finder, launchd's own PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) has none of the
+    /// native-installer or user-local directories `whence` needs to find `claude`, `opencode`,
+    /// `cursor-agent`, or a `~/.local/bin` copy of `node`/`npm`. Exposed so a test can assert this
+    /// without spawning a real shell.
+    static var whenceEnvironment: ProcessEnvironment {
+        .inherited(overridingPATH: ShellRunner.defaultPath)
+    }
+
     private static let markerPrefix = "__DAILY_UPDATE_WHENCE__"
     private static let commandNameRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9._+-]+$"#) // swiftlint:disable:this force_try
     private static let npmNameRegex = try! NSRegularExpression( // swiftlint:disable:this force_try
@@ -258,7 +268,7 @@ enum OwnerResolver {
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
             executable: "/bin/zsh",
             arguments: ["-lc", script, "--"] + validNames,
-            environment: .inherited,
+            environment: Self.whenceEnvironment,
             timeout: 20,
             maxStdoutBytes: 1024 * 1024
         ))

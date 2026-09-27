@@ -7,12 +7,14 @@ import Darwin
 /// this type (the discovery lint enforces that); everything else in the engine still uses the
 /// legacy runner. Every enricher process this runner starts is bounded on every axis a hostile or
 /// broken child could exploit: its environment, its output size, its stderr size and its runtime.
-enum ProcessEnvironment: Sendable {
+enum ProcessEnvironment: Sendable, Equatable {
     /// Built from scratch; nothing is copied from the parent process. Every enricher must use
     /// this case — a test asserts it.
     case exactly([String: String])
-    /// Only `whence` uses this (RC2): it deliberately sources the user's login shell profile.
-    case inherited
+    /// Only `whence` uses this (RC2): it deliberately sources the user's login shell profile, but
+    /// `PATH` is always the given override, never the raw `ProcessInfo` value — matching Phase
+    /// 1's `ShellRunner` behavior, so owner resolution describes what actually runs (S1).
+    case inherited(overridingPATH: String)
 }
 
 struct BoundedProcessSpec: Sendable {
@@ -62,8 +64,10 @@ enum BoundedProcessRunner {
         switch spec.environment {
         case .exactly(let dictionary):
             process.environment = dictionary
-        case .inherited:
-            process.environment = ProcessInfo.processInfo.environment
+        case .inherited(let overridingPATH):
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = overridingPATH
+            process.environment = environment
         }
 
         let stdoutPipe = Pipe()
