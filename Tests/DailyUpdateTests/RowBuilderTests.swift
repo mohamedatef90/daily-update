@@ -132,6 +132,27 @@ final class RowBuilderTests: HermeticTestCase {
         XCTAssertEqual(errorRow?.description, "malformed package.json")
     }
 
+    // MARK: D3/CR#6: two issues on one root collapse to one row, never a duplicate id
+
+    func testTwoIssuesOnOneRootCollapseToOneRowWithBothMessages() {
+        let issue1 = EnumerationIssue(kind: .malformed, rootPath: "/fixture/npmroot", message: "malformed package.json")
+        let issue2 = EnumerationIssue(kind: .unreadable, rootPath: "/fixture/npmroot", message: "permission denied")
+        let results = [EnumerationResult(ecosystem: .npm, status: .partial([issue1, issue2]))]
+        let rows = RowBuilder.build(input: .init(results: results))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.description, "malformed package.json; permission denied")
+    }
+
+    /// CR#6: filtering this out made a still-blocked ecosystem look like "nothing installed" on
+    /// the next run instead of "unknown", which D3 forbids.
+    func testPreviousRunStillBlockedGetsAnErrorRowNotSilence() {
+        let issue = EnumerationIssue(kind: .previousRunStillBlocked, rootPath: "/fixture/npmroot", message: "still running")
+        let results = [EnumerationResult(ecosystem: .npm, status: .partial([issue]))]
+        let rows = RowBuilder.build(input: .init(results: results))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.description, "still running")
+    }
+
     // MARK: D12-style: unavailable gives no rows at all
 
     func testUnavailableStatusGivesNoRows() {

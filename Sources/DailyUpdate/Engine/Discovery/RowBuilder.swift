@@ -119,10 +119,21 @@ enum RowBuilder {
         )]
     }
 
+    private struct ErrorRowKey: Hashable {
+        let ecosystem: Ecosystem
+        let root: String
+    }
+
     /// D3, D11: a `partial`/`failed` enumeration result adds one Check Failed row per affected
-    /// root; `loginEnvironmentUnknown` issues are covered by the single row above instead.
+    /// root, never one per issue — `loginEnvironmentUnknown` issues are covered by the single row
+    /// above instead. CR#6: two issues naming the same root must still collapse to one row (same
+    /// key, same id) with both messages, not two rows with a colliding id (`stableID` only keys on
+    /// ecosystem+root, so two rows for one root previously got the identical id). `.previousRunStillBlocked`
+    /// stays a row too — filtering it out made a still-blocked ecosystem look like "nothing
+    /// installed" on the next run instead of "unknown", which D3 forbids.
     private static func issueErrorRows(_ results: [EnumerationResult]) -> [DetectorConfig] {
-        var rows: [DetectorConfig] = []
+        var order: [ErrorRowKey] = []
+        var issuesByKey: [ErrorRowKey: [EnumerationIssue]] = [:]
         for result in results {
             let issues: [EnumerationIssue]
             switch result.status {
@@ -130,20 +141,22 @@ enum RowBuilder {
             case .failed(let issue): issues = [issue]
             case .complete, .unavailable: issues = []
             }
-            for issue in issues where issue.kind != .loginEnvironmentUnknown && issue.kind != .previousRunStillBlocked {
-                rows.append(makeErrorRow(ecosystem: result.ecosystem, issue: issue))
+            for issue in issues where issue.kind != .loginEnvironmentUnknown {
+                let key = ErrorRowKey(ecosystem: result.ecosystem, root: issue.rootPath ?? result.ecosystem.rawValue)
+                if issuesByKey[key] == nil { order.append(key) }
+                issuesByKey[key, default: []].append(issue)
             }
         }
-        return rows
+        return order.map { key in makeErrorRow(ecosystem: key.ecosystem, root: key.root, issues: issuesByKey[key] ?? []) }
     }
 
-    private static func makeErrorRow(ecosystem: Ecosystem, issue: EnumerationIssue) -> DetectorConfig {
-        let root = issue.rootPath ?? ecosystem.rawValue
+    private static func makeErrorRow(ecosystem: Ecosystem, root: String, issues: [EnumerationIssue]) -> DetectorConfig {
         let id = ItemBuilder.stableID(prefix: "inv-error-\(ecosystem.rawValue)", path: root)
         let identity = InventoryIdentity.errorMarker(ecosystem: ecosystem, rootPath: root)
+        let message = issues.map(\.message).joined(separator: "; ")
         return DetectorConfig(
             id: id, name: "\(ecosystem.rawValue) (\(root))", category: .cli,
-            description: PackageNameRules.sanitize(issue.message), schemaVersion: nil, source: .inventory,
+            description: PackageNameRules.sanitize(message), schemaVersion: nil, source: .inventory,
             command: nil, packages: nil, selfUpdater: nil, appcastURL: nil, autoUpdates: nil,
             inventory: identity, handle: nil, detect: nil, versionCommand: nil, versionPattern: nil,
             checkCommand: nil, installCommand: nil, updateCommand: "", workingDirectory: nil, needsReview: nil
