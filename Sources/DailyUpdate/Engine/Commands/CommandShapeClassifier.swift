@@ -1118,11 +1118,16 @@ enum CommandShapeClassifier {
         return runsShell && names.contains { !shellSafeVariables.contains($0) }
     }
 
-    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case),
-    /// which npm, pnpm and yarn v1 read as config. `npm_config_call` is `-c`, so a bare `npx`
-    /// or `npm exec` runs its value through `sh`.
+    /// npm config keys that change only output, matched exactly after `npm_config_`.
+    private static let harmlessNpmConfigKeys: Set<String> = ["loglevel", "color", "progress", "fund", "audit", "update_notifier"]
+
+    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case)
+    /// but the harmless keys, which npm, pnpm and yarn v1 read as config. `npm_config_call` is
+    /// `-c`, so a bare `npx` or `npm exec` runs its value through `sh`.
     private static func isCodeVariable(_ name: String) -> Bool {
-        startupVariables.contains(name) || name.lowercased().hasPrefix("npm_config_")
+        let lowered = name.lowercased()
+        guard lowered.hasPrefix("npm_config_") else { return startupVariables.contains(name) }
+        return !harmlessNpmConfigKeys.contains(String(lowered.dropFirst("npm_config_".count)))
     }
 
     /// The code variables above, anywhere; an exported name that is not written out

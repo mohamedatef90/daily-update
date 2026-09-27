@@ -181,4 +181,21 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("guard xargs git literal verb", "echo a.txt | xargs git add", [], false),
         ])
     }
+
+    /// X14 (Security NIT): `npm_config_*` keys that change only output are allowed, matched
+    /// exactly and in any case. `call`, `script_shell` and every other key still fail closed.
+    func testHarmlessNpmConfigVariablesAreAllowed() {
+        assertRows([
+            ("X14 loglevel", "npm_config_loglevel=warn npm install -g x@1", [], true),
+            ("X14 upper case", "NPM_CONFIG_LOGLEVEL=warn npm outdated -g", [], false),
+            ("X14 every allowed key", "npm_config_color=false npm_config_progress=false npm_config_fund=false "
+                + "npm_config_audit=false npm_config_update_notifier=false npm outdated -g", [], false),
+            ("X14 export", "export npm_config_loglevel=warn", [], false),
+            ("X14 call", "npm_config_call=x npx", [.unparseable], true),
+            ("X14 script_shell", "npm_config_script_shell=/tmp/x npm install -g x@1", [.unparseable], true),
+            ("X14 prefix of an allowed key", "npm_config_loglevelx=1 npm outdated -g", [.unparseable], true),
+            ("X14 export call", "export npm_config_call=x", [.unparseable], true),
+            ("X14 allowed key before a shell", "npm_config_loglevel=warn sh -c 'echo ok'", [.unparseable], true),
+        ])
+    }
 }
