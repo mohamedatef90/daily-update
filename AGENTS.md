@@ -13,6 +13,20 @@ Daily Update is a Swift Package Manager macOS 13+ app. Its executable target is
   `StrategyPlanner`).
 - `Engine/Commands/` and `Engine/Version/` hold command-shape analysis and
   version parsing/comparison utilities.
+- `Engine/Discovery/` contains the generic-discovery engine (ADR-002):
+  `DiscoveryModel` (records and statuses), `Enumerator` (the protocol every
+  ecosystem enumerator implements), `ReadOnlyFileSystem`/`LiveFileSystem` (the
+  only I/O an enumerator may do), `PackageNameRules`, `PathSearch`,
+  `ReadOnlyQueries` (the sandboxed brew enricher calls), `DiscoveryCoordinator`,
+  `RowBuilder`, `InventoryResolver` and `DiscoveryRunner`. A lint
+  (`DiscoveryLintTests`) fails the build if anything here reaches for a write
+  or process API outside the two files exempted for that reason. Ecosystem
+  enumerators (Homebrew, npm, uv, …) register themselves in
+  `DiscoveryEnumeratorRegistry`, one file per ecosystem.
+- `Engine/Process/BoundedProcessRunner.swift` is the sandboxed-enricher process
+  contract (allowlisted environment, capped output, a hard timeout ceiling).
+  Only `Engine/Discovery/ReadOnlyQueries.swift` may reference it; everywhere
+  else still uses `ShellRunner`.
 - `Services/` contains update detection, shell execution, persistence, scanning,
   scheduling, and app lifecycle behavior.
 - `Views/` contains SwiftUI screens and reusable UI components.
