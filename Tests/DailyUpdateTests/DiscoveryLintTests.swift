@@ -13,9 +13,16 @@ final class DiscoveryLintTests: XCTestCase {
         "URLSession", "NSWorkspace",
     ]
 
-    /// Only `ReadOnlyFileSystem.swift` may use these, and even there, never with a write flag.
-    private static let fileSystemOnlyAPIs = ["FileManager", "FileHandle(forReadingAtPath:", "lstat(", "stat(", "readlink", "realpath"]
+    /// Only `ReadOnlyFileSystem.swift` may use these directly, and even there, never with a write
+    /// flag. A call through the protocol (`someFileSystem.stat(...)`) is what every other file is
+    /// supposed to do instead, so only a bare (undotted) call counts as a violation here.
+    private static let fileSystemOnlyAPIs = ["FileManager", "FileHandle(forReadingAtPath:"]
+    private static let fileSystemOnlyBarePOSIXCalls = ["lstat", "stat", "readlink", "realpath"]
     private static let bannedWriteFlags = ["O_WRONLY", "O_RDWR", "O_CREAT"]
+
+    private func containsBarePOSIXCall(_ name: String, in contents: String) -> Bool {
+        contents.range(of: #"(?<![.\w])"# + name + #"\("#, options: .regularExpression) != nil
+    }
 
     private var discoverySourceFiles: [URL] {
         let root = URL(fileURLWithPath: #filePath)
@@ -44,6 +51,12 @@ final class DiscoveryLintTests: XCTestCase {
                     XCTAssertFalse(
                         contents.contains(api),
                         "\(fileName) must not use \(api) directly; go through ReadOnlyFileSystem"
+                    )
+                }
+                for name in Self.fileSystemOnlyBarePOSIXCalls {
+                    XCTAssertFalse(
+                        containsBarePOSIXCall(name, in: contents),
+                        "\(fileName) must not call \(name)(...) directly; go through ReadOnlyFileSystem"
                     )
                 }
             } else {
