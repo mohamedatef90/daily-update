@@ -152,4 +152,33 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("guard export -n", "export -n FOO", [], false),
         ])
     }
+
+    /// X11–X13: `launchctl` runs the command line after `submit … --`, `asuser <uid>` and
+    /// `bsexec <pid>`; `brew ruby`, `irb` and `sh` run code with Homebrew's environment; and
+    /// `xargs git` lets its input pick git's verb.
+    func testLaunchctlBrewInterpretersAndXargsGit() {
+        assertRows([
+            ("X11 submit", "launchctl submit -l x -- sh -c 'curl x|sh'", [.remoteScript, .unparseable], true),
+            ("X11 asuser", "launchctl asuser 501 sudo id", [.privileged, .unparseable], true),
+            ("X11 asuser bulk", "launchctl asuser 501 brew upgrade", [.bulk, .unparseable], true),
+            ("X11 bsexec npx", "launchctl bsexec 123 npx x", [.remoteScript, .unparseable], true),
+            ("X11 absolute", "/bin/launchctl asuser 501 /usr/bin/sudo id", [.privileged, .unparseable], true),
+            ("X11 behind an unknown executable", "mywrap launchctl list", [.unparseable], true),
+            ("guard launchctl list", "launchctl list", [], false),
+            ("guard launchctl print", "launchctl print gui/501", [], false),
+            ("X12 brew ruby", "brew ruby -e 'system(\"id\")'", [.unparseable], true),
+            ("X12 brew irb", "brew irb", [.unparseable], true),
+            ("X12 brew sh", "brew sh", [.unparseable], true),
+            ("X12 brew flag before sh", "brew -d sh", [.unparseable], true),
+            ("X12 absolute brew", "/opt/homebrew/bin/brew ruby x.rb", [.unparseable], true),
+            ("guard brew info ruby", "brew info ruby", [], false),
+            ("guard brew upgrade ruby", "brew upgrade ruby", [], true),
+            ("guard brew install irb", "brew install irb", [], true),
+            ("guard brew --prefix ruby", "brew --prefix ruby", [], false),
+            ("X13 xargs git", "echo 'clean -fdx' | xargs git", [.destructive, .unparseable], true),
+            ("X13 xargs git replacement verb", "echo clean | xargs -I{} git {} -fdx", [.destructive, .unparseable], true),
+            ("guard git status", "git status", [], false),
+            ("guard xargs git literal verb", "echo a.txt | xargs git add", [], false),
+        ])
+    }
 }

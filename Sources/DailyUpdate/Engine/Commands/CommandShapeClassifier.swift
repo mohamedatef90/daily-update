@@ -200,7 +200,7 @@ enum CommandShapeClassifier {
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
                     || shellScriptFollowsOption(words) || changesShellEvaluation(words)
-                    || runsHiddenPackage(words) || writesManagerConfig(words)
+                    || runsHiddenPackage(words) || writesManagerConfig(words) || runsBrewInterpreter(words)
                     || !commandWordsBehindUnknownExecutable(words).isEmpty || !embeddedCommandLines(words).isEmpty {
                     failsClosed = true
                 }
@@ -296,7 +296,7 @@ enum CommandShapeClassifier {
         .union(privilegeCommands)
         .union(["env", "nice", "timeout", "nohup", "caffeinate", "xargs", "taskpolicy", "exec", "arch",
             // Not `find`: it is also a verb (`npx skills find`), and `find -exec sh …` still names `sh`.
-            "eval", "trap", "source", "xcrun", "sandbox-exec",
+            "eval", "trap", "source", "xcrun", "sandbox-exec", "launchctl",
             "brew", "npm", "npx", "pnpm", "yarn", "gem", "pip", "pip3", "pipx", "uv", "cargo", "rustup", "mas",
             "mise", "softwareupdate", "rm", "dd", "diskutil", "chmod", "chown", "shred", "srm"])
 
@@ -822,6 +822,7 @@ enum CommandShapeClassifier {
         // `trap` runs its first argument as code; `find -exec` runs the words up to `;` or `+`.
         if executable == "trap" { return stripped.dropFirst().first { $0 != "--" }.map { [$0] } ?? [] }
         if executable == "find" { return findExecCommands(Array(stripped.dropFirst())) }
+        if executable == "launchctl" { return launchctlCommands(Array(stripped.dropFirst())) + embeddedCommandLines(words) }
         guard shellExecutables.contains(executable) else {
             return embeddedCommandLines(words)
         }
@@ -961,7 +962,10 @@ enum CommandShapeClassifier {
         return stripped[0].contains(replacement)
     }
 
-    /// A package manager behind `xargs` whose verb is not literal, so the input picks it
+    /// Programs whose verb `xargs` input may pick: the package managers, and `git` (`clean -fdx`).
+    private static let xargsVerbPickers: Set<String> = packageManagerExecutables.union(["git"])
+
+    /// A package manager (or `git`) behind `xargs` whose verb is not literal, so the input picks it
     /// (`xargs npm` + `exec sudo id`, `xargs -I{} brew {} -c …`). The verb must be the first
     /// argument, or follow `--opt=value` options only: `--prefix /tmp` could leave the verb
     /// position to the input.
@@ -970,7 +974,7 @@ enum CommandShapeClassifier {
         let consumed = words.prefix(words.count - stripped.count)
         guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }),
               let executable = stripped.first.map(normalizedExecutableName),
-              packageManagerExecutables.contains(executable) else { return false }
+              xargsVerbPickers.contains(executable) else { return false }
         guard let verb = stripped.dropFirst().first(where: { !($0.hasPrefix("-") && $0.contains("=")) }),
               !verb.hasPrefix("-") else { return true }
         guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
@@ -1179,6 +1183,33 @@ enum CommandShapeClassifier {
             if ["-exec", "-execdir", "-ok", "-okdir"].contains(token.value) { inBody = true }
         }
         return false
+    }
+
+    /// The command line `launchctl` runs: after `--` for `submit`, and after the uid or pid
+    /// for `asuser` and `bsexec`. It is classified like any nested command.
+    private static func launchctlCommands(_ args: [String]) -> [String] {
+        let command: ArraySlice<String>
+        switch args.first?.lowercased() {
+        case "submit": command = args.firstIndex(of: "--").map { args[($0 + 1)...] } ?? []
+        case "asuser", "bsexec": command = args.dropFirst(2)
+        default: return []
+        }
+        return command.isEmpty ? [] : [command.map(ShellEscaping.quote).joined(separator: " ")]
+    }
+
+    /// `brew --prefix ruby` names a formula: these options are brew commands, so the verb is theirs.
+    private static let brewOptionCommands: Set<String> = [
+        "--prefix", "--cellar", "--cache", "--caskroom", "--repository", "--repo", "--env", "--config", "--version", "-v",
+    ]
+
+    /// `brew ruby`, `brew irb` and `brew sh` run Ruby or a shell with Homebrew's environment,
+    /// like `npm exec`. The verb is brew's first word that is not a flag.
+    private static func runsBrewInterpreter(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard stripped.first.map(normalizedExecutableName) == "brew",
+              let verb = stripped.dropFirst().first(where: { !$0.hasPrefix("-") || brewOptionCommands.contains($0) })
+        else { return false }
+        return ["ruby", "irb", "sh"].contains(verb.lowercased())
     }
 
     private static func findExecCommands(_ args: [String]) -> [String] {
