@@ -586,6 +586,14 @@ enum CommandShapeClassifier {
         "uv": [["tool", "run"]], "pipx": [["run"]],
     ]
 
+    /// Initializers are packages too: `npm init vite` runs `npx create-vite` (RC7).
+    private static let initializerVerbs: [String: [[String]]] = [
+        "npm": [["init"], ["create"], ["innit"]], "yarn": [["create"]], "pnpm": [["create"]], "bun": [["create"]],
+    ]
+
+    /// `deno run` operands it fetches (RC7). Any operand counts, so option arity needs no parsing.
+    private static let denoRemoteSchemes = ["npm:", "jsr:", "http:", "https:"]
+
     /// A package runner or manager verb that downloads a package and runs it, through wrappers
     /// and on absolute paths. A pinned version is still remote code.
     private static func isDownloadThenRun(_ words: [String]) -> Bool {
@@ -594,7 +602,11 @@ enum CommandShapeClassifier {
         else { return false }
         let args = Array(stripped.dropFirst())
         if packageRunners.contains(executable) { return !operands(args[...]).isEmpty }
-        return (downloadThenRunVerbs[executable] ?? []).contains { path in
+        if executable == "deno", let run = verbIndex(args, path: ["run"]) {
+            return args[(run + 1)...].contains { arg in denoRemoteSchemes.contains { arg.lowercased().hasPrefix($0) } }
+        }
+        let paths = (downloadThenRunVerbs[executable] ?? []) + (initializerVerbs[executable] ?? [])
+        return paths.contains { path in
             verbIndex(args, path: path).map { !operands(args[($0 + 1)...]).isEmpty } ?? false
         }
     }

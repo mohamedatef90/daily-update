@@ -58,4 +58,34 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("guard echo npx", "echo npx x", [], false),
         ])
     }
+
+    /// X16–X19 (RC7): initializers are packages too. `npm init <initializer>` runs
+    /// `npx create-<initializer>`; `deno run` fetches an `npm:`, `jsr:` or URL operand.
+    func testInitializersAndDenoRemoteOperandsAreRemoteScripts() {
+        assertRows([
+            ("X16 npm init", "npm init vite", [.remoteScript], true),
+            ("X16 npm init scoped", "npm init @scope/app", [.remoteScript], true),
+            ("X16 npm init -y initializer", "npm init -y vite", [.remoteScript], true),
+            ("X16 npm create", "npm create vite@latest my-app", [.remoteScript], true),
+            ("X16 env npm init", "env npm init x", [.remoteScript], true),
+            ("X16 absolute npm", "/opt/homebrew/bin/npm create vite", [.remoteScript], true),
+            ("X17 yarn create", "yarn create next-app", [.remoteScript], true),
+            ("X17 pnpm create", "pnpm create vite", [.remoteScript], true),
+            ("X17 bun create", "bun create elysia app", [.remoteScript], true),
+            ("X18 deno npm:", "deno run npm:cowsay", [.remoteScript], true),
+            ("X18 deno https", "deno run https://deno.land/x/a/mod.ts", [.remoteScript], true),
+            // `deno` is an unknown executable, and this operand's last path component is `http`,
+            // a fetcher name, so it also fails closed.
+            ("X18 deno jsr: after -A", "deno run -A jsr:@std/http", [.remoteScript, .unparseable], true),
+            ("X18 deno http upper case", "deno run HTTP://example.com/a.ts", [.remoteScript], true),
+            ("X18 absolute deno", "/usr/local/bin/deno run npm:cowsay", [.remoteScript], true),
+            ("X19 npm init -y", "npm init -y", [], false),
+            ("X19 npm init --yes", "npm init --yes", [], false),
+            ("X19 bare npm init", "npm init", [], false),
+            ("X19 deno local file", "deno run ./main.ts", [], false),
+            ("X19 deno --version", "deno --version", [], false),
+            ("guard bare yarn create", "yarn create", [], false),
+            ("guard npm install init", "npm install init", [], true),
+        ])
+    }
 }
