@@ -43,13 +43,32 @@ enum PathTrust {
     private static func trustedAncestors(_ path: String) -> Bool {
         var current = (path as NSString).deletingLastPathComponent
         while true {
-            var info = stat()
-            // Follow directory symlinks as well as checking the resolved target chain.
-            guard stat(current, &info) == 0,
-                  info.st_uid == getuid() || info.st_uid == 0,
-                  info.st_mode & S_IWOTH == 0 else { return false }
+            guard isTrustedPathEntry(current) else { return false }
             if current == "/" || current.isEmpty { return true }
             current = (current as NSString).deletingLastPathComponent
         }
+    }
+
+    /// ADR-002 F3: a discovery root and every one of its ancestors must be owned by uid 0 or the
+    /// current user, and not world-writable. Group-writable is allowed — that's the rule
+    /// `trustedAncestors` already applies to a directory, as opposed to `trusted(_:)`'s stricter
+    /// file rule (no group *or* world write), which still applies to executables (D16 covers
+    /// world-writable; D23 is a user-owned `drwxrwxr-x` Cellar, which this trusts).
+    static func isTrustedDirectory(_ path: String) -> Bool {
+        var current = URL(fileURLWithPath: path).standardizedFileURL.path
+        while true {
+            guard isTrustedPathEntry(current) else { return false }
+            if current == "/" || current.isEmpty { return true }
+            current = (current as NSString).deletingLastPathComponent
+        }
+    }
+
+    private static func isTrustedPathEntry(_ path: String) -> Bool {
+        var info = stat()
+        // Follow directory symlinks as well as checking the resolved target chain.
+        guard stat(path, &info) == 0,
+              info.st_uid == getuid() || info.st_uid == 0,
+              info.st_mode & S_IWOTH == 0 else { return false }
+        return true
     }
 }

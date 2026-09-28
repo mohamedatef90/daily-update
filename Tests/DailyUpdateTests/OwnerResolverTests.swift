@@ -2,6 +2,14 @@ import XCTest
 @testable import DailyUpdate
 
 final class OwnerResolverTests: HermeticTestCase {
+    /// S1 regression: `whence` must run with `PATH` forced to `ShellRunner.defaultPath`, exactly
+    /// like Phase 1's `ShellRunner`-based lookup did — never the raw `ProcessInfo` environment,
+    /// which under launchd (the app started from Finder) doesn't carry the native-installer or
+    /// user-local directories owner resolution depends on.
+    func testWhenceEnvironmentOverridesPATHWithShellRunnerDefault() {
+        XCTAssertEqual(OwnerResolver.whenceEnvironment, .inherited(overridingPATH: ShellRunner.defaultPath))
+    }
+
     func testOwnerResolverClassifiesNativeClaudeThroughSymlink() throws {
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

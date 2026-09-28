@@ -27,6 +27,7 @@ enum CLIRunner {
         case install(itemID: String)
         case update(itemID: String)
         case health
+        case discover
     }
 
     private struct ParsedArguments {
@@ -194,6 +195,16 @@ enum CLIRunner {
                 }
             }
             return 0
+        case .discover:
+            let settings = UserSettingsStore().settings
+            let catalog = ConfigLoader.loadConfigs(settings: settings)
+            let result = await DiscoveryRunner.run(catalog: catalog, settings: settings)
+            if parsed.json {
+                printDiscoveryJSON(result, output: output)
+            } else {
+                printDiscoverySummary(result, output: output)
+            }
+            return 0
         }
     }
 
@@ -230,6 +241,8 @@ enum CLIRunner {
                 try assignCommand(.check)
             case "--health":
                 try assignCommand(.health)
+            case "--discover":
+                try assignCommand(.discover)
             case "--install-all":
                 try assignCommand(.installAll)
             case "--update-all":
@@ -480,11 +493,102 @@ enum CLIRunner {
           DailyUpdate --install <item-id>  Install one item only
           DailyUpdate --yes                Confirm guarded CLI actions when required
           DailyUpdate --health             Run health checks
-          DailyUpdate --json               JSON output (with --check or --health)
+          DailyUpdate --discover           Enumerate installed dev tools, runtimes and CLIs
+          DailyUpdate --json               JSON output (with --check, --health or --discover)
           DailyUpdate --help               Show this help
 
         Run without flags to open the GUI.
         """)
+    }
+
+    private static func printDiscoverySummary(_ result: DiscoveryRunResult, output: (String) -> Void) {
+        output("Discovery — \(result.rows.count) row(s) in \(result.elapsedMs) ms")
+        for row in result.rows {
+            let handleSuffix = row.handle.map { " (\($0))" } ?? ""
+            output("  \(row.name)\(handleSuffix) [\(row.id)]")
+        }
+        for enumerationResult in result.results {
+            for issue in issuesFor(enumerationResult.status) {
+                output("  [\(enumerationResult.ecosystem.rawValue)] \(issue.kind.rawValue): \(issue.message)")
+            }
+            if case .unavailable(let reason) = enumerationResult.status {
+                output("  [\(enumerationResult.ecosystem.rawValue)] unavailable: \(reason)")
+            }
+        }
+    }
+
+    private static func printDiscoveryJSON(_ result: DiscoveryRunResult, output: (String) -> Void) {
+        let rows: [[String: Any]] = result.rows.map { row in
+            [
+                "id": row.id,
+                "handle": row.handle ?? "",
+                "name": row.name,
+                "ecosystem": row.inventory?.ecosystem.rawValue ?? "",
+                "packageID": row.inventory?.packageID ?? "",
+            ]
+        }
+        let results: [[String: Any]] = result.results.map { enumerationResult in
+            var payload: [String: Any] = [
+                "ecosystem": enumerationResult.ecosystem.rawValue,
+                "status": statusName(enumerationResult.status),
+            ]
+            if case .unavailable(let reason) = enumerationResult.status {
+                payload["reason"] = reason
+            }
+            let issues = issuesFor(enumerationResult.status)
+            if !issues.isEmpty {
+                payload["issues"] = issues.map(issueJSON)
+            }
+            return payload
+        }
+        let payload: [String: Any] = ["elapsedMs": result.elapsedMs, "rows": rows, "results": results]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
+           let str = String(data: data, encoding: .utf8) {
+            output(str)
+        }
+    }
+
+    private static func issuesFor(_ status: EnumerationStatus) -> [EnumerationIssue] {
+        switch status {
+        case .partial(let issues): return issues
+        case .failed(let issue): return [issue]
+        case .complete, .unavailable: return []
+        }
+    }
+
+    private static func statusName(_ status: EnumerationStatus) -> String {
+        switch status {
+        case .complete: return "complete"
+        case .partial: return "partial"
+        case .unavailable: return "unavailable"
+        case .failed: return "failed"
+        }
+    }
+
+    private static func issueJSON(_ issue: EnumerationIssue) -> [String: Any] {
+        var payload: [String: Any] = ["kind": issue.kind.rawValue, "message": issue.message]
+        if let rootPath = issue.rootPath { payload["rootPath"] = rootPath }
+        if let process = issue.process {
+            payload["process"] = [
+                "executable": process.executable,
+                "arguments": process.arguments,
+                "termination": terminationName(process.termination),
+                "stderr": process.stderr,
+                "stderrTruncated": process.stderrTruncated,
+                "elapsedMs": process.elapsedMs,
+            ]
+        }
+        return payload
+    }
+
+    private static func terminationName(_ termination: Termination) -> String {
+        switch termination {
+        case .exited(let code): return "exited(\(code))"
+        case .signaled(let signal): return "signaled(\(signal))"
+        case .timedOut(let afterMs): return "timedOut(\(afterMs)ms)"
+        case .outputCapExceeded: return "outputCapExceeded"
+        case .launchFailed(let reason): return "launchFailed(\(reason))"
+        }
     }
 
     @MainActor

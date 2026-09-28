@@ -4,12 +4,16 @@ enum ItemSource: String, Codable {
     case bundled
     case user
     case discovered
+    /// P2-1 (D2): a row built by `RowBuilder` from an `InstalledPackage` record, not from the
+    /// bundled catalog, a custom item, or the legacy repo/app scanners.
+    case inventory
 
     var label: String {
         switch self {
         case .bundled: return "Built-in"
         case .user: return "Custom"
         case .discovered: return "Discovered"
+        case .inventory: return "Discovered"
         }
     }
 }
@@ -50,6 +54,27 @@ struct RepoScanSettings: Codable, Equatable {
     }
 }
 
+/// §1 R1B8's filters: an ecosystem the user hid entirely (its Homebrew row and every formula, for
+/// example), separate from `disabledItemIDs` which hides one row by ID.
+struct InventorySettings: Codable, Equatable {
+    var hiddenEcosystems: Set<Ecosystem> = []
+
+    static var defaults: InventorySettings { InventorySettings() }
+
+    init() {}
+
+    /// CR#1: a present-but-incomplete `inventory` object (missing `hiddenEcosystems`) must not
+    /// fail the whole decode — it falls back to the same default an absent key would.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hiddenEcosystems = try container.decodeIfPresent(Set<Ecosystem>.self, forKey: .hiddenEcosystems) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hiddenEcosystems
+    }
+}
+
 struct AppDiscoverySettings: Codable, Equatable {
     var enabled: Bool = true
     var developerOnly: Bool = true
@@ -82,6 +107,7 @@ struct UserSettings: Codable {
     var rescanSkillsOnLaunch: Bool = true
     var appDiscovery: AppDiscoverySettings = .defaults
     var skillDiscovery: SkillDiscoverySettings = .defaults
+    var inventory: InventorySettings = .defaults
     var showMenuBarIcon: Bool = true
     var menuBarOnly: Bool = false
     var launchAtLogin: Bool = false
@@ -96,6 +122,58 @@ struct UserSettings: Codable {
     var scheduledCheckMinute: Int = 0
     var autoUpdateScheduledItems: Bool = false
     var showDashboardOnLaunch: Bool = false
+
+    init() {}
+
+    /// CR#1: `inventory` is decoded leniently (`decodeIfPresent(...) ?? .defaults`), because every
+    /// `settings.json` written before this field existed lacks the key entirely. The synthesized
+    /// decoder ignores a property's default value and requires every key present, so without this,
+    /// decoding master's settings.json throws `keyNotFound`, `UserSettingsStore.init` silently
+    /// falls back to `.defaults`, and the very next `save()` overwrites the user's real settings —
+    /// custom items, disabled IDs, the schedule, `hasCompletedSetup` — with fresh defaults. Every
+    /// other field already existed before this PR, so it keeps the old (strict) behavior.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hasCompletedSetup = try container.decode(Bool.self, forKey: .hasCompletedSetup)
+        rootFolder = try container.decode(String.self, forKey: .rootFolder)
+        additionalFolders = try container.decode([String].self, forKey: .additionalFolders)
+        applicationFolders = try container.decode([String].self, forKey: .applicationFolders)
+        customItems = try container.decode([DetectorConfig].self, forKey: .customItems)
+        disabledItemIDs = try container.decode([String].self, forKey: .disabledItemIDs)
+        autoCheckOnLaunch = try container.decode(Bool.self, forKey: .autoCheckOnLaunch)
+        autoUpdateOnLaunch = try container.decode(Bool.self, forKey: .autoUpdateOnLaunch)
+        autoCheckOnWake = try container.decode(Bool.self, forKey: .autoCheckOnWake)
+        rescanReposOnLaunch = try container.decode(Bool.self, forKey: .rescanReposOnLaunch)
+        rescanAppsOnLaunch = try container.decode(Bool.self, forKey: .rescanAppsOnLaunch)
+        rescanSkillsOnLaunch = try container.decode(Bool.self, forKey: .rescanSkillsOnLaunch)
+        appDiscovery = try container.decode(AppDiscoverySettings.self, forKey: .appDiscovery)
+        skillDiscovery = try container.decode(SkillDiscoverySettings.self, forKey: .skillDiscovery)
+        inventory = try container.decodeIfPresent(InventorySettings.self, forKey: .inventory) ?? .defaults
+        showMenuBarIcon = try container.decode(Bool.self, forKey: .showMenuBarIcon)
+        menuBarOnly = try container.decode(Bool.self, forKey: .menuBarOnly)
+        launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
+        repoScan = try container.decode(RepoScanSettings.self, forKey: .repoScan)
+        itemPreferences = try container.decode([String: ItemPreference].self, forKey: .itemPreferences)
+        updateCategoryOrder = try container.decode([String].self, forKey: .updateCategoryOrder)
+        notificationsEnabled = try container.decode(Bool.self, forKey: .notificationsEnabled)
+        confirmBeforeUpdate = try container.decode(Bool.self, forKey: .confirmBeforeUpdate)
+        stashReposBeforeUpdate = try container.decode(Bool.self, forKey: .stashReposBeforeUpdate)
+        scheduledCheckEnabled = try container.decode(Bool.self, forKey: .scheduledCheckEnabled)
+        scheduledCheckHour = try container.decode(Int.self, forKey: .scheduledCheckHour)
+        scheduledCheckMinute = try container.decode(Int.self, forKey: .scheduledCheckMinute)
+        autoUpdateScheduledItems = try container.decode(Bool.self, forKey: .autoUpdateScheduledItems)
+        showDashboardOnLaunch = try container.decode(Bool.self, forKey: .showDashboardOnLaunch)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hasCompletedSetup, rootFolder, additionalFolders, applicationFolders, customItems,
+             disabledItemIDs, autoCheckOnLaunch, autoUpdateOnLaunch, autoCheckOnWake,
+             rescanReposOnLaunch, rescanAppsOnLaunch, rescanSkillsOnLaunch, appDiscovery,
+             skillDiscovery, inventory, showMenuBarIcon, menuBarOnly, launchAtLogin, repoScan,
+             itemPreferences, updateCategoryOrder, notificationsEnabled, confirmBeforeUpdate,
+             stashReposBeforeUpdate, scheduledCheckEnabled, scheduledCheckHour, scheduledCheckMinute,
+             autoUpdateScheduledItems, showDashboardOnLaunch
+    }
 
     func preference(for id: String) -> ItemPreference {
         itemPreferences[id] ?? ItemPreference()

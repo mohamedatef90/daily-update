@@ -16,6 +16,11 @@ struct DetectorConfig: Codable, Identifiable {
     var selfUpdater: String? = nil
     var appcastURL: String? = nil
     var autoUpdates: Bool? = nil
+    /// D2: built fresh by `RowBuilder` every run; never loaded from settings or an import.
+    var inventory: InventoryIdentity? = nil
+    /// `<ecosystem>:<packageID>`, with `@<root>` appended only when two rows would otherwise
+    /// share it. An alternate, more memorable ID a CLI caller can address a discovered row by.
+    var handle: String? = nil
     let detect: DetectRule?
     let versionCommand: String?
     var versionPattern: String? = nil
@@ -34,7 +39,7 @@ struct DetectorConfig: Codable, Identifiable {
     }
 
     var hasTypedEngineFields: Bool {
-        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil
+        command != nil || packages != nil || selfUpdater != nil || appcastURL != nil || autoUpdates != nil || inventory != nil
     }
 
     var requiresReviewBeforeAutomation: Bool {
@@ -54,6 +59,7 @@ struct DetectorConfig: Codable, Identifiable {
             selfUpdater: nil,
             appcastURL: nil,
             autoUpdates: nil,
+            inventory: nil,
             detect: detect,
             versionCommand: versionCommand,
             versionPattern: versionPattern,
@@ -75,6 +81,23 @@ struct PackageIdentifiers: Codable, Hashable {
     var cargo: String?
     var gem: String?
     var masAdamID: String?
+
+    /// §1 D6: "by package" catalog join — `packages.<eco>` compared against a discovery record's
+    /// `packageID`. Ecosystems the schema has no field for yet (pnpm, yarn, bun, …) never join
+    /// this way, only by command.
+    func identifier(for ecosystem: Ecosystem) -> String? {
+        switch ecosystem {
+        case .brew: return brew
+        case .cask: return brewCask
+        case .npm: return npm
+        case .pipx: return pipx
+        case .uv: return uv
+        case .cargo: return cargo
+        case .gem: return gem
+        case .app: return masAdamID
+        default: return nil
+        }
+    }
 }
 
 struct DetectRule: Codable {
