@@ -1203,8 +1203,9 @@ enum CommandShapeClassifier {
     }
 
     /// `brew --prefix ruby` names a formula: these options are brew commands, so the verb is theirs.
+    /// Not `-v`: Homebrew moves a leading `-v` to the end (`brew.sh`), so `brew -v ruby` is `brew ruby -v`.
     private static let brewOptionCommands: Set<String> = [
-        "--prefix", "--cellar", "--cache", "--caskroom", "--repository", "--repo", "--env", "--config", "--version", "-v",
+        "--prefix", "--cellar", "--cache", "--caskroom", "--repository", "--repo", "--env", "--config", "--version",
     ]
 
     /// `brew ruby`, `brew irb` and `brew sh` run Ruby or a shell with Homebrew's environment,

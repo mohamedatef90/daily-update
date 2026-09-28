@@ -171,6 +171,11 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("X12 brew sh", "brew sh", [.unparseable], true),
             ("X12 brew flag before sh", "brew -d sh", [.unparseable], true),
             ("X12 absolute brew", "/opt/homebrew/bin/brew ruby x.rb", [.unparseable], true),
+            // Homebrew moves a leading `-v` to the end (`brew.sh`), so `brew -v ruby` runs `brew ruby -v`.
+            ("X12 brew -v ruby", "brew -v ruby -e 'system(\"id\")'", [.unparseable], true),
+            ("X12 brew -v irb", "brew -v irb", [.unparseable], true),
+            ("X12 brew -v sh", "brew -v sh", [.unparseable], true),
+            ("guard brew -v", "brew -v", [], false),
             ("guard brew info ruby", "brew info ruby", [], false),
             ("guard brew upgrade ruby", "brew upgrade ruby", [], true),
             ("guard brew install irb", "brew install irb", [], true),
