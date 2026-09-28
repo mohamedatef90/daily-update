@@ -6,5 +6,6 @@ import Foundation
 enum DiscoveryEnumeratorRegistry {
     static let all: [Enumerator] = [
         UvToolEnumerator(),
+        PipxEnumerator(),
     ]
 }
