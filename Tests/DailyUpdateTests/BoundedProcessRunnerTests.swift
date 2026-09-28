@@ -55,19 +55,83 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         XCTAssertEqual(outcome.evidence.stderr, "boom?")
     }
 
+    /// Polls until `pid` no longer exists (reaped), up to `limit`.
+    private func waitUntilGone(_ pid: pid_t, limit: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(limit)
+        while Date() < deadline {
+            if kill(pid, 0) == -1, errno == ESRCH { return true }
+            usleep(20_000)
+        }
+        return false
+    }
+
+    private func readPID(_ path: String) throws -> pid_t {
+        let text = try String(contentsOfFile: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        return try XCTUnwrap(pid_t(text))
+    }
+
     /// E3: a stub that ignores SIGTERM and sleeps ends up `timedOut`, then SIGKILL, and the whole
-    /// call still returns within timeout + 3s.
+    /// call still returns within timeout + 3s. CR FU3: the SIGKILL is asserted — the stub itself is
+    /// gone afterwards, which SIGTERM alone can't do because the stub ignores it.
+    ///
+    /// P2-2 flake note: in a parallel run on 2026-09-27 this test measured 1039.96 s against its
+    /// 4 s bound while the Mac was in Sleep/DarkWake cycles (`pmset -g log`). The wall-clock bounds
+    /// in this file can't hold while the machine sleeps; the assertions below don't depend on it.
     func testIgnoredSIGTERMEscalatesToSIGKILL() async throws {
-        let stub = try makeStub("#!/bin/sh\ntrap '' TERM\nsleep 30\n")
+        let pidFile = FileManager.default.temporaryDirectory.appendingPathComponent("bpr-pid-\(UUID().uuidString)").path
+        let stub = try makeStub("#!/bin/sh\ntrap '' TERM\necho $$ > '\(pidFile)'\nsleep 30\n")
         let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
             executable: stub, arguments: [], environment: .exactly([:]), timeout: 1, maxStdoutBytes: 1024
         ))
+        // Generous next to the 1 s timeout + 2 s hard stop: what matters is "not the stub's 30 s".
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertLessThan(elapsed, 4.0)
+        XCTAssertLessThan(elapsed, 15.0)
         if case .timedOut = outcome.evidence.termination {} else {
             XCTFail("expected timedOut, got \(outcome.evidence.termination)")
         }
+        XCTAssertTrue(waitUntilGone(try readPID(pidFile)), "the stub ignores SIGTERM, so only SIGKILL can have ended it")
+    }
+
+    /// Security FU5 / CR FU2: past the stdout cap, a child that ignores SIGTERM still gets SIGKILL.
+    func testStdoutCapEscalatesToSIGKILL() async throws {
+        let pidFile = FileManager.default.temporaryDirectory.appendingPathComponent("bpr-pid-\(UUID().uuidString)").path
+        let stub = try makeStub("#!/bin/sh\ntrap '' TERM\necho $$ > '\(pidFile)'\nwhile :; do echo out; done\n")
+        let start = Date()
+        let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
+            executable: stub, arguments: [], environment: .exactly([:]), timeout: 20, maxStdoutBytes: 1024
+        ))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15.0)
+        XCTAssertEqual(outcome.evidence.termination, .outputCapExceeded)
+        XCTAssertEqual(outcome.stdout.count, 1024)
+        XCTAssertTrue(waitUntilGone(try readPID(pidFile)), "the stub ignores SIGTERM, so only SIGKILL can have ended it")
+    }
+
+    /// CR FU2: output of exactly the cap isn't "over the cap".
+    func testStdoutOfExactlyTheCapIsKeptWhole() async throws {
+        let stub = try makeStub("#!/bin/sh\nhead -c 1024 /dev/zero | tr '\\0' 'a'\n")
+        let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
+            executable: stub, arguments: [], environment: .exactly(["PATH": "/usr/bin:/bin"]), timeout: 5, maxStdoutBytes: 1024
+        ))
+        XCTAssertEqual(outcome.evidence.termination, .exited(0))
+        XCTAssertEqual(outcome.stdout, Data(repeating: UInt8(ascii: "a"), count: 1024))
+    }
+
+    /// Security re-review FU3: `stderrTruncated` means bytes were dropped, not "reached 16 KB".
+    func testStderrTruncatedOnlyWhenBytesWereDropped() async throws {
+        let exact = try makeStub("#!/bin/sh\nhead -c 16384 /dev/zero | tr '\\0' 'e' 1>&2\n")
+        let exactOutcome = await BoundedProcessRunner.run(BoundedProcessSpec(
+            executable: exact, arguments: [], environment: .exactly(["PATH": "/usr/bin:/bin"]), timeout: 5, maxStdoutBytes: 1024
+        ))
+        XCTAssertEqual(exactOutcome.evidence.stderr.utf8.count, 16384)
+        XCTAssertFalse(exactOutcome.evidence.stderrTruncated)
+
+        let over = try makeStub("#!/bin/sh\nhead -c 16385 /dev/zero | tr '\\0' 'e' 1>&2\n")
+        let overOutcome = await BoundedProcessRunner.run(BoundedProcessSpec(
+            executable: over, arguments: [], environment: .exactly(["PATH": "/usr/bin:/bin"]), timeout: 5, maxStdoutBytes: 1024
+        ))
+        XCTAssertEqual(overOutcome.evidence.stderr.utf8.count, 16384)
+        XCTAssertTrue(overOutcome.evidence.stderrTruncated)
     }
 
     /// E4: a stub that raises SIGSEGV on itself reports `signaled(11)`.
@@ -83,13 +147,18 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
     /// then exits 3 must still be drained past the 16 KB cap and report its real exit status.
     /// Before the fix, `drainOnce` stopped reading once the cap was hit, so the child blocked on
     /// a full stderr pipe until the timeout and its `exit 3` was lost behind `timedOut`.
+    ///
+    /// P2-2 flake fix: this used to also require a return in under 3 s against a 5 s timeout. That
+    /// bound failed once (3.26 s) in a full run while the machine was under load. The proof that
+    /// the drain doesn't block is `.exited(3)` — a blocked child ends as `.timedOut` — so the
+    /// timeout now has headroom and the time bound is just "before the timeout fired".
     func testStderrTruncationAndOutputCap() async throws {
         let stub = try makeStub("#!/bin/sh\nyes err | head -c 1000000 1>&2\nexit 3\n")
         let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
-            executable: stub, arguments: [], environment: .exactly([:]), timeout: 5, maxStdoutBytes: 1024
+            executable: stub, arguments: [], environment: .exactly([:]), timeout: 15, maxStdoutBytes: 1024
         ))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 3.0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15.0)
         XCTAssertEqual(outcome.evidence.termination, .exited(3))
         XCTAssertTrue(outcome.evidence.stderrTruncated)
         XCTAssertEqual(outcome.evidence.stderr.utf8.count, 16 * 1024)
@@ -104,15 +173,19 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         XCTAssertLessThanOrEqual(outcome.stdout.count, 1024)
     }
 
+    /// P2-2 flake fix: this ran with a 1 s timeout, and failed once in a full run under load
+    /// (`timedOut(afterMs: 1014)`: the stub itself took over a second to exit). What it proves is
+    /// that the runner returns without waiting for the grandchild's 30 s EOF; a 10 s timeout keeps
+    /// that proof (waiting for EOF would end in `.timedOut` at 12 s) without the tight margin.
     func testGrandchildHoldingStdoutOpenNeverBlocksReturn() async throws {
         // The direct child exits immediately, but redirects stdout into a backgrounded `sleep`
         // subshell that inherits the write end of the pipe and keeps it open.
         let stub = try makeStub("#!/bin/sh\n(sleep 30 >&1 &)\nexit 0\n")
         let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
-            executable: stub, arguments: [], environment: .exactly([:]), timeout: 1, maxStdoutBytes: 1024
+            executable: stub, arguments: [], environment: .exactly([:]), timeout: 10, maxStdoutBytes: 1024
         ))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 4.0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10.0)
         XCTAssertEqual(outcome.evidence.termination, .exited(0))
     }
 

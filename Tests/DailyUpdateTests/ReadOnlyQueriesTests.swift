@@ -43,8 +43,9 @@ final class ReadOnlyQueriesTests: HermeticTestCase {
                 stdout: Data("{}".utf8)
             )
         })
-        XCTAssertTrue(capturedArguments.contains("antigravity-ide"))
-        XCTAssertFalse(capturedArguments.contains("-rf"))
-        XCTAssertEqual(capturedArguments.firstIndex(of: "--").map { $0 < capturedArguments.firstIndex(of: "antigravity-ide")! }, true)
+        // CR FU3: the whole argv, from `-p` through `--` and the one surviving token.
+        XCTAssertEqual(capturedArguments, [
+            "-p", ReadOnlyQueries.sandboxProfile, "/opt/homebrew/bin/brew", "info", "--json=v2", "--cask", "--", "antigravity-ide",
+        ])
     }
 }

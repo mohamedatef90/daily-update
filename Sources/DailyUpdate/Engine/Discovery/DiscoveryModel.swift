@@ -20,6 +20,9 @@ enum Confidence: String, Codable, Sendable {
 
 enum PackageFlag: String, Codable, Sendable {
     case onRequest, dependency, linked, pinned, kegOnly, bundledWithRuntime
+    /// §7.2: the record's root (or an ancestor) fails `PathTrust.isTrustedDirectory`. The row is
+    /// Blocked(`untrustedPath`) and never gets a `CommandSpec`.
+    case untrustedRoot
 }
 
 struct Evidence: Hashable, Codable, Sendable {
@@ -109,6 +112,9 @@ struct InstalledPackage: Hashable, Sendable {
     let packageDirectory: String
     /// Canonical; each proven by a manifest bin map or by root containment.
     let executables: [String]
+    /// The names the login PATH invokes this package by (`gh`, `tsc`, `node`), one per entry in
+    /// `executables` where known. R2 searches the login PATH for these (P2-2).
+    let commands: [String]
     let owner: ResolvedOwner
     let flags: Set<PackageFlag>
     let evidence: [Evidence]
@@ -127,6 +133,7 @@ struct InstalledPackage: Hashable, Sendable {
         root: InstallRoot,
         packageDirectory: String,
         executables: [String] = [],
+        commands: [String] = [],
         owner: ResolvedOwner,
         flags: Set<PackageFlag> = [],
         evidence: [Evidence] = [],
@@ -140,6 +147,7 @@ struct InstalledPackage: Hashable, Sendable {
         self.root = root
         self.packageDirectory = packageDirectory
         self.executables = executables
+        self.commands = commands
         self.owner = owner
         self.flags = flags
         self.evidence = evidence
@@ -208,19 +216,28 @@ struct EnumerationResult: Sendable {
     let records: [InstalledPackage]
     let status: EnumerationStatus
     let elapsed: Duration
+    /// §1: only the Homebrew enumerator sets this. It's the per-run cache `StrategyPlanner` reads
+    /// latest versions from, so a check starts no per-item `brew info` (P2-2 task 3).
+    let brewInfo: BrewInfoProvider?
 
     init(
         ecosystem: Ecosystem,
         roots: [InstallRoot] = [],
         records: [InstalledPackage] = [],
         status: EnumerationStatus,
-        elapsed: Duration = .zero
+        elapsed: Duration = .zero,
+        brewInfo: BrewInfoProvider? = nil
     ) {
         self.ecosystem = ecosystem
         self.roots = roots
         self.records = records
         self.status = status
         self.elapsed = elapsed
+        self.brewInfo = brewInfo
+    }
+
+    func withElapsed(_ elapsed: Duration) -> EnumerationResult {
+        EnumerationResult(ecosystem: ecosystem, roots: roots, records: records, status: status, elapsed: elapsed, brewInfo: brewInfo)
     }
 }
 

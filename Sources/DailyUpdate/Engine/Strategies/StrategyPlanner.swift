@@ -12,6 +12,32 @@ struct StrategyPlan {
 
 enum StrategyPlanner {
     typealias ProcessRunner = (CommandSpec) async -> ShellRunner.Result
+    typealias BoundedRunner = (BoundedProcessSpec) async -> QueryOutcome
+
+    /// P2-2: what a plan may consult besides the filesystem, injected the same way `fetchRelease`
+    /// is so tests never start a real brew or npm.
+    /// - `brewInfo`: the per-run Homebrew cache discovery built (§1). With it, a brew check starts
+    ///   no per-item `brew info`; without it (Phase 1 callers, or a check before discovery ran),
+    ///   the strategy asks brew once per plan, as before.
+    /// - `runProcess`: the per-item fallback calls (`brew info <name>`, Phase 1's `npm view`).
+    /// - `runBounded`: RC5's provenance `npm view`, which needs the 4 MB stdout cap.
+    struct Services {
+        var brewInfo: BrewInfoProvider?
+        var runProcess: ProcessRunner
+        var runBounded: BoundedRunner
+
+        static let live = Services(
+            brewInfo: nil,
+            runProcess: { spec in await ShellRunner.run(spec, timeout: 30) },
+            runBounded: { spec in await BoundedProcessRunner.run(spec) }
+        )
+
+        static func live(brewInfo: BrewInfoProvider?) -> Services {
+            var services = Services.live
+            services.brewInfo = brewInfo
+            return services
+        }
+    }
 
     /// `/usr/bin/curl` is SIP-protected, so a `curl` planted earlier on PATH
     /// never runs. `-q` must come first to skip `~/.curlrc`, and
@@ -65,7 +91,8 @@ enum StrategyPlanner {
         currentVersion: String?,
         resolve: (InventoryIdentity) async -> InstalledPackage?,
         layout: EcosystemLayout = .live(),
-        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher,
+        services: Services = .live
     ) async -> StrategyPlan? {
         guard config.source == .inventory, let identity = config.inventory else { return nil }
 
@@ -92,7 +119,25 @@ enum StrategyPlanner {
             active: OwnerCandidate(commandPath: executable, resolvedPath: executable, owner: record.owner),
             competing: []
         )
-        return await checkPlan(config: config, currentVersion: currentVersion, resolution: resolution, layout: layout, fetchRelease: fetchRelease)
+        // §7.2: a record under an untrusted root never gets a command.
+        if record.flags.contains(.untrustedRoot) {
+            return StrategyPlan(
+                ownerResolution: resolution, currentVersion: record.versionRaw, latestVersion: nil, updateCommandSpec: nil,
+                gateReasons: [], blockReason: .untrustedPath,
+                failureMessage: "\(record.root.label) can be written by other users"
+            )
+        }
+        // D10: an `npm link` is updated where it was linked from, never by `npm install -g`.
+        if record.flags.contains(.linked) {
+            let source = record.evidence.first { $0.kind == "npm-link" }?.path ?? record.packageDirectory
+            return StrategyPlan(
+                ownerResolution: resolution, currentVersion: record.versionRaw, latestVersion: nil, updateCommandSpec: nil,
+                gateReasons: [], blockReason: .manualOnly,
+                failureMessage: "Linked from \(PackageNameRules.sanitize(source))"
+            )
+        }
+        return await checkPlan(config: config, currentVersion: currentVersion, resolution: resolution, layout: layout,
+            fetchRelease: fetchRelease, services: services)
     }
 
     static func checkPlan(
@@ -100,7 +145,8 @@ enum StrategyPlanner {
         currentVersion: String?,
         pathLookup: CommandPathLookup? = nil,
         layout: EcosystemLayout = .live(),
-        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher,
+        services: Services = .live
     ) async -> StrategyPlan? {
         guard usesTypedEngine(config: config) else { return nil }
         guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
@@ -122,7 +168,8 @@ enum StrategyPlanner {
             currentVersion: currentVersion,
             resolution: resolution,
             layout: layout,
-            fetchRelease: fetchRelease
+            fetchRelease: fetchRelease,
+            services: services
         )
     }
 
@@ -131,9 +178,10 @@ enum StrategyPlanner {
         currentVersion: String?,
         resolution: OwnerResolution,
         layout: EcosystemLayout = .live(),
-        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher,
+        services: Services = .live
     ) async -> StrategyPlan {
-        switch prepare(config: config, resolution: resolution, layout: layout, fetchRelease: fetchRelease) {
+        switch prepare(config: config, resolution: resolution, layout: layout, fetchRelease: fetchRelease, services: services) {
         case .blocked(let reason, let message):
             return StrategyPlan(
                 ownerResolution: resolution,
@@ -238,12 +286,12 @@ enum StrategyPlanner {
     }
 
     static func currentVersion(
-        config: DetectorConfig, pathLookup: CommandPathLookup?
+        config: DetectorConfig, pathLookup: CommandPathLookup?, services: Services = .live
     ) async -> (version: String?, owner: OwnerCandidate?) {
         guard let name = config.command else { return (nil, nil) }
         let layout = pathLookup?.layout ?? .live()
         let resolution = await OwnerResolver.resolve(commandName: name, lookup: pathLookup, layout: layout)
-        guard case .ready(let strategy) = prepare(config: config, resolution: resolution, layout: layout) else { return (nil, nil) }
+        guard case .ready(let strategy) = prepare(config: config, resolution: resolution, layout: layout, services: services) else { return (nil, nil) }
         return (await strategy.currentVersion(), resolution.active)
     }
 
@@ -278,7 +326,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         targetVersion: String?,
         pathLookup: CommandPathLookup? = nil,
-        layout: EcosystemLayout = .live()
+        layout: EcosystemLayout = .live(),
+        services: Services = .live
     ) async -> (commandSpec: CommandSpec, fingerprint: String)? {
         guard usesTypedEngine(config: config) else { return nil }
         guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
@@ -287,7 +336,7 @@ enum StrategyPlanner {
 
         let layout = pathLookup?.layout ?? layout
         let resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
-        switch prepare(config: config, resolution: resolution, layout: layout) {
+        switch prepare(config: config, resolution: resolution, layout: layout, services: services) {
         case .ready(let strategy):
             guard let spec = makeUpdateSpec(from: strategy, targetVersion: targetVersion, workingDirectory: config.workingDirectory),
                   spec.isSingle,
@@ -304,9 +353,10 @@ enum StrategyPlanner {
         config: DetectorConfig,
         resolution: OwnerResolution,
         targetVersion: String?,
-        layout: EcosystemLayout = .live()
+        layout: EcosystemLayout = .live(),
+        services: Services = .live
     ) -> CommandSpec? {
-        switch prepare(config: config, resolution: resolution, layout: layout) {
+        switch prepare(config: config, resolution: resolution, layout: layout, services: services) {
         case .ready(let strategy):
             let spec = makeUpdateSpec(from: strategy, targetVersion: targetVersion, workingDirectory: config.workingDirectory)
             return spec?.isSingle == true ? spec : nil
@@ -334,7 +384,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         resolution: OwnerResolution,
         layout: EcosystemLayout,
-        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
+        fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher,
+        services: Services = .live
     ) -> PreparationOutcome {
         if let error = resolution.resolveError {
             switch error {
@@ -354,7 +405,7 @@ enum StrategyPlanner {
             return .blocked(.ownerMismatch, "Resolved owner does not match catalog package identity")
         }
 
-        switch makeStrategy(config: config, active: active, layout: layout, fetchRelease: fetchRelease) {
+        switch makeStrategy(config: config, active: active, layout: layout, fetchRelease: fetchRelease, services: services) {
         case .strategy(let strategy):
             return .ready(strategy)
         case .unknownOwner(let message):
@@ -370,7 +421,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         active: OwnerCandidate,
         layout: EcosystemLayout,
-        fetchRelease: @escaping ReleaseFetcher
+        fetchRelease: @escaping ReleaseFetcher,
+        services: Services
     ) -> StrategyBuildOutcome {
         switch active.owner {
         case .brewFormula(let formula):
@@ -385,9 +437,19 @@ enum StrategyPlanner {
             guard PathTrust.isTrustedExecutable(brewExecutable) else {
                 return .unknownOwner("Untrusted brew executable path")
             }
+            // F7: the discovery snapshot knows the tap; a formula outside homebrew/core upgrades by
+            // its full name. Either name must pass §7.4 before it can reach argv.
+            let provided = services.brewInfo?.formula(resolvedFormula, brewExecutable: brewExecutable)
+            guard let upgradeToken = provided?.upgradeToken ??
+                    (PackageNameRules.isValidBrewFormulaName(resolvedFormula) ? resolvedFormula : nil) else {
+                return .unknownOwner("Formula name isn't a valid Homebrew name")
+            }
             return .strategy(BrewFormulaStrategy(
                 formula: resolvedFormula,
-                brewExecutable: brewExecutable
+                upgradeToken: upgradeToken,
+                brewExecutable: brewExecutable,
+                provided: provided,
+                runProcess: services.runProcess
             ))
         case .brewCask(let token):
             let resolvedToken = config.packages?.brewCask ?? token
@@ -401,10 +463,18 @@ enum StrategyPlanner {
             guard PathTrust.isTrustedExecutable(brewExecutable) else {
                 return .unknownOwner("Untrusted brew executable path")
             }
+            let provided = services.brewInfo?.cask(resolvedToken, brewExecutable: brewExecutable)
+            guard let upgradeToken = provided?.upgradeToken ??
+                    (PackageNameRules.isValidCaskToken(resolvedToken) ? resolvedToken : nil) else {
+                return .unknownOwner("Cask token isn't a valid Homebrew token")
+            }
             return .strategy(BrewCaskStrategy(
                 token: resolvedToken,
+                upgradeToken: upgradeToken,
                 brewExecutable: brewExecutable,
-                resolvedAppPath: active.resolvedPath
+                resolvedAppPath: active.resolvedPath,
+                provided: provided,
+                runProcess: services.runProcess
             ))
         case .npm(let prefix, let package):
             let resolvedPackage = config.packages?.npm ?? package
@@ -412,10 +482,15 @@ enum StrategyPlanner {
             guard PathTrust.isTrustedExecutable(npmExecutable) else {
                 return .unknownOwner("Untrusted npm executable path")
             }
+            // RC5: a discovered package the catalog doesn't vouch for (no `packages.npm`) must
+            // prove it came from the registry before it may be updated from it.
             return .strategy(NpmPackageStrategy(
                 package: resolvedPackage,
                 prefix: prefix,
-                npmExecutable: npmExecutable
+                npmExecutable: npmExecutable,
+                checksProvenance: config.source == .inventory && config.packages?.npm == nil,
+                runProcess: services.runProcess,
+                runBounded: services.runBounded
             ))
         case .nativeInstaller(let installer):
             // The catalog names the one self-updater it trusts for this item.
@@ -606,12 +681,21 @@ private final class BrewFormulaStrategy: Strategy {
     private var cachedInfo: BrewFormulaInfo?
     private var loadedInfo = false
 
-    init(formula: String, brewExecutable: String) {
+    init(formula: String, upgradeToken: String, brewExecutable: String, provided: BrewFormulaRecord?,
+         runProcess: @escaping StrategyPlanner.ProcessRunner) {
         self.formula = formula
+        self.upgradeToken = upgradeToken
         self.brewExecutable = brewExecutable
+        self.provided = provided
+        self.runProcess = runProcess
     }
     let formula: String
+    /// F7: `formula`, or the tap-qualified `full_name` for a formula outside homebrew/core.
+    let upgradeToken: String
     let brewExecutable: String
+    /// P2-2: this formula's entry in the discovery snapshot, when one was taken.
+    let provided: BrewFormulaRecord?
+    let runProcess: StrategyPlanner.ProcessRunner
     let requiresLatestVersion = true
     let requiresTargetVersion = false
 
@@ -641,18 +725,27 @@ private final class BrewFormulaStrategy: Strategy {
     }
 
     func updateCommand(targetVersion: String?) -> CommandSpec? {
-        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--formula", formula])
+        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--formula", upgradeToken])
     }
 
+    /// §1: the snapshot already holds `versions.stable`, `revision`, `pinned` and `linked_keg`, so
+    /// with one this starts no process. The filesystem fallback has no latest version; then, as
+    /// in Phase 1, brew is asked once per plan.
     private func info() async -> BrewFormulaInfo? {
         if loadedInfo { return cachedInfo }
         loadedInfo = true
-        let result = await ShellRunner.run(
-            CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", formula]),
-            timeout: 30
-        )
-        guard result.succeeded else { return nil }
         let prefix = URL(fileURLWithPath: brewExecutable).deletingLastPathComponent().deletingLastPathComponent().path
+        if let provided, let latest = provided.latestVersion {
+            cachedInfo = BrewFormulaInfo(
+                latestVersion: latest,
+                linkedVersion: provided.linkedVersion,
+                linkedCellarPath: provided.linkedVersion.map { "\(prefix)/Cellar/\(provided.name)/\($0)" },
+                pinned: provided.pinned
+            )
+            return cachedInfo
+        }
+        let result = await runProcess(CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", formula]))
+        guard result.succeeded else { return nil }
         cachedInfo = StrategyPlanner.parseBrewFormulaInfo(from: result.stdout, cellar: "\(prefix)/Cellar")
         return cachedInfo
     }
@@ -671,14 +764,22 @@ private final class BrewCaskStrategy: Strategy {
     private var cachedInfo: BrewCaskInfo?
     private var loadedInfo = false
 
-    init(token: String, brewExecutable: String, resolvedAppPath: String) {
+    init(token: String, upgradeToken: String, brewExecutable: String, resolvedAppPath: String,
+         provided: BrewCaskRecord?, runProcess: @escaping StrategyPlanner.ProcessRunner) {
         self.token = token
+        self.upgradeToken = upgradeToken
         self.brewExecutable = brewExecutable
         self.resolvedAppPath = resolvedAppPath
+        self.provided = provided
+        self.runProcess = runProcess
     }
     let token: String
+    /// F7: `token`, or the `full_token` for a cask outside homebrew/cask.
+    let upgradeToken: String
     let brewExecutable: String
     let resolvedAppPath: String
+    let provided: BrewCaskRecord?
+    let runProcess: StrategyPlanner.ProcessRunner
     let requiresLatestVersion = true
     let requiresTargetVersion = false
 
@@ -705,16 +806,17 @@ private final class BrewCaskStrategy: Strategy {
     }
 
     func updateCommand(targetVersion: String?) -> CommandSpec? {
-        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--cask", token])
+        CommandSpec(executablePath: brewExecutable, arguments: ["upgrade", "--cask", upgradeToken])
     }
 
     private func info() async -> BrewCaskInfo? {
         if loadedInfo { return cachedInfo }
         loadedInfo = true
-        let result = await ShellRunner.run(
-            CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", "--cask", token]),
-            timeout: 30
-        )
+        if let provided, let latest = provided.latestVersion {
+            cachedInfo = BrewCaskInfo(version: latest, autoUpdates: provided.autoUpdates)
+            return cachedInfo
+        }
+        let result = await runProcess(CommandSpec(executablePath: brewExecutable, arguments: ["info", "--json=v2", "--cask", token]))
         guard result.succeeded else { return nil }
         cachedInfo = StrategyPlanner.parseBrewCaskInfo(from: result.stdout)
         return cachedInfo
@@ -730,31 +832,66 @@ private final class BrewCaskStrategy: Strategy {
     }
 }
 
+/// RC5's pure pieces, internal so `NpmProvenanceTests` can check them directly.
+enum NpmPackageStrategyShape {
+    /// Amendment 1 RC5: exactly `<P>/bin/npm view --json --global --prefix <P> <name> versions
+    /// dist-tags`. `--global` makes npm skip a project `.npmrc` in the working directory, the way
+    /// `install -g` does. The name already passed the npm regex, so it can't be read as a flag.
+    static func provenanceArguments(prefix: String, package: String) -> [String] {
+        ["view", "--json", "--global", "--prefix", prefix, package, "versions", "dist-tags"]
+    }
+
+    /// `https://<host>/<name>/-/<basename>-<version>.tgz`, where `<basename>` drops the scope.
+    static func isRegistryTarball(_ resolved: String, package: String, version: String) -> Bool {
+        let basename = package.split(separator: "/").last.map(String.init) ?? package
+        let suffix = "/\(package)/-/\(basename)-\(version).tgz"
+        guard resolved.hasPrefix("https://"), resolved.hasSuffix(suffix) else { return false }
+        let host = resolved.dropFirst("https://".count).dropLast(suffix.count)
+        return !host.isEmpty && host.range(of: #"^[A-Za-z0-9.-]+(:[0-9]{1,5})?$"#, options: .regularExpression) != nil
+    }
+
+}
+
 private struct NpmPackageStrategy: Strategy {
     let package: String
     let prefix: String
     let npmExecutable: String
+    /// RC5: on for inventory rows not joined to a catalog `packages.npm`.
+    let checksProvenance: Bool
+    let runProcess: StrategyPlanner.ProcessRunner
+    let runBounded: StrategyPlanner.BoundedRunner
     let requiresLatestVersion = true
     let requiresTargetVersion = true
 
-    func currentVersion() async -> String? {
+    static let notOnRegistryMessage = "Installed version isn't on the registry (git or tarball install?)"
+    static let provenanceStdoutCap = 4 * 1024 * 1024
+
+    /// The update's own environment: `ShellRunner` starts from this process's environment with
+    /// `PATH=<P>/bin:<default>`, so the provenance check sees the same npmrc and registry.
+    private var environmentPATH: String { "\(prefix)/bin:\(ShellRunner.defaultPath)" }
+
+    private var manifest: [String: Any]? {
         let packageJSON = "\(prefix)/lib/node_modules/\(package)/package.json"
-        guard let data = FileManager.default.contents(atPath: packageJSON),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = payload["version"] as? String else {
-            return nil
-        }
-        return version.nilIfEmpty
+        guard let data = FileManager.default.contents(atPath: packageJSON) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    func currentVersion() async -> String? {
+        (manifest?["version"] as? String)?.nilIfEmpty
     }
 
     func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
-        let result = await ShellRunner.run(
+        checksProvenance ? await provenanceCheckedLatest(installed: currentVersion) : await catalogLatest()
+    }
+
+    /// Phase 1, unchanged, for catalog-joined packages (`codex-cli`, `gemini-cli`, …; N6).
+    private func catalogLatest() async -> LatestVersionOutcome {
+        let result = await runProcess(
             CommandSpec(
                 executablePath: npmExecutable,
                 arguments: ["view", "\(package)@latest", "version", "--json"],
-                environment: ["PATH": "\(prefix)/bin:\(ShellRunner.defaultPath)"]
-            ),
-            timeout: 30
+                environment: ["PATH": environmentPATH]
+            )
         )
         guard result.succeeded else { return LatestVersionOutcome(latestVersion: nil) }
 
@@ -777,6 +914,57 @@ private struct NpmPackageStrategy: Strategy {
         return LatestVersionOutcome(latestVersion: candidate)
     }
 
+    /// RC5 (N1–N5). Update Available needs all of: `_resolved` absent (with no `_from`) or
+    /// registry-shaped; the installed version published under this name; and a strict-semver
+    /// `dist-tags.latest`. A failed call is Check Failed, never Current or Update Available.
+    private func provenanceCheckedLatest(installed: String?) async -> LatestVersionOutcome {
+        guard let installed else { return LatestVersionOutcome(latestVersion: nil) }
+        let manifest = self.manifest ?? [:]
+        let resolved = manifest["_resolved"] as? String
+        if let resolved {
+            guard NpmPackageStrategyShape.isRegistryTarball(resolved, package: package, version: installed) else {
+                return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+            }
+        } else if manifest["_from"] != nil {
+            return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+        }
+
+        let outcome = await runBounded(BoundedProcessSpec(
+            executable: npmExecutable,
+            arguments: NpmPackageStrategyShape.provenanceArguments(prefix: prefix, package: package),
+            environment: .inherited(overridingPATH: environmentPATH),
+            timeout: 30,
+            maxStdoutBytes: Self.provenanceStdoutCap
+        ))
+        guard case .exited(0) = outcome.evidence.termination else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm view failed: \(Self.describe(outcome.evidence))")
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: outcome.stdout) as? [String: Any] else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm view returned JSON that couldn't be read")
+        }
+        // N5: a package with one published version returns `versions` as a string.
+        let versions: [String] = (root["versions"] as? [String]) ?? ((root["versions"] as? String).map { [$0] } ?? [])
+        guard versions.contains(installed) else {
+            return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+        }
+        guard let latest = (root["dist-tags"] as? [String: Any])?["latest"] as? String, StrategyPlanner.isStrictSemVer(latest) else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm's latest dist-tag is missing or isn't strict semver")
+        }
+        return LatestVersionOutcome(latestVersion: latest)
+    }
+
+    private static func describe(_ evidence: ProcessEvidence) -> String {
+        switch evidence.termination {
+        case .exited(let code):
+            let detail = evidence.stderr.split(separator: "?").first.map(String.init) ?? ""
+            return detail.isEmpty ? "exit \(code)" : "exit \(code): \(PackageNameRules.sanitize(detail, maxLength: 160))"
+        case .signaled(let signal): return "killed by signal \(signal)"
+        case .timedOut: return "timed out"
+        case .outputCapExceeded: return "output too large"
+        case .launchFailed(let reason): return reason
+        }
+    }
+
     func updateCommand(targetVersion: String?) -> CommandSpec? {
         guard let targetVersion = targetVersion?.nilIfEmpty, StrategyPlanner.isStrictSemVer(targetVersion) else {
             return nil
@@ -784,7 +972,7 @@ private struct NpmPackageStrategy: Strategy {
         return CommandSpec(
             executablePath: npmExecutable,
             arguments: ["install", "-g", "--prefix", prefix, "\(package)@\(targetVersion)"],
-            environment: ["PATH": "\(prefix)/bin:\(ShellRunner.defaultPath)"]
+            environment: ["PATH": environmentPATH]
         )
     }
 }

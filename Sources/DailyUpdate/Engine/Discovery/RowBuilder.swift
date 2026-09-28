@@ -1,9 +1,9 @@
 import Foundation
 
 /// ADR-002 §1's row assembly: `RowBuilder.build` is deterministic — the same input always gives
-/// the same output (D18) — and pure: it never touches the filesystem itself beyond the injected
-/// `ReadOnlyFileSystem`, used only to resolve a catalog `command` to a `FileID` for the "join by
-/// command" step.
+/// the same output (D18) — and pure: it touches the filesystem only through the injected
+/// `ReadOnlyFileSystem`, to resolve PATH candidates and catalog commands to `FileID`s (R2 and the
+/// "join by command" step).
 enum RowBuilder {
     struct Input: Sendable {
         let results: [EnumerationResult]
@@ -22,10 +22,38 @@ enum RowBuilder {
         }
     }
 
-    private struct PackageKey: Hashable {
-        let ecosystem: Ecosystem
-        let packageID: String
-        var sortKey: String { "\(ecosystem.rawValue)\u{0}\(packageID)" }
+    /// R2: a record the login PATH shadows. `path` is this record's own (later) PATH candidate
+    /// for `command`.
+    struct CompetingInstall: Hashable, Sendable {
+        let record: InstalledPackage
+        let command: String
+        let path: String
+    }
+
+    /// R2 where what runs isn't any record: the first PATH candidate for `command` is a file no
+    /// enumerator owns (a native installer, a catalog-only tool). P2-5 attaches these to the
+    /// catalog row for that command (D5: `claude` native, npm `claude-code` competing).
+    struct ShadowedByUnownedFile: Hashable, Sendable {
+        let record: InstalledPackage
+        let command: String
+        let path: String
+        let activePath: String
+    }
+
+    /// R3: a record in a root that isn't on the login PATH (another nvm/fnm version). `rowID` is
+    /// the active version-manager row it's listed under, when there is one (D4: `clawdbot` under
+    /// `node`); otherwise it's snapshot-level.
+    struct InactiveInstall: Hashable, Sendable {
+        let record: InstalledPackage
+        let rowID: String?
+    }
+
+    struct Output: Sendable {
+        let rows: [DetectorConfig]
+        /// Row ID → the records it shadows (R2).
+        let competing: [String: [CompetingInstall]]
+        let shadowedByUnownedFiles: [ShadowedByUnownedFile]
+        let inactiveInstalls: [InactiveInstall]
     }
 
     static func build(
@@ -34,68 +62,213 @@ enum RowBuilder {
         settings: UserSettings = .defaults,
         fileSystem: ReadOnlyFileSystem = LiveFileSystem()
     ) -> [DetectorConfig] {
+        assemble(input: input, catalog: catalog, settings: settings, fileSystem: fileSystem).rows
+    }
+
+    static func assemble(
+        input: Input,
+        catalog: [DetectorConfig] = [],
+        settings: UserSettings = .defaults,
+        fileSystem: ReadOnlyFileSystem = LiveFileSystem()
+    ) -> Output {
         var rows = loginPathErrorRows(input.lookup.loginPath) + issueErrorRows(input.results)
 
         let customFileIDs = customItemFileIDs(settings.customItems, fileSystem: fileSystem)
         let loginPathKnown: Bool
         if case .known = input.lookup.loginPath { loginPathKnown = true } else { loginPathKnown = false }
 
+        let candidates = input.results.flatMap(\.records)
+            .filter { !$0.flags.contains(.dependency) && isSane($0.packageID) && !settings.inventory.hiddenEcosystems.contains($0.ecosystem) }
+            .sorted { recordSortKey($0) < recordSortKey($1) }
+
         // R3: a record in an inactive root gets no row of its own (D3, D4) — but only once the
         // login PATH is actually known. S4/RC2 item 1: an unknown or empty PATH means no root may
         // ever be demoted (an `.inactive` root is treated as `.unknown` instead), so a record
         // under it still surfaces rather than silently disappearing (the G2 failure).
-        let candidates = input.results.flatMap(\.records).filter { record in
-            !record.flags.contains(.dependency) &&
-                (loginPathKnown ? record.root.activity != .inactive : true) &&
-                isSane(record.packageID)
-        }
+        let inactive = loginPathKnown ? candidates.filter { $0.root.activity == .inactive } : []
+        let pool = loginPathKnown ? candidates.filter { $0.root.activity != .inactive } : candidates
+
+        // R1: records naming the same file (device + inode, plus the dispatcher name) are one row.
+        var seenFileIDs = Set<FileID>()
+        let merged = pool.filter { seenFileIDs.insert($0.fileID).inserted }
 
         let winners: [InstalledPackage]
+        var competingByWinner: [Int: [CompetingInstall]] = [:]
+        var shadowedByUnowned: [ShadowedByUnownedFile] = []
         if loginPathKnown {
-            var groups: [PackageKey: [InstalledPackage]] = [:]
-            for record in candidates {
-                groups[PackageKey(ecosystem: record.ecosystem, packageID: record.packageID), default: []].append(record)
+            let ranking = rankByLoginPath(merged, loginPath: input.lookup.loginPath, fileSystem: fileSystem)
+            winners = ranking.winners.map { merged[$0] }
+            for (winnerIndex, installs) in ranking.competing {
+                guard let position = ranking.winners.firstIndex(of: winnerIndex) else { continue }
+                competingByWinner[position] = installs
             }
-            winners = groups.keys.sorted(by: { $0.sortKey < $1.sortKey }).compactMap { key in
-                guard !settings.inventory.hiddenEcosystems.contains(key.ecosystem) else { return nil }
-                return rankByPathOrder(groups[key] ?? [], loginPath: input.lookup.loginPath).first
-            }
+            shadowedByUnowned = ranking.shadowedByUnowned
         } else {
             // S4/RC2 items 2-3: with no PATH signal there is no ranking, so there is no winner to
-            // collapse a group to — every surviving record gets its own row. R1 still merges exact
-            // duplicates: two records naming the same file (device + inode) are the same row.
-            var seenFileIDs = Set<FileID>()
-            winners = candidates
-                .filter { !settings.inventory.hiddenEcosystems.contains($0.ecosystem) }
-                .sorted { recordSortKey($0) < recordSortKey($1) }
-                .filter { seenFileIDs.insert($0.fileID).inserted }
+            // collapse a group to — every surviving record gets its own row (R1 still merged
+            // exact duplicates above).
+            winners = merged
         }
 
+        // CR FU7: each catalog command is resolved to a `FileID` once per build, not once per record.
+        // S4/RC2 item 3: the command join trusts `whence`'s candidate paths, which is exactly what
+        // an unknown or empty login PATH means discovery can't do; the package join still runs.
+        let commandJoins = loginPathKnown ? catalogCommandFileIDs(catalog, lookup: input.lookup, fileSystem: fileSystem) : []
+
         var claimedCatalogIDs = Set<String>()
-        for winner in winners {
+        var rowIDByWinner: [Int: String] = [:]
+        var labelByRowID: [String: String] = [:]
+        for (position, winner) in winners.enumerated() {
             // D13: a custom item's file always wins; the inventory row is hidden entirely.
             guard !customFileIDs.contains(winner.fileID) else { continue }
 
-            // S4/RC2 item 3: the command join trusts `whence`'s candidate paths, which is exactly
-            // what an unknown or empty login PATH means discovery can't trust; skip it, but the
-            // package-identifier join below doesn't depend on PATH at all, so it still runs.
             // CR#5: with no ranking signal, this row may not be the install the user meant — say
             // so, so an update never silently targets an install nobody chose.
             let unknownPathDescription = loginPathKnown ? nil : "PATH unknown"
-            if let joined = joinCatalogEntry(
-                for: winner, catalog: catalog, lookup: input.lookup, fileSystem: fileSystem,
-                allowCommandJoin: loginPathKnown
-            ), claimedCatalogIDs.insert(joined.id).inserted {
-                rows.append(makeJoinedRow(catalogEntry: joined, record: winner, descriptionOverride: unknownPathDescription))
-            } else {
-                rows.append(makeInventoryRow(record: winner, description: unknownPathDescription))
+            let row: DetectorConfig
+            switch joinCatalogEntry(for: winner, catalog: catalog, commandJoins: commandJoins, fileSystem: fileSystem) {
+            case .joined(let joined) where claimedCatalogIDs.insert(joined.id).inserted:
+                row = makeJoinedRow(catalogEntry: joined, record: winner, descriptionOverride: unknownPathDescription)
+            case .catalogCommandRunsAnotherFile(_, let command, let activePath):
+                // D5: the catalog vouches for this package, but its command runs a different
+                // install (npm `claude-code` next to the native `claude`). Not a row of its own;
+                // P2-5 lists it as competing on the catalog row.
+                shadowedByUnowned.append(ShadowedByUnownedFile(record: winner, command: command, path: winner.packageDirectory, activePath: activePath))
+                continue
+            default:
+                row = makeInventoryRow(record: winner, description: unknownPathDescription)
+            }
+            rows.append(row)
+            rowIDByWinner[position] = row.id
+            labelByRowID[row.id] = winner.root.label
+        }
+
+        var competing: [String: [CompetingInstall]] = [:]
+        for (position, installs) in competingByWinner {
+            guard let rowID = rowIDByWinner[position] else { continue }
+            competing[rowID] = installs.sorted { ($0.command, $0.path) < ($1.command, $1.path) }
+        }
+
+        let inactiveInstalls = inactive.map { record -> InactiveInstall in
+            InactiveInstall(record: record, rowID: versionManagerRowID(for: record, winners: winners, rowIDByWinner: rowIDByWinner))
+        }
+
+        return Output(
+            rows: assignHandles(rows, labelByRowID: labelByRowID),
+            competing: competing,
+            shadowedByUnownedFiles: shadowedByUnowned,
+            inactiveInstalls: inactiveInstalls
+        )
+    }
+
+    // MARK: - R2: what the login PATH runs
+
+    private struct Ranking {
+        /// Indexes into the merged records that get a row, in record order.
+        var winners: [Int]
+        /// Winner index → the records it shadows.
+        var competing: [Int: [CompetingInstall]]
+        var shadowedByUnowned: [ShadowedByUnownedFile]
+    }
+
+    /// ADR-002 D5/R2, replacing P2-1's `(ecosystem, packageID)` key: for every command a record
+    /// provides, `PathSearch` lists the login PATH's candidates (`whence -ap` order) and each is
+    /// resolved to its `FileID`. The first candidate is what runs; a record owning it is active for
+    /// that command, and a record owning a later candidate is shadowed. So brew `node` behind nvm
+    /// `node` is one row with brew competing (QA defect 4), whichever ecosystems they come from.
+    ///
+    /// A record is a row when it's active for at least one of its commands. It's shadowed — no row,
+    /// listed under the winner — when every one of its commands found on the PATH runs another
+    /// file. A record none of whose commands are on the PATH at all, or with no commands, is a row
+    /// when its root is active (D5: "for a package with no commands, a record in a root whose bin is
+    /// on PATH"); command-less packages in two active roots are two rows, never merged by name.
+    private static func rankByLoginPath(_ records: [InstalledPackage], loginPath: LoginPath, fileSystem: ReadOnlyFileSystem) -> Ranking {
+        var owners: [FileID: [Int]] = [:]
+        for (index, record) in records.enumerated() {
+            for fileID in executableFileIDs(record, fileSystem: fileSystem) {
+                owners[fileID, default: []].append(index)
             }
         }
 
-        return assignHandles(rows)
+        var activeFor: [Int: Set<String>] = [:]
+        var shadowedHits: [Int: [(command: String, path: String)]] = [:]
+        var winnerOf: [String: (records: [Int], path: String)] = [:]
+        let commands = Set(records.flatMap(\.commands)).sorted()
+        for command in commands {
+            var winner: (records: [Int], path: String)?
+            for path in PathSearch.candidates(for: command, pathEntries: loginPath.entries, fileSystem: fileSystem) {
+                let matched = fileSystem.stat(path).flatMap { owners[$0.fileID] } ?? []
+                if let current = winner {
+                    for index in matched where !current.records.contains(index) {
+                        shadowedHits[index, default: []].append((command, path))
+                    }
+                } else {
+                    winner = (matched, fileSystem.realpath(path) ?? path)
+                    for index in matched { activeFor[index, default: []].insert(command) }
+                }
+            }
+            if let winner { winnerOf[command] = winner }
+        }
+
+        var ranking = Ranking(winners: [], competing: [:], shadowedByUnowned: [])
+        for (index, record) in records.enumerated() {
+            if activeFor[index] != nil {
+                ranking.winners.append(index)
+                continue
+            }
+            // A record is listed under the winner of its primary command when that one is
+            // shadowed too (`node` for brew `node@22`, not the alphabetically first `corepack`).
+            let primary = primaryCommand(of: record)
+            guard let hit = shadowedHits[index]?.sorted(by: {
+                ($0.command == primary ? 0 : 1, $0.command, $0.path) < ($1.command == primary ? 0 : 1, $1.command, $1.path)
+            }).first,
+                  let winner = winnerOf[hit.command] else {
+                if record.root.activity != .inactive { ranking.winners.append(index) }
+                continue
+            }
+            if let winnerIndex = winner.records.first {
+                ranking.competing[winnerIndex, default: []].append(CompetingInstall(record: record, command: hit.command, path: hit.path))
+            } else {
+                ranking.shadowedByUnowned.append(ShadowedByUnownedFile(record: record, command: hit.command, path: hit.path, activePath: winner.path))
+            }
+        }
+        return ranking
     }
 
-    /// A stable ordering for the unknown-PATH mode, where there's no PATH position to rank by.
+    /// `node@22` → `node`, `@google/gemini-cli` → `gemini-cli`, `python@3.12` → `python`.
+    private static func primaryCommand(of record: InstalledPackage) -> String {
+        let base = record.packageID.split(separator: "/").last.map(String.init) ?? record.packageID
+        return base.split(separator: "@").first.map(String.init) ?? base
+    }
+
+    private static func executableFileIDs(_ record: InstalledPackage, fileSystem: ReadOnlyFileSystem) -> Set<FileID> {
+        var ids: Set<FileID> = [record.fileID]
+        for executable in record.executables {
+            if let fileID = fileSystem.stat(executable)?.fileID { ids.insert(fileID) }
+        }
+        return ids
+    }
+
+    /// R3: an inactive record under a version manager's folder is listed on that manager's active
+    /// `node` row (D4); anything else is snapshot-level.
+    private static func versionManagerRowID(
+        for record: InstalledPackage,
+        winners: [InstalledPackage],
+        rowIDByWinner: [Int: String]
+    ) -> String? {
+        for (position, winner) in winners.enumerated() {
+            guard case .versionManager(_, let managerRoot) = winner.owner,
+                  pathIsWithin(record.root.path, managerRoot) else { continue }
+            return rowIDByWinner[position]
+        }
+        return nil
+    }
+
+    private static func pathIsWithin(_ path: String, _ root: String) -> Bool {
+        path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
+    /// The stable order records are considered in (D18). R1 keeps the first of a same-file group.
     private static func recordSortKey(_ record: InstalledPackage) -> String {
         "\(record.ecosystem.rawValue)\u{0}\(record.packageID)\u{0}\(record.root.path)\u{0}" +
             "\(record.fileID.device)\u{0}\(record.fileID.inode)\u{0}\(record.fileID.dispatchName ?? "")"
@@ -168,53 +341,60 @@ enum RowBuilder {
 
     // MARK: - Ranking and joins
 
-    /// R2: the record whose root's `binDirectories` sits earliest on the login PATH is active;
-    /// the rest are shadowed and get no row of their own here (their info is rebuilt as
-    /// `OwnerResolution.competing` at check time). A record whose root isn't on PATH at all (an
-    /// ecosystem with no PATH dependency, or an unknown login PATH) keeps candidate order.
-    private static func rankByPathOrder(_ records: [InstalledPackage], loginPath: LoginPath) -> [InstalledPackage] {
-        let entries = loginPath.entries
-        func rank(_ record: InstalledPackage) -> Int {
-            for directory in record.root.binDirectories {
-                if let index = entries.firstIndex(of: directory) { return index }
-            }
-            return Int.max
-        }
-        return records.enumerated()
-            .sorted { lhs, rhs in
-                let lhsRank = rank(lhs.element), rhsRank = rank(rhs.element)
-                return lhsRank != rhsRank ? lhsRank < rhsRank : lhs.offset < rhs.offset
-            }
-            .map(\.element)
-    }
-
     private static func isSane(_ packageID: String) -> Bool {
         !packageID.isEmpty && !packageID.contains("\0") && !packageID.hasPrefix("-")
     }
 
-    /// §1 D6: by command, then by package. Never by display name. S4: the command join is skipped
-    /// when `allowCommandJoin` is false (an unknown or empty login PATH), since it trusts
-    /// `whence`'s candidate paths — exactly what discovery can't do without a known PATH.
+    /// §1 D6 "by command": each catalog `command` → its first `whence` candidate → that file's
+    /// `FileID`. Built once per build (CR FU7).
+    private struct CommandJoin {
+        let entry: DetectorConfig
+        let command: String
+        let fileID: FileID
+        let canonicalPath: String
+    }
+
+    private static func catalogCommandFileIDs(
+        _ catalog: [DetectorConfig],
+        lookup: CommandPathLookup,
+        fileSystem: ReadOnlyFileSystem
+    ) -> [CommandJoin] {
+        catalog.compactMap { entry in
+            guard let command = entry.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty,
+                  let candidatePath = lookup.candidates(for: command).first,
+                  let canonical = fileSystem.realpath(candidatePath),
+                  let stat = fileSystem.stat(canonical) else { return nil }
+            return CommandJoin(entry: entry, command: command, fileID: stat.fileID, canonicalPath: canonical)
+        }
+    }
+
+    private enum JoinOutcome {
+        case none
+        case joined(DetectorConfig)
+        /// The catalog names this package, but its `command` runs a file this record doesn't own.
+        case catalogCommandRunsAnotherFile(DetectorConfig, command: String, activePath: String)
+    }
+
+    /// §1 D6: by command (the catalog command runs one of this record's files), then by package.
+    /// Never by display name. `commandJoins` is empty when the login PATH isn't known (S4), and
+    /// then the package join stands on its own. With a known PATH, the package join is refused
+    /// when the entry's command demonstrably runs another file: that catalog row belongs to what
+    /// runs, and this record only competes with it.
     private static func joinCatalogEntry(
         for record: InstalledPackage,
         catalog: [DetectorConfig],
-        lookup: CommandPathLookup,
-        fileSystem: ReadOnlyFileSystem,
-        allowCommandJoin: Bool
-    ) -> DetectorConfig? {
-        if allowCommandJoin {
-            for entry in catalog {
-                guard let command = entry.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty,
-                      let candidatePath = lookup.candidates(for: command).first,
-                      let canonical = fileSystem.realpath(candidatePath),
-                      let stat = fileSystem.stat(canonical) else { continue }
-                if stat.fileID == record.fileID { return entry }
+        commandJoins: [CommandJoin],
+        fileSystem: ReadOnlyFileSystem
+    ) -> JoinOutcome {
+        let recordFileIDs = executableFileIDs(record, fileSystem: fileSystem)
+        if let join = commandJoins.first(where: { recordFileIDs.contains($0.fileID) }) { return .joined(join.entry) }
+        for entry in catalog where entry.packages?.identifier(for: record.ecosystem) == record.packageID {
+            if let join = commandJoins.first(where: { $0.entry.id == entry.id }) {
+                return .catalogCommandRunsAnotherFile(entry, command: join.command, activePath: join.canonicalPath)
             }
+            return .joined(entry)
         }
-        for entry in catalog {
-            if entry.packages?.identifier(for: record.ecosystem) == record.packageID { return entry }
-        }
-        return nil
+        return .none
     }
 
     // MARK: - Row construction
@@ -262,8 +442,9 @@ enum RowBuilder {
         )
     }
 
-    /// §1: "with `@<root label>` appended only when two rows share a handle."
-    private static func assignHandles(_ rows: [DetectorConfig]) -> [DetectorConfig] {
+    /// §1: "with `@<root label>` appended only when two rows share a handle." CR FU10: the suffix
+    /// is the root's label (`nvm v24.13.0`), not its path.
+    private static func assignHandles(_ rows: [DetectorConfig], labelByRowID: [String: String]) -> [DetectorConfig] {
         var countByHandle: [String: Int] = [:]
         for row in rows {
             guard let handle = row.handle else { continue }
@@ -271,8 +452,10 @@ enum RowBuilder {
         }
         return rows.map { row in
             var row = row
-            if let handle = row.handle, (countByHandle[handle] ?? 0) > 1, let root = row.inventory?.rootPath {
-                row.handle = "\(handle)@\(root)"
+            if let handle = row.handle, (countByHandle[handle] ?? 0) > 1 {
+                if let label = labelByRowID[row.id] ?? row.inventory?.rootPath {
+                    row.handle = "\(handle)@\(label)"
+                }
             }
             return row
         }
