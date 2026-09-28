@@ -28,7 +28,7 @@ python3 - "$scratch/profile.sb" <<'PY'
 import os
 import sys
 
-app_support = os.path.expanduser('~/Library/Application Support/DailyUpdate')
+app_support = os.path.realpath(os.path.expanduser('~/Library/Application Support/DailyUpdate'))
 quoted = app_support.replace('\\', '\\\\').replace('"', '\\"')
 with open(sys.argv[1], 'w', encoding='utf-8') as profile:
     profile.write('(version 1)\n(allow default)\n')
@@ -51,6 +51,7 @@ import sys
 import time
 
 profile, binary, baseline = sys.argv[1:]
+LOGIN_PATH_ERROR_ID = 'inv-error-login-path'
 
 
 def percentile(values, fraction):
@@ -76,21 +77,27 @@ def run(executable, action):
 
 reported = []
 wall = []
-for _ in range(10):
+for sample in range(1, 11):
     payload, elapsed, _ = run(binary, '--discover')
-    if any(row.get('id') == 'inv-error-login-path' for row in payload.get('rows', [])):
+    if any(row.get('id') == LOGIN_PATH_ERROR_ID for row in payload.get('rows', [])):
         raise RuntimeError('login PATH lookup failed inside the sandbox; measurements are invalid')
+    results = payload['results']
+    statuses = [f'{entry["ecosystem"]}={entry["status"]}' for entry in results]
+    print(f'CLI_SANDBOX sample={sample} ecosystem=status {" ".join(statuses) if statuses else "(none registered)"}', flush=True)
+    incomplete = [status for status, entry in zip(statuses, results) if entry['status'] != 'complete']
+    if incomplete:
+        raise RuntimeError(f'incomplete discovery results in sandbox sample {sample}: {", ".join(incomplete)}; timings are invalid')
     reported.append(float(payload['elapsedMs']))
     wall.append(elapsed)
 
-print(f'CLI_SANDBOX samples=10 network=denied writes=denied_except_dev_null appSupportRead=denied rows={len(payload["rows"])} results={len(payload["results"])}')
+print(f'CLI_SANDBOX samples=10 proves_run_offline=yes budget_source=in_process_DISCOVERY_BUDGET network=denied writes=denied_except_dev_null appSupportRead=denied rows={len(payload["rows"])} results={len(payload["results"])}')
 for name, values in [('discoveryPipeline', reported), ('discoveryWall', wall)]:
     print(f'CLI_SANDBOX {name} p50={percentile(values, .50):.2f}ms p95={percentile(values, .95):.2f}ms')
 
 if baseline:
     current_payload, current_ms, current_exit = run(binary, '--check')
     old_payload, old_ms, old_exit = run(baseline, '--check')
-    print(f'CHECK_SANDBOX current={current_ms:.2f}ms exit={current_exit} baseline={old_ms:.2f}ms exit={old_exit}')
+    print(f'CHECK_SANDBOX daemon_brokered_writes_and_network=not_covered current={current_ms:.2f}ms exit={current_exit} baseline={old_ms:.2f}ms exit={old_exit}')
     print(f'CHECK_SANDBOX ratio={current_ms / old_ms:.3f} budget=1.100 (one paired sample; review before gating)')
 PY
 
