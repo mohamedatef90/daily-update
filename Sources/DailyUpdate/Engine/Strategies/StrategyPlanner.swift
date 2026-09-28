@@ -131,9 +131,14 @@ enum StrategyPlanner {
         currentVersion: String?,
         resolution: OwnerResolution,
         layout: EcosystemLayout = .live(),
+        loginPath: LoginPath = .known([]),
+        environmentSnapshot: [String: String] = [:],
         fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
     ) async -> StrategyPlan {
-        switch prepare(config: config, resolution: resolution, layout: layout, fetchRelease: fetchRelease) {
+        switch prepare(
+            config: config, resolution: resolution, layout: layout, loginPath: loginPath,
+            environmentSnapshot: environmentSnapshot, fetchRelease: fetchRelease
+        ) {
         case .blocked(let reason, let message):
             return StrategyPlan(
                 ownerResolution: resolution,
@@ -243,7 +248,10 @@ enum StrategyPlanner {
         guard let name = config.command else { return (nil, nil) }
         let layout = pathLookup?.layout ?? .live()
         let resolution = await OwnerResolver.resolve(commandName: name, lookup: pathLookup, layout: layout)
-        guard case .ready(let strategy) = prepare(config: config, resolution: resolution, layout: layout) else { return (nil, nil) }
+        guard case .ready(let strategy) = prepare(
+            config: config, resolution: resolution, layout: layout,
+            loginPath: pathLookup?.loginPath ?? .known([]), environmentSnapshot: pathLookup?.environmentSnapshot ?? [:]
+        ) else { return (nil, nil) }
         return (await strategy.currentVersion(), resolution.active)
     }
 
@@ -287,7 +295,10 @@ enum StrategyPlanner {
 
         let layout = pathLookup?.layout ?? layout
         let resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
-        switch prepare(config: config, resolution: resolution, layout: layout) {
+        switch prepare(
+            config: config, resolution: resolution, layout: layout,
+            loginPath: pathLookup?.loginPath ?? .known([]), environmentSnapshot: pathLookup?.environmentSnapshot ?? [:]
+        ) {
         case .ready(let strategy):
             guard let spec = makeUpdateSpec(from: strategy, targetVersion: targetVersion, workingDirectory: config.workingDirectory),
                   spec.isSingle,
@@ -334,6 +345,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         resolution: OwnerResolution,
         layout: EcosystemLayout,
+        loginPath: LoginPath = .known([]),
+        environmentSnapshot: [String: String] = [:],
         fetchRelease: @escaping ReleaseFetcher = liveReleaseFetcher
     ) -> PreparationOutcome {
         if let error = resolution.resolveError {
@@ -354,7 +367,10 @@ enum StrategyPlanner {
             return .blocked(.ownerMismatch, "Resolved owner does not match catalog package identity")
         }
 
-        switch makeStrategy(config: config, active: active, layout: layout, fetchRelease: fetchRelease) {
+        switch makeStrategy(
+            config: config, active: active, layout: layout, loginPath: loginPath,
+            environmentSnapshot: environmentSnapshot, fetchRelease: fetchRelease
+        ) {
         case .strategy(let strategy):
             return .ready(strategy)
         case .unknownOwner(let message):
@@ -370,6 +386,8 @@ enum StrategyPlanner {
         config: DetectorConfig,
         active: OwnerCandidate,
         layout: EcosystemLayout,
+        loginPath: LoginPath = .known([]),
+        environmentSnapshot: [String: String] = [:],
         fetchRelease: @escaping ReleaseFetcher
     ) -> StrategyBuildOutcome {
         switch active.owner {
@@ -441,8 +459,23 @@ enum StrategyPlanner {
                 return .strategy(CursorAgentNativeStrategy(executable: active.commandPath, resolvedPath: active.resolvedPath,
                     nativeRoot: layout.cursorAgentNativeRoot, fetchRelease: fetchRelease))
             }
-        case .pipx, .uvTool:
-            return .noStrategy("Strategy deferred to PR-B2")
+        case .pipx:
+            return .noStrategy("Listed only")
+        case .uvTool(let name):
+            // RC2: `loginPath.entries` is already `[]` for both `.empty` and `.unknown`, so an
+            // unreadable login PATH naturally finds no trusted `uv` and blocks here too — no
+            // separate branch needed for "the PATH state itself is unknown".
+            guard let uvExecutable = trustedUvExecutable(loginPath: loginPath) else {
+                return .noStrategy("uv not found")
+            }
+            guard let packageDirectory = UvToolStrategy.packageDirectory(resolvedPath: active.resolvedPath, roots: layout.uvToolRoots) else {
+                return .unknownOwner("Could not derive the uv tool's install directory")
+            }
+            let resolvedName = config.packages?.uv ?? name
+            return .strategy(UvToolStrategy(
+                name: resolvedName, uvExecutable: uvExecutable, packageDirectory: packageDirectory,
+                environmentSnapshot: environmentSnapshot, fetchRelease: fetchRelease
+            ))
         // P2-1: discovery owners. Each is Blocked until the PR that owns its ecosystem (noted
         // per case) wires a real strategy; D7 lists exactly which owners ever get one.
         case .pnpm, .yarnClassic, .bun, .pipUser:
@@ -508,6 +541,17 @@ enum StrategyPlanner {
         case .unknown:
             return true
         }
+    }
+
+    /// §9 P2-3, Amendment 1 RC2: the active `uv` on the login PATH, trusted the same way every
+    /// other manager executable is. `loginPath.entries` is `[]` whenever the PATH state isn't
+    /// `.known`, so this returns `nil` there too.
+    private static func trustedUvExecutable(loginPath: LoginPath) -> String? {
+        for directory in loginPath.entries {
+            let candidate = directory.hasSuffix("/") ? "\(directory)uv" : "\(directory)/uv"
+            if PathTrust.isTrustedExecutable(candidate) { return candidate }
+        }
+        return nil
     }
 
     private static func brewExecutable(for path: String, roots: [String], suffix: String) -> String? {
@@ -580,14 +624,17 @@ enum StrategyPlanner {
     }
 }
 
-private struct LatestVersionOutcome {
+/// Not `private`: `UvToolStrategy` (`Engine/Strategies/UvToolStrategy.swift`) conforms to
+/// `Strategy` below and returns this from its own file.
+struct LatestVersionOutcome {
     var latestVersion: String?
     var gateReasons: [GateReason] = []
     var blockReason: BlockReason?
     var failureMessage: String?
 }
 
-private protocol Strategy {
+/// Not `private`: `UvToolStrategy` conforms from its own file (`Engine/Strategies/UvToolStrategy.swift`).
+protocol Strategy {
     var requiresLatestVersion: Bool { get }
     var requiresTargetVersion: Bool { get }
     func currentVersion() async -> String?

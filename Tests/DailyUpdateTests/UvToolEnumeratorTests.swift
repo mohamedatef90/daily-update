@@ -37,7 +37,8 @@ final class UvToolEnumeratorTests: HermeticTestCase {
         XCTAssertEqual(record.packageID, "browser-use")
         XCTAssertEqual(record.versionRaw, "1.2.3")
         XCTAssertEqual(record.owner, .uvTool(name: "browser-use"))
-        XCTAssertEqual(record.executables, ["\(binDirectory)/browser-use"])
+        let canonicalScript = try XCTUnwrap(fixture.fileSystem.realpath("\(root)/browser-use/bin/browser-use"))
+        XCTAssertEqual(record.executables, [canonicalScript])
         XCTAssertTrue(record.evidence.contains { $0.kind == "uv-receipt.toml" })
         XCTAssertEqual(result.roots.first?.activity, .active)
     }

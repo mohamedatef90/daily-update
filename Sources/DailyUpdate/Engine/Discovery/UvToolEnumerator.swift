@@ -167,7 +167,11 @@ struct UvToolEnumerator: Enumerator {
         for entry in binListing.entries.sorted() {
             let candidate = "\(binDirectory)/\(entry)"
             guard let destination = context.fileSystem.realpath(candidate), destination.hasPrefix(prefix) else { continue }
-            found.append(candidate)
+            // `InstalledPackage.executables` is documented "canonical" — the resolved target
+            // inside the tool's own `bin/`, not the `UV_TOOL_BIN_DIR` symlink that points to it, so
+            // owner resolution built from this record (`resolvedPath`) lands under `uvToolRoots`
+            // the same way `OwnerResolver.classify` would after its own `realpath`.
+            found.append(destination)
         }
         return found
     }
