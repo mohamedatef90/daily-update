@@ -9,5 +9,6 @@ enum DiscoveryEnumeratorRegistry {
         PipxEnumerator(),
         PipUserEnumerator(),
         CargoEnumerator(),
+        GemEnumerator(),
     ]
 }
