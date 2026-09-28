@@ -104,6 +104,9 @@ struct EcosystemLayout: Equatable, Sendable {
     let uvToolRoots: [String]
     let pipxVenvRoots: [String]
     let npmGlobalRoots: [String]
+    /// P2-2: prefixes outside `$HOME` that can hold a global npm tree without being a Homebrew
+    /// prefix — the nodejs.org installer's `/usr/local`.
+    let npmSystemPrefixes: [String]
     let nvmVersionsRoot: String
     let voltaRoot: String
     let fnmRoots: [String]
@@ -121,6 +124,7 @@ struct EcosystemLayout: Equatable, Sendable {
             uvToolRoots: ["\(home)/.local/share/uv/tools"],
             pipxVenvRoots: ["\(home)/.local/pipx/venvs", "\(home)/.local/share/pipx/venvs"],
             npmGlobalRoots: ["\(home)/.npm-global", "\(home)/.local"],
+            npmSystemPrefixes: ["\(home)/usr/local"],
             nvmVersionsRoot: "\(home)/.nvm/versions/node",
             voltaRoot: "\(home)/.volta",
             fnmRoots: ["\(home)/.fnm", "\(home)/.local/share/fnm"]
@@ -148,6 +152,7 @@ struct EcosystemLayout: Equatable, Sendable {
             uvToolRoots: ["\(home)/.local/share/uv/tools"],
             pipxVenvRoots: ["\(home)/.local/pipx/venvs", "\(home)/.local/share/pipx/venvs"],
             npmGlobalRoots: ["\(home)/.npm-global", "\(home)/.local"],
+            npmSystemPrefixes: ["/usr/local"],
             nvmVersionsRoot: "\(home)/.nvm/versions/node",
             voltaRoot: "\(home)/.volta",
             fnmRoots: ["\(home)/.fnm", "\(home)/.local/share/fnm"]
@@ -177,7 +182,7 @@ struct CommandPathLookup: Equatable, Sendable {
 /// they're only checked for shape (no newline, within the size cap).
 enum LoginEnvironmentOverrides {
     static let pathVariableNames = [
-        "HOMEBREW_PREFIX", "HOMEBREW_CACHE", "NPM_CONFIG_PREFIX", "PNPM_HOME", "BUN_INSTALL",
+        "HOMEBREW_PREFIX", "HOMEBREW_CACHE", "NPM_CONFIG_PREFIX", "npm_config_prefix", "PNPM_HOME", "BUN_INSTALL",
         "PIPX_HOME", "UV_TOOL_DIR", "CARGO_INSTALL_ROOT", "CARGO_HOME", "GEM_HOME", "NVM_DIR",
         "FNM_DIR", "MISE_DATA_DIR", "ASDF_DATA_DIR", "PYENV_ROOT", "RUSTUP_HOME", "VOLTA_HOME",
         "XDG_DATA_HOME", "PYTHONUSERBASE",

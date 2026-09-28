@@ -127,6 +127,15 @@ enum StrategyPlanner {
                 failureMessage: "\(record.root.label) can be written by other users"
             )
         }
+        // D10: an `npm link` is updated where it was linked from, never by `npm install -g`.
+        if record.flags.contains(.linked) {
+            let source = record.evidence.first { $0.kind == "npm-link" }?.path ?? record.packageDirectory
+            return StrategyPlan(
+                ownerResolution: resolution, currentVersion: record.versionRaw, latestVersion: nil, updateCommandSpec: nil,
+                gateReasons: [], blockReason: .manualOnly,
+                failureMessage: "Linked from \(PackageNameRules.sanitize(source))"
+            )
+        }
         return await checkPlan(config: config, currentVersion: currentVersion, resolution: resolution, layout: layout,
             fetchRelease: fetchRelease, services: services)
     }
@@ -473,10 +482,15 @@ enum StrategyPlanner {
             guard PathTrust.isTrustedExecutable(npmExecutable) else {
                 return .unknownOwner("Untrusted npm executable path")
             }
+            // RC5: a discovered package the catalog doesn't vouch for (no `packages.npm`) must
+            // prove it came from the registry before it may be updated from it.
             return .strategy(NpmPackageStrategy(
                 package: resolvedPackage,
                 prefix: prefix,
-                npmExecutable: npmExecutable
+                npmExecutable: npmExecutable,
+                checksProvenance: config.source == .inventory && config.packages?.npm == nil,
+                runProcess: services.runProcess,
+                runBounded: services.runBounded
             ))
         case .nativeInstaller(let installer):
             // The catalog names the one self-updater it trusts for this item.
@@ -818,31 +832,66 @@ private final class BrewCaskStrategy: Strategy {
     }
 }
 
+/// RC5's pure pieces, internal so `NpmProvenanceTests` can check them directly.
+enum NpmPackageStrategyShape {
+    /// Amendment 1 RC5: exactly `<P>/bin/npm view --json --global --prefix <P> <name> versions
+    /// dist-tags`. `--global` makes npm skip a project `.npmrc` in the working directory, the way
+    /// `install -g` does. The name already passed the npm regex, so it can't be read as a flag.
+    static func provenanceArguments(prefix: String, package: String) -> [String] {
+        ["view", "--json", "--global", "--prefix", prefix, package, "versions", "dist-tags"]
+    }
+
+    /// `https://<host>/<name>/-/<basename>-<version>.tgz`, where `<basename>` drops the scope.
+    static func isRegistryTarball(_ resolved: String, package: String, version: String) -> Bool {
+        let basename = package.split(separator: "/").last.map(String.init) ?? package
+        let suffix = "/\(package)/-/\(basename)-\(version).tgz"
+        guard resolved.hasPrefix("https://"), resolved.hasSuffix(suffix) else { return false }
+        let host = resolved.dropFirst("https://".count).dropLast(suffix.count)
+        return !host.isEmpty && host.range(of: #"^[A-Za-z0-9.-]+(:[0-9]{1,5})?$"#, options: .regularExpression) != nil
+    }
+
+}
+
 private struct NpmPackageStrategy: Strategy {
     let package: String
     let prefix: String
     let npmExecutable: String
+    /// RC5: on for inventory rows not joined to a catalog `packages.npm`.
+    let checksProvenance: Bool
+    let runProcess: StrategyPlanner.ProcessRunner
+    let runBounded: StrategyPlanner.BoundedRunner
     let requiresLatestVersion = true
     let requiresTargetVersion = true
 
-    func currentVersion() async -> String? {
+    static let notOnRegistryMessage = "Installed version isn't on the registry (git or tarball install?)"
+    static let provenanceStdoutCap = 4 * 1024 * 1024
+
+    /// The update's own environment: `ShellRunner` starts from this process's environment with
+    /// `PATH=<P>/bin:<default>`, so the provenance check sees the same npmrc and registry.
+    private var environmentPATH: String { "\(prefix)/bin:\(ShellRunner.defaultPath)" }
+
+    private var manifest: [String: Any]? {
         let packageJSON = "\(prefix)/lib/node_modules/\(package)/package.json"
-        guard let data = FileManager.default.contents(atPath: packageJSON),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = payload["version"] as? String else {
-            return nil
-        }
-        return version.nilIfEmpty
+        guard let data = FileManager.default.contents(atPath: packageJSON) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    func currentVersion() async -> String? {
+        (manifest?["version"] as? String)?.nilIfEmpty
     }
 
     func latestVersion(currentVersion: String?) async -> LatestVersionOutcome {
-        let result = await ShellRunner.run(
+        checksProvenance ? await provenanceCheckedLatest(installed: currentVersion) : await catalogLatest()
+    }
+
+    /// Phase 1, unchanged, for catalog-joined packages (`codex-cli`, `gemini-cli`, …; N6).
+    private func catalogLatest() async -> LatestVersionOutcome {
+        let result = await runProcess(
             CommandSpec(
                 executablePath: npmExecutable,
                 arguments: ["view", "\(package)@latest", "version", "--json"],
-                environment: ["PATH": "\(prefix)/bin:\(ShellRunner.defaultPath)"]
-            ),
-            timeout: 30
+                environment: ["PATH": environmentPATH]
+            )
         )
         guard result.succeeded else { return LatestVersionOutcome(latestVersion: nil) }
 
@@ -865,6 +914,57 @@ private struct NpmPackageStrategy: Strategy {
         return LatestVersionOutcome(latestVersion: candidate)
     }
 
+    /// RC5 (N1–N5). Update Available needs all of: `_resolved` absent (with no `_from`) or
+    /// registry-shaped; the installed version published under this name; and a strict-semver
+    /// `dist-tags.latest`. A failed call is Check Failed, never Current or Update Available.
+    private func provenanceCheckedLatest(installed: String?) async -> LatestVersionOutcome {
+        guard let installed else { return LatestVersionOutcome(latestVersion: nil) }
+        let manifest = self.manifest ?? [:]
+        let resolved = manifest["_resolved"] as? String
+        if let resolved {
+            guard NpmPackageStrategyShape.isRegistryTarball(resolved, package: package, version: installed) else {
+                return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+            }
+        } else if manifest["_from"] != nil {
+            return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+        }
+
+        let outcome = await runBounded(BoundedProcessSpec(
+            executable: npmExecutable,
+            arguments: NpmPackageStrategyShape.provenanceArguments(prefix: prefix, package: package),
+            environment: .inherited(overridingPATH: environmentPATH),
+            timeout: 30,
+            maxStdoutBytes: Self.provenanceStdoutCap
+        ))
+        guard case .exited(0) = outcome.evidence.termination else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm view failed: \(Self.describe(outcome.evidence))")
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: outcome.stdout) as? [String: Any] else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm view returned JSON that couldn't be read")
+        }
+        // N5: a package with one published version returns `versions` as a string.
+        let versions: [String] = (root["versions"] as? [String]) ?? ((root["versions"] as? String).map { [$0] } ?? [])
+        guard versions.contains(installed) else {
+            return LatestVersionOutcome(latestVersion: nil, blockReason: .manualOnly, failureMessage: Self.notOnRegistryMessage)
+        }
+        guard let latest = (root["dist-tags"] as? [String: Any])?["latest"] as? String, StrategyPlanner.isStrictSemVer(latest) else {
+            return LatestVersionOutcome(latestVersion: nil, failureMessage: "npm's latest dist-tag is missing or isn't strict semver")
+        }
+        return LatestVersionOutcome(latestVersion: latest)
+    }
+
+    private static func describe(_ evidence: ProcessEvidence) -> String {
+        switch evidence.termination {
+        case .exited(let code):
+            let detail = evidence.stderr.split(separator: "?").first.map(String.init) ?? ""
+            return detail.isEmpty ? "exit \(code)" : "exit \(code): \(PackageNameRules.sanitize(detail, maxLength: 160))"
+        case .signaled(let signal): return "killed by signal \(signal)"
+        case .timedOut: return "timed out"
+        case .outputCapExceeded: return "output too large"
+        case .launchFailed(let reason): return reason
+        }
+    }
+
     func updateCommand(targetVersion: String?) -> CommandSpec? {
         guard let targetVersion = targetVersion?.nilIfEmpty, StrategyPlanner.isStrictSemVer(targetVersion) else {
             return nil
@@ -872,7 +972,7 @@ private struct NpmPackageStrategy: Strategy {
         return CommandSpec(
             executablePath: npmExecutable,
             arguments: ["install", "-g", "--prefix", prefix, "\(package)@\(targetVersion)"],
-            environment: ["PATH": "\(prefix)/bin:\(ShellRunner.defaultPath)"]
+            environment: ["PATH": environmentPATH]
         )
     }
 }
