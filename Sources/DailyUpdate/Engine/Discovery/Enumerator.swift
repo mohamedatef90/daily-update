@@ -44,19 +44,52 @@ struct DiscoveryContext: Sendable {
     let loginPath: LoginPath
     let layout: EcosystemLayout
     let limits: DiscoveryLimits
+    /// F4's second tier: this process's own environment, consulted only when the login shell
+    /// didn't report a variable. Empty by default so a test never picks up the real one.
+    let processEnvironment: [String: String]
 
     init(
         fileSystem: ReadOnlyFileSystem = LiveFileSystem(),
         environmentSnapshot: [String: String] = [:],
         loginPath: LoginPath = .unknown("Not queried"),
         layout: EcosystemLayout = .live(),
-        limits: DiscoveryLimits = .default
+        limits: DiscoveryLimits = .default,
+        processEnvironment: [String: String] = [:]
     ) {
         self.fileSystem = fileSystem
         self.environmentSnapshot = environmentSnapshot
         self.loginPath = loginPath
         self.layout = layout
         self.limits = limits
+        self.processEnvironment = processEnvironment
+    }
+
+    /// F4 precedence for a root override (`NVM_DIR`, `PNPM_HOME`, `HOMEBREW_CACHE`, …): the login
+    /// shell, then this process's environment, then nothing (the caller's default). A value from
+    /// either tier must pass the same shape rules the snapshot applies; it's data, never evaluated.
+    func overridePath(_ name: String) -> String? {
+        if let value = environmentSnapshot[name] { return value }
+        guard let value = processEnvironment[name], LoginEnvironmentOverrides.isValid(name: name, value: value) else { return nil }
+        return value
+    }
+
+    var homeDirectory: String { layout.homeDirectory }
+
+    var loginPathIsKnown: Bool {
+        if case .known = loginPath { return true }
+        return false
+    }
+
+    /// D5/RC2: a root is active when one of its `bin` folders is on the login PATH, inactive when
+    /// the PATH is known and none is, and unknown when the PATH itself isn't known.
+    func activity(ofBinDirectories directories: [String]) -> RootActivity {
+        guard case .known(let entries) = loginPath else { return .unknown }
+        let normalizedEntries = Set(entries.map(Self.normalizedDirectory))
+        return directories.contains { normalizedEntries.contains(Self.normalizedDirectory($0)) } ? .active : .inactive
+    }
+
+    private static func normalizedDirectory(_ path: String) -> String {
+        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 }
 

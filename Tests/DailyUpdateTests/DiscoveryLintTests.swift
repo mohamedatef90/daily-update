@@ -82,6 +82,12 @@ final class DiscoveryLintTests: XCTestCase {
         XCTAssertGreaterThan(discoverySourceFiles.count, 0)
     }
 
+    /// P2-2: the enumerators live one level down, in `Engine/Discovery/Enumerators/`. The lint
+    /// has to see them too.
+    func testLintCoversTheEnumeratorsFolder() {
+        XCTAssertTrue(discoverySourceFiles.contains { $0.deletingLastPathComponent().lastPathComponent == "Enumerators" })
+    }
+
     /// The rules themselves: each banned shape is caught, and the look-alikes the enumerators
     /// legitimately use are not.
     func testLintCatchesEveryBannedShape() {
