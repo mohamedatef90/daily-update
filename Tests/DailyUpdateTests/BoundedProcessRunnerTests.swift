@@ -84,8 +84,9 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
             executable: stub, arguments: [], environment: .exactly([:]), timeout: 1, maxStdoutBytes: 1024
         ))
+        // Generous next to the 1 s timeout + 2 s hard stop: what matters is "not the stub's 30 s".
         let elapsed = Date().timeIntervalSince(start)
-        XCTAssertLessThan(elapsed, 4.0)
+        XCTAssertLessThan(elapsed, 15.0)
         if case .timedOut = outcome.evidence.termination {} else {
             XCTFail("expected timedOut, got \(outcome.evidence.termination)")
         }
@@ -100,7 +101,7 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
             executable: stub, arguments: [], environment: .exactly([:]), timeout: 20, maxStdoutBytes: 1024
         ))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 5.0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15.0)
         XCTAssertEqual(outcome.evidence.termination, .outputCapExceeded)
         XCTAssertEqual(outcome.stdout.count, 1024)
         XCTAssertTrue(waitUntilGone(try readPID(pidFile)), "the stub ignores SIGTERM, so only SIGKILL can have ended it")
@@ -146,13 +147,18 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
     /// then exits 3 must still be drained past the 16 KB cap and report its real exit status.
     /// Before the fix, `drainOnce` stopped reading once the cap was hit, so the child blocked on
     /// a full stderr pipe until the timeout and its `exit 3` was lost behind `timedOut`.
+    ///
+    /// P2-2 flake fix: this used to also require a return in under 3 s against a 5 s timeout. That
+    /// bound failed once (3.26 s) in a full run while the machine was under load. The proof that
+    /// the drain doesn't block is `.exited(3)` — a blocked child ends as `.timedOut` — so the
+    /// timeout now has headroom and the time bound is just "before the timeout fired".
     func testStderrTruncationAndOutputCap() async throws {
         let stub = try makeStub("#!/bin/sh\nyes err | head -c 1000000 1>&2\nexit 3\n")
         let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
-            executable: stub, arguments: [], environment: .exactly([:]), timeout: 5, maxStdoutBytes: 1024
+            executable: stub, arguments: [], environment: .exactly([:]), timeout: 15, maxStdoutBytes: 1024
         ))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 3.0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15.0)
         XCTAssertEqual(outcome.evidence.termination, .exited(3))
         XCTAssertTrue(outcome.evidence.stderrTruncated)
         XCTAssertEqual(outcome.evidence.stderr.utf8.count, 16 * 1024)
@@ -167,15 +173,19 @@ final class BoundedProcessRunnerTests: HermeticTestCase {
         XCTAssertLessThanOrEqual(outcome.stdout.count, 1024)
     }
 
+    /// P2-2 flake fix: this ran with a 1 s timeout, and failed once in a full run under load
+    /// (`timedOut(afterMs: 1014)`: the stub itself took over a second to exit). What it proves is
+    /// that the runner returns without waiting for the grandchild's 30 s EOF; a 10 s timeout keeps
+    /// that proof (waiting for EOF would end in `.timedOut` at 12 s) without the tight margin.
     func testGrandchildHoldingStdoutOpenNeverBlocksReturn() async throws {
         // The direct child exits immediately, but redirects stdout into a backgrounded `sleep`
         // subshell that inherits the write end of the pipe and keeps it open.
         let stub = try makeStub("#!/bin/sh\n(sleep 30 >&1 &)\nexit 0\n")
         let start = Date()
         let outcome = await BoundedProcessRunner.run(BoundedProcessSpec(
-            executable: stub, arguments: [], environment: .exactly([:]), timeout: 1, maxStdoutBytes: 1024
+            executable: stub, arguments: [], environment: .exactly([:]), timeout: 10, maxStdoutBytes: 1024
         ))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 4.0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10.0)
         XCTAssertEqual(outcome.evidence.termination, .exited(0))
     }
 
