@@ -82,13 +82,22 @@ struct DiscoveryContext: Sendable {
 
     /// D5/RC2: a root is active when one of its `bin` folders is on the login PATH, inactive when
     /// the PATH is known and none is, and unknown when the PATH itself isn't known.
+    /// Both sides are compared as written and canonically, so `/var/…` on PATH matches a root
+    /// found at `/private/var/…`, and a symlinked PATH entry matches the folder it points at.
     func activity(ofBinDirectories directories: [String]) -> RootActivity {
         guard case .known(let entries) = loginPath else { return .unknown }
-        let normalizedEntries = Set(entries.map(Self.normalizedDirectory))
-        return directories.contains { normalizedEntries.contains(Self.normalizedDirectory($0)) } ? .active : .inactive
+        var onPath = Set<String>()
+        for entry in entries {
+            onPath.insert(Self.trimmed(entry))
+            if let canonical = fileSystem.realpath(entry) { onPath.insert(canonical) }
+        }
+        let found = directories.contains { directory in
+            onPath.contains(Self.trimmed(directory)) || fileSystem.realpath(directory).map(onPath.contains) == true
+        }
+        return found ? .active : .inactive
     }
 
-    private static func normalizedDirectory(_ path: String) -> String {
+    private static func trimmed(_ path: String) -> String {
         path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 }

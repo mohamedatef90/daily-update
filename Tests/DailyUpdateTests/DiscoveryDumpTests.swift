@@ -83,10 +83,13 @@ final class DiscoveryDumpTests: HermeticTestCase {
         let lookup = CommandPathLookup(candidatesByName: [:], loginPath: .known(["/golden/active/bin", "/golden/shadowed/bin"]))
         let rows = RowBuilder.build(input: .init(results: [goldenTreeResult()], lookup: lookup))
 
-        // widget: one row, from the active root only (the shadowed copy isn't its own row).
+        // widget: P2-2 decides R2 by what the login PATH runs (command → PathSearch → FileID).
+        // The fake records have no commands and no files, so nothing on PATH shadows either copy:
+        // both roots are active, so these are two installs and two rows, never merged by name.
+        // The real R2 cases (brew node behind nvm node, a later-PATH npm copy) are in the golden
+        // tree of real enumerators below and in `RowBuilderPathRankingTests`.
         let widgetRows = rows.filter { $0.inventory?.packageID == "widget" }
-        XCTAssertEqual(widgetRows.count, 1)
-        XCTAssertEqual(widgetRows.first?.inventory?.rootPath, "/golden/active")
+        XCTAssertEqual(widgetRows.map(\.inventory?.rootPath), ["/golden/active", "/golden/shadowed"])
 
         // libwidget is a dependency: no row.
         XCTAssertFalse(rows.contains { $0.inventory?.packageID == "libwidget" })
@@ -97,7 +100,7 @@ final class DiscoveryDumpTests: HermeticTestCase {
         // The malformed-manifest issue becomes its own Check Failed row.
         XCTAssertTrue(rows.contains { $0.inventory?.isErrorMarker == true && $0.description == "malformed manifest" })
 
-        // Exactly 2 rows total: widget + the one error row.
-        XCTAssertEqual(rows.count, 2)
+        // Exactly 3 rows total: two widget rows + the one error row.
+        XCTAssertEqual(rows.count, 3)
     }
 }

@@ -98,3 +98,74 @@ enum NodeVersionManagers {
         return folders
     }
 }
+
+// MARK: - The nvm and fnm runtime records
+
+/// ADR-002 §2, P2-2: one `node` runtime record per installed version. Only the version whose `bin`
+/// is on the login PATH gets a row; the others are inactive (R3) and are listed under it. Rows are
+/// Blocked(`managedByVersionManager`). nvm and fnm never run.
+struct NodeRuntimeEnumerator: Enumerator {
+    let ecosystem: Ecosystem
+    private let kind: VersionManagerKind
+
+    static let nvm = NodeRuntimeEnumerator(ecosystem: .nvm, kind: .nvm)
+    static let fnm = NodeRuntimeEnumerator(ecosystem: .fnm, kind: .fnm)
+
+    private init(ecosystem: Ecosystem, kind: VersionManagerKind) {
+        self.ecosystem = ecosystem
+        self.kind = kind
+    }
+
+    func enumerate(_ context: DiscoveryContext) async -> EnumerationResult {
+        var scan = EnumerationScan(ecosystem: ecosystem, context: context)
+        return read(context, scan: &scan)
+    }
+
+    func resolve(_ identity: InventoryIdentity, _ context: DiscoveryContext) async -> InstalledPackage? {
+        guard identity.ecosystem == ecosystem else { return nil }
+        var scan = EnumerationScan(ecosystem: ecosystem, context: context)
+        return read(context, scan: &scan).records.first { $0.root.path == identity.rootPath }
+    }
+
+    private func managerRoots(_ context: DiscoveryContext) -> [String] {
+        switch kind {
+        case .nvm: return [NodeVersionManagers.nvmDirectory(context)]
+        default: return NodeVersionManagers.fnmDirectories(context)
+        }
+    }
+
+    private func read(_ context: DiscoveryContext, scan: inout EnumerationScan) -> EnumerationResult {
+        let present = managerRoots(context).filter { scan.isDirectory($0) }
+        guard !present.isEmpty else { return scan.nothingFound("\(kind.rawValue) isn't installed") }
+        let versions = kind == .nvm ? NodeVersionManagers.nvmVersions(context, scan: &scan) : NodeVersionManagers.fnmVersions(context, scan: &scan)
+        let defaultAlias = kind == .nvm ? NodeVersionManagers.nvmDefaultAlias(context, scan: &scan) : nil
+
+        var roots: [InstallRoot] = []
+        var records: [InstalledPackage] = []
+        for folder in versions {
+            guard !scan.deadlinePassed() else { break }
+            guard let prefix = scan.canonical(folder.prefix),
+                  let node = scan.canonical(DiscoveryPaths.join(prefix, "bin", "node")),
+                  scan.fileSystem.stat(node)?.isRegularFile == true,
+                  let nodeID = scan.fileID(of: node) else { continue }
+            let bin = DiscoveryPaths.join(prefix, "bin")
+            let managerRoot = scan.canonical(folder.managerRoot) ?? folder.managerRoot
+            let root = InstallRoot(
+                ecosystem: ecosystem, path: prefix, label: folder.label, binDirectories: [bin],
+                activity: context.activity(ofBinDirectories: [bin])
+            )
+            roots.append(root)
+            var evidence = [Evidence(kind: "node", path: node)]
+            if let defaultAlias, DiscoveryPaths.withoutLeadingV(defaultAlias) == folder.version {
+                evidence.append(Evidence(kind: "alias/default", path: DiscoveryPaths.join(managerRoot, "alias", "default")))
+            }
+            records.append(InstalledPackage(
+                ecosystem: ecosystem, packageID: "node", displayName: "Node.js (\(folder.label))", versionRaw: folder.version,
+                root: root, packageDirectory: prefix, executables: [node], commands: ["node"],
+                owner: .versionManager(kind: kind, root: managerRoot), evidence: evidence,
+                confidence: .proven, fileID: nodeID
+            ))
+        }
+        return scan.result(roots: roots, records: records)
+    }
+}
