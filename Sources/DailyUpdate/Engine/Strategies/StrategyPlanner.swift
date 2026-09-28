@@ -480,8 +480,12 @@ enum StrategyPlanner {
         // per case) wires a real strategy; D7 lists exactly which owners ever get one.
         case .pnpm, .yarnClassic, .bun, .pipUser:
             return .noStrategy("Listed only")
-        case .cargo:
-            return .noStrategy("Listed only") // P2-3: a git/path source becomes .manualOnly instead.
+        case .cargo(_, _, let source):
+            switch source {
+            case .registry: return .noStrategy("Listed only")
+            case .git: return .blocked(.manualOnly, "Installed from git")
+            case .path: return .blocked(.manualOnly, "Installed from a local path")
+            }
         case .gem(_, _, let systemOwned):
             return systemOwned ? .blocked(.systemOwned, "Managed by system Ruby") : .noStrategy("Listed only")
         case .appStore:
@@ -526,7 +530,7 @@ enum StrategyPlanner {
             return packages.pipx != package
         case .uvTool(let name):
             return packages.uv != name
-        case .cargo(_, let crate):
+        case .cargo(_, let crate, _):
             return packages.cargo != crate
         case .gem(_, let name, _):
             return packages.gem != name

@@ -8,5 +8,6 @@ enum DiscoveryEnumeratorRegistry {
         UvToolEnumerator(),
         PipxEnumerator(),
         PipUserEnumerator(),
+        CargoEnumerator(),
     ]
 }
