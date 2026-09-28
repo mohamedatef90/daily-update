@@ -73,9 +73,8 @@ protocol ReadOnlyFileSystem: Sendable {
 /// The real filesystem. Every read goes through this file only; the lint in
 /// `DiscoveryLintTests` fails if any other file under `Engine/Discovery/` uses a write API.
 struct LiveFileSystem: ReadOnlyFileSystem {
-    /// §7.3: at most 5,000 entries per root. A caller that needs the full list for a large
-    /// directory should page with `contentsOfDirectory`'s natural order; this cap only protects
-    /// against a runaway or hostile directory.
+    /// §7.3: at most 5,000 entries per root. This cap only protects against a runaway or hostile
+    /// directory; hitting it is always reported (`truncated`), never silent.
     let maxDirectoryEntries: Int
 
     init(maxDirectoryEntries: Int = 5000) {
@@ -84,7 +83,10 @@ struct LiveFileSystem: ReadOnlyFileSystem {
 
     func contentsOfDirectory(_ path: String) throws -> (entries: [String], truncated: Bool) {
         do {
-            let entries = try FileManager.default.contentsOfDirectory(atPath: path)
+            // P2-2 (CR re-review FU1): `FileManager`'s order is unspecified, so the entries are
+            // sorted before the cap is applied. A capped root then always yields the same partial
+            // set, and every enumerator sees entries in the same order on every run (D18).
+            let entries = try FileManager.default.contentsOfDirectory(atPath: path).sorted()
             return (Array(entries.prefix(maxDirectoryEntries)), entries.count > maxDirectoryEntries)
         } catch {
             throw ReadOnlyFileSystemError.unreadable(path)
