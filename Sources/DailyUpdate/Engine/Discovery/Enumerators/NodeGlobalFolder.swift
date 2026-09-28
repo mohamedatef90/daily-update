@@ -29,7 +29,12 @@ extension NodePackageReader {
             }
             let folder = DiscoveryPaths.join(globalFolder, "node_modules", name)
             guard let canonicalFolder = scan.canonical(folder) else {
-                scan.report(.unreadable, root: folder, message: "\(label): \(name) is listed but not installed")
+                if scan.fileSystem.lstat(folder) == nil {
+                    scan.report(.unreadable, root: folder, message: "\(label): \(name) is listed but not installed")
+                } else {
+                    _ = scan.read(DiscoveryPaths.join(folder, "package.json"), maxBytes: EnumerationScan.manifestByteCap,
+                        root: folder, required: true)
+                }
                 continue
             }
             guard let packageManifest = readManifest(folder: canonicalFolder, expectedName: name, label: label, scan: &scan),

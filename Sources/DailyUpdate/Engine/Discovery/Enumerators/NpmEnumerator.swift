@@ -180,7 +180,10 @@ struct NpmEnumerator: Enumerator {
             }
             let folder = DiscoveryPaths.join(nodeModules, name)
             guard let canonicalFolder = scan.canonical(folder) else {
-                scan.report(.unreadable, root: folder, message: "npm (\(root.label)): couldn't resolve \(name)")
+                // Reading through the unresolved path reports the precise kind: `capReached` for a
+                // symlink chain past the OS limit (D22), `unreadable` for anything else.
+                _ = scan.read(DiscoveryPaths.join(folder, "package.json"), maxBytes: EnumerationScan.manifestByteCap,
+                    root: folder, required: true)
                 continue
             }
             guard let manifest = NodePackageReader.readManifest(folder: canonicalFolder, expectedName: name, label: "npm (\(root.label))", scan: &scan) else {
