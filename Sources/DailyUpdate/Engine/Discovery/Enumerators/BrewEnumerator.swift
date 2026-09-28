@@ -440,7 +440,10 @@ struct BrewEnumerator: Enumerator {
                 latestVersion: nil,
                 pinned: scan.exists(DiscoveryPaths.join(prefix, "var", "homebrew", "pinned", name)),
                 kegOnly: false,
-                installedOnRequest: (receipt?["installed_on_request"] as? Bool) == true,
+                // A receipt that can't be read proves nothing either way, so the formula stays
+                // visible (and the issue is on the Homebrew error row) rather than vanishing as a
+                // dependency.
+                installedOnRequest: receipt.map { ($0["installed_on_request"] as? Bool) == true } ?? true,
                 installedAsDependency: (receipt?["installed_as_dependency"] as? Bool) == true
             )
         }
@@ -514,8 +517,10 @@ struct BrewEnumerator: Enumerator {
             }
 
             var flags: Set<PackageFlag> = []
-            if formula.installedOnRequest { flags.insert(.onRequest) }
-            if formula.installedAsDependency && !formula.installedOnRequest { flags.insert(.dependency) }
+            // D8: "formulae not installed on request" get no row. Homebrew often leaves
+            // `installed_as_dependency` unset (null) on receipts, so only `installed_on_request`
+            // decides.
+            if formula.installedOnRequest { flags.insert(.onRequest) } else { flags.insert(.dependency) }
             if formula.pinned { flags.insert(.pinned) }
             if formula.kegOnly { flags.insert(.kegOnly) }
             if !rootTrusted { flags.insert(.untrustedRoot) }

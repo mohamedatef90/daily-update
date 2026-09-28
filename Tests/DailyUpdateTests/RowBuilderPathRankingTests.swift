@@ -119,6 +119,50 @@ final class RowBuilderPathRankingTests: HermeticTestCase {
         XCTAssertEqual(output.shadowedByUnownedFiles.map(\.command), ["claude"])
     }
 
+    /// Live-run fix: a formula shadowed on several commands is listed under the winner of its
+    /// primary one (`node` for `node@22`), not the alphabetically first (`corepack`).
+    func testShadowedFormulaIsListedUnderItsPrimaryCommandsWinner() async throws {
+        let fixture = FixtureFileSystem()
+        let brew = BrewFixtures.makeTree(fixture)
+        fixture.chmod(fixture.makeFile(at: "opt/homebrew/Cellar/node@22/22.22.2/bin/corepack", contents: "#!/bin/sh\n"), 0o755)
+        fixture.makeSymlink(at: "opt/homebrew/bin/corepack", relativeTarget: "../Cellar/node@22/22.22.2/bin/corepack")
+        let nvm = NodeFixtures.makeNvmVersion(fixture, "24.13.0")
+        NodeFixtures.addPackage(fixture, prefix: ".nvm/versions/node/v24.13.0", name: "corepack", version: "0.34.0",
+            bins: ["corepack": "dist/corepack.js"])
+        let output = await assemble(fixture, loginPath: .known(["\(nvm)/bin", "\(brew)/bin"]))
+
+        let nodeRow = rowID(.nvm, nvm, "node")
+        XCTAssertEqual(output.competing[nodeRow]?.map(\.record.packageID), ["node@22"])
+        XCTAssertEqual(output.competing[nodeRow]?.map(\.command), ["node"])
+        XCTAssertNil(output.competing[rowID(.npm, nvm, "corepack")])
+    }
+
+    /// Live-run fix (D5): the catalog names the npm package, but the catalog's command runs the
+    /// native install. The npm record doesn't take the catalog row; it's listed as shadowed.
+    func testPackageJoinIsRefusedWhenTheCatalogCommandRunsAnotherFile() async throws {
+        let fixture = FixtureFileSystem()
+        let native = fixture.makeFile(at: ".local/share/claude/versions/2.1.281", contents: "#!/bin/sh\n")
+        fixture.chmod(native, 0o755)
+        fixture.makeSymlink(at: ".local/bin/claude", absoluteTarget: native)
+        let usrLocal = NodeFixtures.makePrefix(fixture, "usr/local")
+        // Installed but never linked into `bin`: no command, so R2 alone can't place it.
+        NodeFixtures.addPackage(fixture, prefix: "usr/local", name: "@anthropic-ai/claude-code", version: "2.0.0")
+        let catalog = [DetectorConfig(
+            id: "claude-code", name: "Claude Code", category: .cli, description: nil, command: "claude",
+            packages: PackageIdentifiers(npm: "@anthropic-ai/claude-code"),
+            detect: nil, versionCommand: nil, checkCommand: nil, installCommand: nil, updateCommand: "", workingDirectory: nil
+        )]
+        let localBin = NodeFixtures.canonical(fixture, ".local/bin")
+        let output = await assemble(fixture, loginPath: .known(["\(usrLocal)/bin", localBin]), catalog: catalog,
+            candidates: ["claude": ["\(localBin)/claude"]])
+
+        XCTAssertFalse(output.rows.contains { $0.id == "claude-code" })
+        XCTAssertFalse(output.rows.contains { $0.inventory?.packageID == "@anthropic-ai/claude-code" })
+        XCTAssertEqual(output.shadowedByUnownedFiles.map(\.record.packageID), ["@anthropic-ai/claude-code"])
+        XCTAssertEqual(output.shadowedByUnownedFiles.map(\.command), ["claude"])
+        XCTAssertEqual(output.shadowedByUnownedFiles.map(\.activePath), [NodeFixtures.canonical(fixture, ".local/share/claude/versions/2.1.281")])
+    }
+
     // MARK: No name merging
 
     /// CR (P2-1): the old key merged command-less packages across two active roots. They're two

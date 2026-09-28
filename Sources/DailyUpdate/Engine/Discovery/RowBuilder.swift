@@ -126,10 +126,16 @@ enum RowBuilder {
             // so, so an update never silently targets an install nobody chose.
             let unknownPathDescription = loginPathKnown ? nil : "PATH unknown"
             let row: DetectorConfig
-            if let joined = joinCatalogEntry(for: winner, catalog: catalog, commandJoins: commandJoins, fileSystem: fileSystem),
-               claimedCatalogIDs.insert(joined.id).inserted {
+            switch joinCatalogEntry(for: winner, catalog: catalog, commandJoins: commandJoins, fileSystem: fileSystem) {
+            case .joined(let joined) where claimedCatalogIDs.insert(joined.id).inserted:
                 row = makeJoinedRow(catalogEntry: joined, record: winner, descriptionOverride: unknownPathDescription)
-            } else {
+            case .catalogCommandRunsAnotherFile(_, let command, let activePath):
+                // D5: the catalog vouches for this package, but its command runs a different
+                // install (npm `claude-code` next to the native `claude`). Not a row of its own;
+                // P2-5 lists it as competing on the catalog row.
+                shadowedByUnowned.append(ShadowedByUnownedFile(record: winner, command: command, path: winner.packageDirectory, activePath: activePath))
+                continue
+            default:
                 row = makeInventoryRow(record: winner, description: unknownPathDescription)
             }
             rows.append(row)
@@ -210,7 +216,12 @@ enum RowBuilder {
                 ranking.winners.append(index)
                 continue
             }
-            guard let hit = shadowedHits[index]?.sorted(by: { ($0.command, $0.path) < ($1.command, $1.path) }).first,
+            // A record is listed under the winner of its primary command when that one is
+            // shadowed too (`node` for brew `node@22`, not the alphabetically first `corepack`).
+            let primary = primaryCommand(of: record)
+            guard let hit = shadowedHits[index]?.sorted(by: {
+                ($0.command == primary ? 0 : 1, $0.command, $0.path) < ($1.command == primary ? 0 : 1, $1.command, $1.path)
+            }).first,
                   let winner = winnerOf[hit.command] else {
                 if record.root.activity != .inactive { ranking.winners.append(index) }
                 continue
@@ -222,6 +233,12 @@ enum RowBuilder {
             }
         }
         return ranking
+    }
+
+    /// `node@22` → `node`, `@google/gemini-cli` → `gemini-cli`, `python@3.12` → `python`.
+    private static func primaryCommand(of record: InstalledPackage) -> String {
+        let base = record.packageID.split(separator: "/").last.map(String.init) ?? record.packageID
+        return base.split(separator: "@").first.map(String.init) ?? base
     }
 
     private static func executableFileIDs(_ record: InstalledPackage, fileSystem: ReadOnlyFileSystem) -> Set<FileID> {
@@ -330,36 +347,54 @@ enum RowBuilder {
 
     /// §1 D6 "by command": each catalog `command` → its first `whence` candidate → that file's
     /// `FileID`. Built once per build (CR FU7).
+    private struct CommandJoin {
+        let entry: DetectorConfig
+        let command: String
+        let fileID: FileID
+        let canonicalPath: String
+    }
+
     private static func catalogCommandFileIDs(
         _ catalog: [DetectorConfig],
         lookup: CommandPathLookup,
         fileSystem: ReadOnlyFileSystem
-    ) -> [(entry: DetectorConfig, fileID: FileID)] {
+    ) -> [CommandJoin] {
         catalog.compactMap { entry in
             guard let command = entry.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty,
                   let candidatePath = lookup.candidates(for: command).first,
                   let canonical = fileSystem.realpath(candidatePath),
                   let stat = fileSystem.stat(canonical) else { return nil }
-            return (entry, stat.fileID)
+            return CommandJoin(entry: entry, command: command, fileID: stat.fileID, canonicalPath: canonical)
         }
     }
 
+    private enum JoinOutcome {
+        case none
+        case joined(DetectorConfig)
+        /// The catalog names this package, but its `command` runs a file this record doesn't own.
+        case catalogCommandRunsAnotherFile(DetectorConfig, command: String, activePath: String)
+    }
+
     /// §1 D6: by command (the catalog command runs one of this record's files), then by package.
-    /// Never by display name. `commandJoins` is empty when the login PATH isn't known (S4).
+    /// Never by display name. `commandJoins` is empty when the login PATH isn't known (S4), and
+    /// then the package join stands on its own. With a known PATH, the package join is refused
+    /// when the entry's command demonstrably runs another file: that catalog row belongs to what
+    /// runs, and this record only competes with it.
     private static func joinCatalogEntry(
         for record: InstalledPackage,
         catalog: [DetectorConfig],
-        commandJoins: [(entry: DetectorConfig, fileID: FileID)],
+        commandJoins: [CommandJoin],
         fileSystem: ReadOnlyFileSystem
-    ) -> DetectorConfig? {
-        if !commandJoins.isEmpty {
-            let recordFileIDs = executableFileIDs(record, fileSystem: fileSystem)
-            if let join = commandJoins.first(where: { recordFileIDs.contains($0.fileID) }) { return join.entry }
+    ) -> JoinOutcome {
+        let recordFileIDs = executableFileIDs(record, fileSystem: fileSystem)
+        if let join = commandJoins.first(where: { recordFileIDs.contains($0.fileID) }) { return .joined(join.entry) }
+        for entry in catalog where entry.packages?.identifier(for: record.ecosystem) == record.packageID {
+            if let join = commandJoins.first(where: { $0.entry.id == entry.id }) {
+                return .catalogCommandRunsAnotherFile(entry, command: join.command, activePath: join.canonicalPath)
+            }
+            return .joined(entry)
         }
-        for entry in catalog {
-            if entry.packages?.identifier(for: record.ecosystem) == record.packageID { return entry }
-        }
-        return nil
+        return .none
     }
 
     // MARK: - Row construction

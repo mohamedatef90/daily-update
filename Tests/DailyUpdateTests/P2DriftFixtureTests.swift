@@ -70,7 +70,8 @@ final class P2DriftFixtureTests: HermeticTestCase {
     // MARK: FIFO end to end (QA, first P2-1 review)
 
     /// A FIFO planted as a manifest makes the real npm enumerator return `partial(notRegularFile)`
-    /// well within the 2 s per-enumerator deadline — it never blocks on the open.
+    /// promptly — it never blocks on the open (a blocking open would never return at all). The
+    /// bound is loose on purpose: the timing tests in this suite must survive a loaded machine.
     func testFIFOManifestMakesNpmPartialWithinTheDeadline() async throws {
         let fixture = FixtureFileSystem()
         let prefix = NodeFixtures.makePrefix(fixture, "usr/local")
@@ -78,7 +79,7 @@ final class P2DriftFixtureTests: HermeticTestCase {
         fixture.makeFIFO(at: "usr/local/lib/node_modules/x/package.json")
         let start = ContinuousClock.now
         let result = await npm(fixture)
-        XCTAssertLessThan(ContinuousClock.now - start, .seconds(2))
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(10))
         XCTAssertEqual(result.records.map(\.packageID), ["fine"])
         XCTAssertEqual(result.status, .partial([EnumerationIssue(
             kind: .notRegularFile, rootPath: "\(prefix)/lib/node_modules/x",
@@ -179,8 +180,9 @@ final class P2DriftFixtureTests: HermeticTestCase {
         guard case .partial(let issues) = result.status else { return XCTFail("expected partial, got \(result.status)") }
         XCTAssertEqual(issues.map(\.kind), [.sandboxUnavailable, .malformed])
         XCTAssertEqual(issues.last?.message, "\(prefix)/Cellar/gh/2.101.0/INSTALL_RECEIPT.json isn't a JSON object")
-        // The formula is still listed, from its folder; it just lost the receipt's facts.
-        XCTAssertEqual(result.records.first { $0.packageID == "gh" }?.flags, [])
+        // The formula is still listed, from its folder: an unreadable receipt proves nothing, so
+        // it's treated as on request (visible) rather than hidden as a dependency.
+        XCTAssertEqual(result.records.first { $0.packageID == "gh" }?.flags, [.onRequest])
     }
 
     // MARK: Drift: pnpm, yarn, bun

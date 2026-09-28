@@ -132,6 +132,23 @@ final class BrewEnumeratorTests: HermeticTestCase {
         XCTAssertFalse(result.records.contains { $0.packageID == "-rf" })
     }
 
+    /// Live-run fix (D8): Homebrew leaves `installed_as_dependency` null on many receipts, so
+    /// "not installed on request" alone makes a dependency — in the JSON and in the fallback.
+    func testNotOnRequestIsADependencyEvenWhenAsDependencyIsNull() async throws {
+        let fixture = FixtureFileSystem()
+        BrewFixtures.makeTree(fixture)
+        fixture.makeFile(at: "opt/homebrew/Cellar/abseil/20260107.1/INSTALL_RECEIPT.json",
+            contents: #"{"installed_on_request": false, "installed_as_dependency": null, "source": {"tap": "homebrew/core"}}"#)
+        let json = BrewFixtures.installedJSON.replacingOccurrences(
+            of: #""installed": [{"version": "20260107.1", "installed_as_dependency": true, "installed_on_request": false}]"#,
+            with: #""installed": [{"version": "20260107.1", "installed_as_dependency": null, "installed_on_request": false}]"#)
+        XCTAssertNotEqual(json, BrewFixtures.installedJSON)
+        let enriched = await BrewEnumerator(enricher: { _ in BrewFixtures.ranOutcome(json) }).enumerate(BrewFixtures.context(fixture))
+        XCTAssertEqual(enriched.records.first { $0.packageID == "abseil" }?.flags, [.dependency])
+        let fallback = await BrewEnumerator(enricher: { _ in .sandboxUnavailable }).enumerate(BrewFixtures.context(fixture))
+        XCTAssertEqual(fallback.records.first { $0.packageID == "abseil" }?.flags, [.dependency])
+    }
+
     // MARK: Task 2 — sandbox runner and the filesystem fallback
 
     private func assertFallbackRecords(_ result: EnumerationResult, prefix: String, file: StaticString = #filePath, line: UInt = #line) {
