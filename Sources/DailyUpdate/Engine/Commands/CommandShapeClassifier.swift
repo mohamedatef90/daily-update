@@ -147,6 +147,9 @@ enum CommandShapeClassifier {
             if isBulkOperation(words: words) {
                 risks.insert(.bulk)
             }
+            if isDownloadThenRun(words) {
+                risks.insert(.remoteScript)
+            }
         }
 
         if isRemoteScript(trimmed, tokens: tokens) {
@@ -197,6 +200,8 @@ enum CommandShapeClassifier {
                 if armTokens.prefix(executableIndex + 1).contains(where: \.hasUnquotedBrace) || unwrap(words).failsClosed
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
                     || shellScriptFollowsOption(words) || changesShellEvaluation(words)
+                    || runsHiddenPackage(words) || writesManagerConfig(words) || runsBrewInterpreter(words)
+                    || runsUnresolvedNpmVerb(words)
                     || !commandWordsBehindUnknownExecutable(words).isEmpty || !embeddedCommandLines(words).isEmpty {
                     failsClosed = true
                 }
@@ -292,7 +297,7 @@ enum CommandShapeClassifier {
         .union(privilegeCommands)
         .union(["env", "nice", "timeout", "nohup", "caffeinate", "xargs", "taskpolicy", "exec", "arch",
             // Not `find`: it is also a verb (`npx skills find`), and `find -exec sh …` still names `sh`.
-            "eval", "trap", "source", "xcrun", "sandbox-exec",
+            "eval", "trap", "source", "xcrun", "sandbox-exec", "launchctl",
             "brew", "npm", "npx", "pnpm", "yarn", "gem", "pip", "pip3", "pipx", "uv", "cargo", "rustup", "mas",
             "mise", "softwareupdate", "rm", "dd", "diskutil", "chmod", "chown", "shred", "srm"])
 
@@ -307,8 +312,9 @@ enum CommandShapeClassifier {
         guard knownExecutables.contains(executable) else { return args }
         // The first exec verb anywhere: an option that takes a value (`--prefix /tmp`) hides a
         // "first non-option" verb.
-        guard packageManagerExecutables.contains(executable),
-              let verb = args.firstIndex(where: packageManagerExecVerbs.contains) else { return nil }
+        let isExecVerb: (String) -> Bool = executable == "npm"
+            ? { npmVerb($0).map(npmExecVerbs.contains) ?? false } : packageManagerExecVerbs.contains
+        guard packageManagerExecutables.contains(executable), let verb = args.firstIndex(where: isExecVerb) else { return nil }
         var rest = args
         rest.remove(at: verb)
         return rest
@@ -572,6 +578,163 @@ enum CommandShapeClassifier {
         return false
     }
 
+    // MARK: - Download-then-run
+
+    /// Runners whose first operand is a package to fetch and run: `npx cowsay`, `uvx ruff`.
+    private static let packageRunners: Set<String> = ["npx", "pnpx", "bunx", "uvx"]
+
+    /// Manager verbs that fetch a package and run it (`npm exec`, `pnpm dlx`, `uv tool run`).
+    private static let downloadThenRunVerbs: [String: [[String]]] = [
+        "npm": [["exec"], ["x"]], "pnpm": [["dlx"]], "yarn": [["dlx"]], "bun": [["x"]],
+        "uv": [["tool", "run"]], "pipx": [["run"]],
+    ]
+
+    /// Initializers are packages too: `npm init vite` runs `npx create-vite` (RC7). npm's
+    /// `create` and `innit` are aliases of `init` (`npmVerb`).
+    private static let initializerVerbs: [String: [[String]]] = [
+        "npm": [["init"]], "yarn": [["create"]], "pnpm": [["create"]], "bun": [["create"]],
+    ]
+
+    /// npm runs any unique prefix of a command or alias (`cmd-list.js`, `deref`): `npm exe` is
+    /// `npm exec`, `npm cr` is `npm create` (an alias of `init`) and `npm c` is `npm config`.
+    private static let npmVerbAliases: [String: String] = [
+        "exe": "exec",
+        "ini": "init", "inn": "init", "inni": "init", "innit": "init",
+        "cr": "init", "cre": "init", "crea": "init", "creat": "init", "create": "init",
+        "c": "config", "con": "config", "conf": "config", "confi": "config",
+        "explo": "explore", "explor": "explore",
+    ]
+
+    /// The npm verbs these rules match. Another strict prefix of one (`npm ex`, `npm co`) is
+    /// for npm's command list to resolve, so it fails closed; `npm i` and `npm in` are install.
+    private static let npmMatchedVerbs = ["exec", "init", "create", "config", "explore"]
+    private static let npmInstallAliases: Set<String> = ["i", "in"]
+
+    /// npm's exec verbs: `npm explore <pkg> -- <cmd>` runs `<cmd>` in a shell.
+    private static let npmExecVerbs = packageManagerExecVerbs.union(["explore"])
+
+    /// The npm command a verb word names, lower-cased; `nil` when it is a strict prefix of a
+    /// matched verb that `npmVerbAliases` does not resolve.
+    private static func npmVerb(_ word: String) -> String? {
+        let verb = word.lowercased()
+        if let canonical = npmVerbAliases[verb] { return canonical }
+        if npmInstallAliases.contains(verb) { return verb }
+        return npmMatchedVerbs.contains { $0.count > verb.count && $0.hasPrefix(verb) } ? nil : verb
+    }
+
+    /// An npm verb this model does not resolve (`npm ex`), or `npm explore`, which runs a shell
+    /// in a package. An update needs neither.
+    private static func runsUnresolvedNpmVerb(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard stripped.first.map(normalizedExecutableName) == "npm" else { return false }
+        let args = Array(stripped.dropFirst())
+        return verbCandidates(args[...]).contains { npmVerb(args[$0]).map { $0 == "explore" } ?? true }
+    }
+
+    /// `deno run` operands it fetches (RC7). Any operand counts, so option arity needs no parsing.
+    private static let denoRemoteSchemes = ["npm:", "jsr:", "http:", "https:"]
+
+    /// A package runner or manager verb that downloads a package and runs it, through wrappers
+    /// and on absolute paths. A pinned version is still remote code.
+    private static func isDownloadThenRun(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), !isCommandLookup(words, stripped: stripped)
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        if packageRunners.contains(executable) { return !operands(args[...]).isEmpty }
+        if executable == "deno", let run = verbIndex(args, path: ["run"]) {
+            return args[(run + 1)...].contains { arg in denoRemoteSchemes.contains { arg.lowercased().hasPrefix($0) } }
+        }
+        let paths = (downloadThenRunVerbs[executable] ?? []) + (initializerVerbs[executable] ?? [])
+        return paths.contains { path in
+            verbIndex(args, path: path, npm: executable == "npm").map { !operands(args[($0 + 1)...]).isEmpty } ?? false
+        }
+    }
+
+    /// A bare `npx` or `npm exec` runs the `call` config from `.npmrc` or the environment,
+    /// which the command text does not show.
+    private static func runsHiddenPackage(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), !isCommandLookup(words, stripped: stripped)
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        if executable == "npx" { return operands(args[...]).isEmpty }
+        guard executable == "npm" else { return false }
+        return [["exec"], ["x"]].contains { path in
+            verbIndex(args, path: path, npm: true).map { operands(args[($0 + 1)...]).isEmpty } ?? false
+        }
+    }
+
+    /// Verbs that change package-manager config. An update command never needs to, and
+    /// `call` or `script-shell` makes a later command run something else.
+    private static let configWriteVerbs: [String: [[String]]] = [
+        "npm": [["config", "set"], ["config", "edit"], ["config", "delete"], ["set"]],
+        "pnpm": [["config", "set"], ["config", "delete"]],
+        "yarn": [["config", "set"], ["config", "delete"], ["config", "unset"]],
+    ]
+
+    private static func writesManagerConfig(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard let executable = stripped.first.map(normalizedExecutableName), let paths = configWriteVerbs[executable]
+        else { return false }
+        let args = Array(stripped.dropFirst())
+        return paths.contains { verbIndex(args, path: $0, npm: executable == "npm") != nil }
+    }
+
+    /// `command -v`/`-V` prints what a name resolves to; it runs nothing. Only `command`'s own
+    /// options count: they end at its first word that is not an option (`command env -v npx`
+    /// runs `env`, whose `-v` is verbose).
+    private static func isCommandLookup(_ words: [String], stripped: [String]) -> Bool {
+        let consumed = words.prefix(words.count - stripped.count)
+        guard let command = consumed.lastIndex(where: { normalizedExecutableName($0) == "command" }) else { return false }
+        let options = consumed[(command + 1)...].prefix { $0.hasPrefix("-") && !$0.hasPrefix("--") }
+        return options.contains { $0.contains(where: "vV".contains) }
+    }
+
+    /// Words that are neither an option nor `--`.
+    private static func operands(_ args: ArraySlice<String>) -> [String] {
+        args.filter { !$0.hasPrefix("-") }
+    }
+
+    /// Manager options known to take no value, so the word after them is an operand.
+    private static let valuelessManagerOptions: Set<String> = [
+        "-g", "--global", "-y", "--yes", "-q", "--quiet", "-s", "--silent", "-v", "--verbose", "-d", "--debug",
+        "-r", "--recursive", "--json", "--offline", "--no-cache", "-n", "--dry-run",
+    ]
+
+    /// Where a manager's verb may be: its first operand, and every operand before that which
+    /// follows an option that may take a value (`npm --prefix /tmp exec`, `uv --directory d tool run`).
+    private static func verbCandidates(_ args: ArraySlice<String>) -> [Int] {
+        var candidates: [Int] = []
+        var mayBeValue = false
+        for index in args.indices {
+            let arg = args[index]
+            if arg.hasPrefix("-") {
+                mayBeValue = arg != "--" && !arg.contains("=") && !valuelessManagerOptions.contains(arg)
+                continue
+            }
+            candidates.append(index)
+            if !mayBeValue { break }
+            mayBeValue = false
+        }
+        return candidates
+    }
+
+    /// The index of the last word of a verb path (`tool run`), each word a verb candidate
+    /// after the previous one; `nil` when the words do not start with it. For `npm`, the
+    /// first word goes through `npmVerb`.
+    private static func verbIndex(_ args: [String], path: [String], npm: Bool = false) -> Int? {
+        var start = args.startIndex
+        var found: Int?
+        for verb in path {
+            let name: (String) -> String? = npm && found == nil ? npmVerb : { $0.lowercased() }
+            guard let index = verbCandidates(args[start...]).first(where: { name(args[$0]) == verb }) else { return nil }
+            found = index
+            start = index + 1
+        }
+        return found
+    }
+
     private static func isBulkOperation(words: [String]) -> Bool {
         let normalizedAll = normalizedTokens(words: words)
         let includesXargs = normalizedAll.contains("xargs")
@@ -702,6 +865,7 @@ enum CommandShapeClassifier {
         // `trap` runs its first argument as code; `find -exec` runs the words up to `;` or `+`.
         if executable == "trap" { return stripped.dropFirst().first { $0 != "--" }.map { [$0] } ?? [] }
         if executable == "find" { return findExecCommands(Array(stripped.dropFirst())) }
+        if executable == "launchctl" { return launchctlCommands(Array(stripped.dropFirst())) + embeddedCommandLines(words) }
         guard shellExecutables.contains(executable) else {
             return embeddedCommandLines(words)
         }
@@ -841,7 +1005,14 @@ enum CommandShapeClassifier {
         return stripped[0].contains(replacement)
     }
 
-    /// A package manager behind `xargs` whose verb is not literal, so the input picks it
+    /// npm verbs whose next word `xargs` input may supply: the package to run (`xargs npm init`)
+    /// or the config subcommand (`xargs npm c` + `set call …`).
+    private static let npmVerbsTakingInput: Set<String> = ["exec", "x", "init", "config", "explore"]
+
+    /// Programs whose verb `xargs` input may pick: the package managers, and `git` (`clean -fdx`).
+    private static let xargsVerbPickers: Set<String> = packageManagerExecutables.union(["git"])
+
+    /// A package manager (or `git`) behind `xargs` whose verb is not literal, so the input picks it
     /// (`xargs npm` + `exec sudo id`, `xargs -I{} brew {} -c …`). The verb must be the first
     /// argument, or follow `--opt=value` options only: `--prefix /tmp` could leave the verb
     /// position to the input.
@@ -850,9 +1021,10 @@ enum CommandShapeClassifier {
         let consumed = words.prefix(words.count - stripped.count)
         guard let xargs = consumed.lastIndex(where: { normalizedExecutableName($0) == "xargs" }),
               let executable = stripped.first.map(normalizedExecutableName),
-              packageManagerExecutables.contains(executable) else { return false }
+              xargsVerbPickers.contains(executable) else { return false }
         guard let verb = stripped.dropFirst().first(where: { !($0.hasPrefix("-") && $0.contains("=")) }),
               !verb.hasPrefix("-") else { return true }
+        if executable == "npm", npmVerb(verb).map(npmVerbsTakingInput.contains) ?? true { return true }
         guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
         return verb.contains(replacement)
     }
@@ -994,11 +1166,16 @@ enum CommandShapeClassifier {
         return runsShell && names.contains { !shellSafeVariables.contains($0) }
     }
 
-    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case),
-    /// which npm, pnpm and yarn v1 read as config. `npm_config_call` is `-c`, so a bare `npx`
-    /// or `npm exec` runs its value through `sh`.
+    /// npm config keys that change only output, matched exactly after `npm_config_`.
+    private static let harmlessNpmConfigKeys: Set<String> = ["loglevel", "color", "progress", "fund", "audit", "update_notifier"]
+
+    /// Names read as code: the startup variables above, and any `npm_config_*` (in any case)
+    /// but the harmless keys, which npm, pnpm and yarn v1 read as config. `npm_config_call` is
+    /// `-c`, so a bare `npx` or `npm exec` runs its value through `sh`.
     private static func isCodeVariable(_ name: String) -> Bool {
-        startupVariables.contains(name) || name.lowercased().hasPrefix("npm_config_")
+        let lowered = name.lowercased()
+        guard lowered.hasPrefix("npm_config_") else { return startupVariables.contains(name) }
+        return !harmlessNpmConfigKeys.contains(String(lowered.dropFirst("npm_config_".count)))
     }
 
     /// The code variables above, anywhere; an exported name that is not written out
@@ -1014,6 +1191,8 @@ enum CommandShapeClassifier {
         let args = Array(stripped.dropFirst())
         switch executable {
         case "export", "declare", "typeset", "readonly", "local", "integer", "setenv":
+            // A nameref (`declare -n r=npm_config_call`) reaches a code variable under another name.
+            if ["declare", "typeset", "local"].contains(executable), args.contains(where: isNamerefOption) { return true }
             // `setenv NAME value`: only the first operand is a name.
             let operands = args.filter { !$0.hasPrefix("-") }
             let names = (executable == "setenv" ? Array(operands.prefix(1)) : operands).map(assignedName)
@@ -1023,12 +1202,26 @@ enum CommandShapeClassifier {
                 let option = arg.lowercased().replacingOccurrences(of: "_", with: "")
                 let letters = (arg.hasPrefix("-") || arg.hasPrefix("+")) && !arg.hasPrefix("--") ? arg.dropFirst() : ""
                 return option.contains("globsubst") || option.contains("allexport") || letters.contains("a")
+                    || arg.contains(where: nameExpansionCharacters.contains)
             }
+        case "shopt":
+            // `shopt -o` sets `set -o` options. An expansion (`shopt -s $X`, `X='-o allexport'`)
+            // already fails closed: `shopt` is not a known executable, so it is an embedded command line.
+            let setsShellOption = args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("o") }
+            return setsShellOption && args.contains { $0.lowercased().replacingOccurrences(of: "_", with: "").contains("allexport") }
         case "emulate":
             return !args.allSatisfy { ["-L", "-R", "zsh"].contains($0) }
         default:
             return false
         }
+    }
+
+    /// Characters that make a word expand to another option or name, as `isShellName` rejects them.
+    private static let nameExpansionCharacters = Set("$`{*?[")
+
+    /// An option cluster of `declare`/`typeset`/`local` with `n` (`-n`, `-gn`).
+    private static func isNamerefOption(_ arg: String) -> Bool {
+        arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.dropFirst().contains("n")
     }
 
     /// `find -exec` re-quotes its body word by word, so a brace list inside it is not modelled.
@@ -1043,6 +1236,34 @@ enum CommandShapeClassifier {
             if ["-exec", "-execdir", "-ok", "-okdir"].contains(token.value) { inBody = true }
         }
         return false
+    }
+
+    /// The command line `launchctl` runs: after `--` for `submit`, and after the uid or pid
+    /// for `asuser` and `bsexec`. It is classified like any nested command.
+    private static func launchctlCommands(_ args: [String]) -> [String] {
+        let command: ArraySlice<String>
+        switch args.first?.lowercased() {
+        case "submit": command = args.firstIndex(of: "--").map { args[($0 + 1)...] } ?? []
+        case "asuser", "bsexec": command = args.dropFirst(2)
+        default: return []
+        }
+        return command.isEmpty ? [] : [command.map(ShellEscaping.quote).joined(separator: " ")]
+    }
+
+    /// `brew --prefix ruby` names a formula: these options are brew commands, so the verb is theirs.
+    /// Not `-v`: Homebrew moves a leading `-v` to the end (`brew.sh`), so `brew -v ruby` is `brew ruby -v`.
+    private static let brewOptionCommands: Set<String> = [
+        "--prefix", "--cellar", "--cache", "--caskroom", "--repository", "--repo", "--env", "--config", "--version",
+    ]
+
+    /// `brew ruby`, `brew irb` and `brew sh` run Ruby or a shell with Homebrew's environment,
+    /// like `npm exec`. The verb is brew's first word that is not a flag.
+    private static func runsBrewInterpreter(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard stripped.first.map(normalizedExecutableName) == "brew",
+              let verb = stripped.dropFirst().first(where: { !$0.hasPrefix("-") || brewOptionCommands.contains($0) })
+        else { return false }
+        return ["ruby", "irb", "sh"].contains(verb.lowercased())
     }
 
     private static func findExecCommands(_ args: [String]) -> [String] {
