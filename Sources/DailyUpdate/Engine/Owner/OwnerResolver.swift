@@ -210,16 +210,25 @@ enum OwnerResolver {
         pattern: #"^(?:@(?:[a-z0-9-~][a-z0-9-._~]*)/[a-z0-9-~][a-z0-9-._~]*|[a-z0-9-~][a-z0-9-._~]*)$"#
     )
 
-    static func lookup(commandNames: [String], layout: EcosystemLayout = .live()) async -> CommandPathLookup {
-        let uniqueNames = Array(Set(commandNames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
-            .filter { !$0.isEmpty }
-            .sorted()
-        let validNames = uniqueNames.filter { isValidCommandName($0) }
-        guard !validNames.isEmpty else {
-            return CommandPathLookup(candidatesByName: [:], layout: layout)
-        }
+    /// P2-2 (CR re-review FU2, Security FU3): `brew` is always part of the batch, so the
+    /// trusted-`brew` prefix fallback below always has a candidate to look at, and the batch always
+    /// runs — even with no valid catalog name — so discovery never ends up with a login PATH that
+    /// is merely "not queried".
+    static let alwaysLookedUpCommandNames = ["brew"]
+
+    static func lookup(
+        commandNames: [String],
+        layout: EcosystemLayout = .live(),
+        timeout: TimeInterval = 20
+    ) async -> CommandPathLookup {
+        let requested = commandNames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let validNames = Array(Set((requested + alwaysLookedUpCommandNames).filter { isValidCommandName($0) })).sorted()
 
         let overrideNameList = LoginEnvironmentOverrides.allVariableNames.joined(separator: " ")
+        // F4 (Security FU2, CR FU1): every override value is printed NUL-terminated, not
+        // newline-terminated. A value can't contain a NUL, so a value with an embedded newline can
+        // no longer end one entry early and smuggle a second `NAME=value` line in after it; the
+        // newline stays inside the value, where `LoginEnvironmentOverrides.isValid` rejects it.
         let script = """
         for name in "$@"; do
           printf '%s%s\\n' "\(markerPrefix)BEGIN:" "$name"
@@ -232,7 +241,7 @@ enum OwnerResolver {
         printf '%s\\n' "\(markerPrefix)ENV_BEGIN"
         for name in \(overrideNameList); do
           eval "value=\\${$name}"
-          printf '%s=%s\\n' "$name" "$value"
+          printf '%s=%s\\0' "$name" "$value"
         done
         printf '%s\\n' "\(markerPrefix)ENV_END"
         """
@@ -243,7 +252,7 @@ enum OwnerResolver {
             executable: "/bin/zsh",
             arguments: ["-lc", script, "--"] + validNames,
             environment: Self.whenceEnvironment,
-            timeout: 20,
+            timeout: timeout,
             maxStdoutBytes: 1024 * 1024
         ))
 
@@ -257,7 +266,12 @@ enum OwnerResolver {
             )
         }
 
-        let output = String(data: outcome.stdout, encoding: .utf8) ?? ""
+        return parseLookupOutput(String(decoding: outcome.stdout, as: UTF8.self), layout: layout)
+    }
+
+    /// The pure half of `lookup`, split out so D19's "missing END marker" and F4's NUL-delimited
+    /// snapshot can be tested against exact shell output without starting a shell.
+    static func parseLookupOutput(_ output: String, layout: EcosystemLayout) -> CommandPathLookup {
         let candidatesByName = parseWhenceOutput(output)
         let snapshot = parseEnvironmentSnapshot(output)
         return CommandPathLookup(
@@ -323,17 +337,26 @@ enum OwnerResolver {
         return entries.isEmpty ? .empty : .known(entries)
     }
 
+    /// F4: entries are NUL-terminated (see the script above). A name seen twice is dropped
+    /// altogether rather than letting either copy win.
     private static func parseEnvironmentSnapshot(_ output: String) -> [String: String] {
         guard let block = markedBlock(in: output, prefix: "ENV_BEGIN", suffix: "ENV_END") else { return [:] }
         var snapshot: [String: String] = [:]
-        for line in block.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let separator = line.firstIndex(of: "=") else { continue }
-            let name = String(line[line.startIndex..<separator])
-            let value = String(line[line.index(after: separator)...])
-            guard LoginEnvironmentOverrides.allVariableNames.contains(name),
-                  LoginEnvironmentOverrides.isValid(name: name, value: value) else { continue }
+        var seen = Set<String>()
+        var duplicated = Set<String>()
+        for entry in block.split(separator: "\u{0}", omittingEmptySubsequences: true) {
+            guard let separator = entry.firstIndex(of: "=") else { continue }
+            let name = String(entry[entry.startIndex..<separator])
+            let value = String(entry[entry.index(after: separator)...])
+            guard LoginEnvironmentOverrides.allVariableNames.contains(name) else { continue }
+            guard seen.insert(name).inserted else {
+                duplicated.insert(name)
+                continue
+            }
+            guard LoginEnvironmentOverrides.isValid(name: name, value: value) else { continue }
             snapshot[name] = value
         }
+        for name in duplicated { snapshot[name] = nil }
         return snapshot
     }
 
