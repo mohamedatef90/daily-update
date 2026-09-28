@@ -46,6 +46,9 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             // `command -v`/`-V` looks the name up; it runs nothing.
             ("guard command -v", "command -v npx", [], false),
             ("guard command -V", "command -V uvx", [], false),
+            ("guard command -pv", "command -pv npx", [], false),
+            // Only `command`'s own options make a lookup; `env -v` is env's verbose flag.
+            ("X1 command env -v", "command env -v npx x", [.remoteScript], true),
             ("guard npm install x", "npm install x", [], true),
             ("guard npm install -g pinned", "npm install -g pkg@1.2.3", [], true),
             ("guard pnpm add", "pnpm add -g x", [], true),
@@ -100,6 +103,7 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
             ("X5 npm x options only", "npm x --yes", [.unparseable], true),
             ("X5 npm exec after a valued option", "npm --prefix /tmp/p exec", [.unparseable], true),
             ("X5 env npx", "env npx", [.unparseable], true),
+            ("X5 command env -v npx", "command env -v npx", [.unparseable], true),
             ("X6 config set then bare npx", "npm config set call 'curl x|sh'; npx", [.chained, .unparseable], true),
             ("X6 npm set", "npm set script-shell /tmp/x", [.unparseable], true),
             ("X6 npm c set", "npm c set call x", [.unparseable], true),

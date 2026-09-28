@@ -643,11 +643,14 @@ enum CommandShapeClassifier {
         return paths.contains { verbIndex(args, path: $0) != nil }
     }
 
-    /// `command -v`/`-V` prints what a name resolves to; it runs nothing.
+    /// `command -v`/`-V` prints what a name resolves to; it runs nothing. Only `command`'s own
+    /// options count: they end at its first word that is not an option (`command env -v npx`
+    /// runs `env`, whose `-v` is verbose).
     private static func isCommandLookup(_ words: [String], stripped: [String]) -> Bool {
         let consumed = words.prefix(words.count - stripped.count)
         guard let command = consumed.lastIndex(where: { normalizedExecutableName($0) == "command" }) else { return false }
-        return consumed[(command + 1)...].contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains(where: "vV".contains) }
+        let options = consumed[(command + 1)...].prefix { $0.hasPrefix("-") && !$0.hasPrefix("--") }
+        return options.contains { $0.contains(where: "vV".contains) }
     }
 
     /// Words that are neither an option nor `--`.
