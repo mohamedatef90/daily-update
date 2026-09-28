@@ -201,6 +201,7 @@ enum CommandShapeClassifier {
                     || findExecBodyHasUnquotedBrace(Array(armTokens.dropFirst(executableIndex)))
                     || shellScriptFollowsOption(words) || changesShellEvaluation(words)
                     || runsHiddenPackage(words) || writesManagerConfig(words) || runsBrewInterpreter(words)
+                    || runsUnresolvedNpmVerb(words)
                     || !commandWordsBehindUnknownExecutable(words).isEmpty || !embeddedCommandLines(words).isEmpty {
                     failsClosed = true
                 }
@@ -311,8 +312,9 @@ enum CommandShapeClassifier {
         guard knownExecutables.contains(executable) else { return args }
         // The first exec verb anywhere: an option that takes a value (`--prefix /tmp`) hides a
         // "first non-option" verb.
-        guard packageManagerExecutables.contains(executable),
-              let verb = args.firstIndex(where: packageManagerExecVerbs.contains) else { return nil }
+        let isExecVerb: (String) -> Bool = executable == "npm"
+            ? { npmVerb($0).map(npmExecVerbs.contains) ?? false } : packageManagerExecVerbs.contains
+        guard packageManagerExecutables.contains(executable), let verb = args.firstIndex(where: isExecVerb) else { return nil }
         var rest = args
         rest.remove(at: verb)
         return rest
@@ -587,10 +589,47 @@ enum CommandShapeClassifier {
         "uv": [["tool", "run"]], "pipx": [["run"]],
     ]
 
-    /// Initializers are packages too: `npm init vite` runs `npx create-vite` (RC7).
+    /// Initializers are packages too: `npm init vite` runs `npx create-vite` (RC7). npm's
+    /// `create` and `innit` are aliases of `init` (`npmVerb`).
     private static let initializerVerbs: [String: [[String]]] = [
-        "npm": [["init"], ["create"], ["innit"]], "yarn": [["create"]], "pnpm": [["create"]], "bun": [["create"]],
+        "npm": [["init"]], "yarn": [["create"]], "pnpm": [["create"]], "bun": [["create"]],
     ]
+
+    /// npm runs any unique prefix of a command or alias (`cmd-list.js`, `deref`): `npm exe` is
+    /// `npm exec`, `npm cr` is `npm create` (an alias of `init`) and `npm c` is `npm config`.
+    private static let npmVerbAliases: [String: String] = [
+        "exe": "exec",
+        "ini": "init", "inn": "init", "inni": "init", "innit": "init",
+        "cr": "init", "cre": "init", "crea": "init", "creat": "init", "create": "init",
+        "c": "config", "con": "config", "conf": "config", "confi": "config",
+        "explo": "explore", "explor": "explore",
+    ]
+
+    /// The npm verbs these rules match. Another strict prefix of one (`npm ex`, `npm co`) is
+    /// for npm's command list to resolve, so it fails closed; `npm i` and `npm in` are install.
+    private static let npmMatchedVerbs = ["exec", "init", "create", "config", "explore"]
+    private static let npmInstallAliases: Set<String> = ["i", "in"]
+
+    /// npm's exec verbs: `npm explore <pkg> -- <cmd>` runs `<cmd>` in a shell.
+    private static let npmExecVerbs = packageManagerExecVerbs.union(["explore"])
+
+    /// The npm command a verb word names, lower-cased; `nil` when it is a strict prefix of a
+    /// matched verb that `npmVerbAliases` does not resolve.
+    private static func npmVerb(_ word: String) -> String? {
+        let verb = word.lowercased()
+        if let canonical = npmVerbAliases[verb] { return canonical }
+        if npmInstallAliases.contains(verb) { return verb }
+        return npmMatchedVerbs.contains { $0.count > verb.count && $0.hasPrefix(verb) } ? nil : verb
+    }
+
+    /// An npm verb this model does not resolve (`npm ex`), or `npm explore`, which runs a shell
+    /// in a package. An update needs neither.
+    private static func runsUnresolvedNpmVerb(_ words: [String]) -> Bool {
+        let stripped = stripWrappersRaw(words)
+        guard stripped.first.map(normalizedExecutableName) == "npm" else { return false }
+        let args = Array(stripped.dropFirst())
+        return verbCandidates(args[...]).contains { npmVerb(args[$0]).map { $0 == "explore" } ?? true }
+    }
 
     /// `deno run` operands it fetches (RC7). Any operand counts, so option arity needs no parsing.
     private static let denoRemoteSchemes = ["npm:", "jsr:", "http:", "https:"]
@@ -608,7 +647,7 @@ enum CommandShapeClassifier {
         }
         let paths = (downloadThenRunVerbs[executable] ?? []) + (initializerVerbs[executable] ?? [])
         return paths.contains { path in
-            verbIndex(args, path: path).map { !operands(args[($0 + 1)...]).isEmpty } ?? false
+            verbIndex(args, path: path, npm: executable == "npm").map { !operands(args[($0 + 1)...]).isEmpty } ?? false
         }
     }
 
@@ -622,15 +661,14 @@ enum CommandShapeClassifier {
         if executable == "npx" { return operands(args[...]).isEmpty }
         guard executable == "npm" else { return false }
         return [["exec"], ["x"]].contains { path in
-            verbIndex(args, path: path).map { operands(args[($0 + 1)...]).isEmpty } ?? false
+            verbIndex(args, path: path, npm: true).map { operands(args[($0 + 1)...]).isEmpty } ?? false
         }
     }
 
     /// Verbs that change package-manager config. An update command never needs to, and
     /// `call` or `script-shell` makes a later command run something else.
     private static let configWriteVerbs: [String: [[String]]] = [
-        "npm": [["config", "set"], ["config", "edit"], ["config", "delete"], ["c", "set"], ["c", "edit"],
-            ["c", "delete"], ["set"]],
+        "npm": [["config", "set"], ["config", "edit"], ["config", "delete"], ["set"]],
         "pnpm": [["config", "set"], ["config", "delete"]],
         "yarn": [["config", "set"], ["config", "delete"], ["config", "unset"]],
     ]
@@ -640,7 +678,7 @@ enum CommandShapeClassifier {
         guard let executable = stripped.first.map(normalizedExecutableName), let paths = configWriteVerbs[executable]
         else { return false }
         let args = Array(stripped.dropFirst())
-        return paths.contains { verbIndex(args, path: $0) != nil }
+        return paths.contains { verbIndex(args, path: $0, npm: executable == "npm") != nil }
     }
 
     /// `command -v`/`-V` prints what a name resolves to; it runs nothing. Only `command`'s own
@@ -683,12 +721,14 @@ enum CommandShapeClassifier {
     }
 
     /// The index of the last word of a verb path (`tool run`), each word a verb candidate
-    /// after the previous one; `nil` when the words do not start with it.
-    private static func verbIndex(_ args: [String], path: [String]) -> Int? {
+    /// after the previous one; `nil` when the words do not start with it. For `npm`, the
+    /// first word goes through `npmVerb`.
+    private static func verbIndex(_ args: [String], path: [String], npm: Bool = false) -> Int? {
         var start = args.startIndex
         var found: Int?
         for verb in path {
-            guard let index = verbCandidates(args[start...]).first(where: { args[$0].lowercased() == verb }) else { return nil }
+            let name: (String) -> String? = npm && found == nil ? npmVerb : { $0.lowercased() }
+            guard let index = verbCandidates(args[start...]).first(where: { name(args[$0]) == verb }) else { return nil }
             found = index
             start = index + 1
         }
@@ -965,6 +1005,10 @@ enum CommandShapeClassifier {
         return stripped[0].contains(replacement)
     }
 
+    /// npm verbs whose next word `xargs` input may supply: the package to run (`xargs npm init`)
+    /// or the config subcommand (`xargs npm c` + `set call …`).
+    private static let npmVerbsTakingInput: Set<String> = ["exec", "x", "init", "config", "explore"]
+
     /// Programs whose verb `xargs` input may pick: the package managers, and `git` (`clean -fdx`).
     private static let xargsVerbPickers: Set<String> = packageManagerExecutables.union(["git"])
 
@@ -980,6 +1024,7 @@ enum CommandShapeClassifier {
               xargsVerbPickers.contains(executable) else { return false }
         guard let verb = stripped.dropFirst().first(where: { !($0.hasPrefix("-") && $0.contains("=")) }),
               !verb.hasPrefix("-") else { return true }
+        if executable == "npm", npmVerb(verb).map(npmVerbsTakingInput.contains) ?? true { return true }
         guard let replacement = xargsReplacement(Array(consumed.dropFirst(xargs + 1))) else { return false }
         return verb.contains(replacement)
     }

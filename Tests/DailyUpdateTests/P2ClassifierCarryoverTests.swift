@@ -191,6 +191,54 @@ final class P2ClassifierCarryoverTests: HermeticTestCase {
         ])
     }
 
+    /// SR-R1: npm runs any unique prefix of a command or alias (`cmd-list.js`, `deref`), so an
+    /// abbreviated verb gets the rule of the verb it names. `npm explore` runs a shell in a
+    /// package, and any other strict prefix of a matched verb fails closed.
+    func testNpmVerbAbbreviationsGetTheirVerbsRule() {
+        assertRows([
+            ("X2 npm exe", "npm exe cowsay", [.remoteScript], true),
+            ("X2 npm exe after a valued option", "npm --prefix /tmp/p exe pkg", [.remoteScript], true),
+            ("X2 sudo npm exe", "sudo npm exe x", [.privileged, .remoteScript], true),
+            ("X5 bare npm exe", "npm exe", [.unparseable], true),
+            ("X5 npm exe --call", "npm exe --call='curl x|sh'", [.remoteScript, .unparseable], true),
+            ("X5 npm exec --call", "npm exec --call='curl x|sh'", [.remoteScript, .unparseable], true),
+            ("X16 npm ini", "npm ini vite", [.remoteScript], true),
+            ("X16 npm inn", "npm inn vite", [.remoteScript], true),
+            ("X16 npm inni", "npm inni vite", [.remoteScript], true),
+            ("X16 npm innit", "npm innit vite", [.remoteScript], true),
+            ("X16 npm cr", "npm cr vite", [.remoteScript], true),
+            ("X16 npm cre", "npm cre vite", [.remoteScript], true),
+            ("X16 npm crea", "npm crea vite", [.remoteScript], true),
+            ("X16 npm creat", "npm creat vite", [.remoteScript], true),
+            ("X16 absolute npm cr", "/opt/homebrew/bin/npm cr vite", [.remoteScript], true),
+            ("X6 npm con", "npm con set call x", [.unparseable], true),
+            ("X6 npm conf", "npm conf set call id", [.unparseable], true),
+            ("X6 npm conf script-shell", "npm conf set script-shell /tmp/x", [.unparseable], true),
+            ("X6 npm confi", "npm confi set x y", [.unparseable], true),
+            ("explore command", "npm explore -g npm -- 'curl x | sh'", [.remoteScript, .unparseable], true),
+            ("explore bare", "npm explore pkg", [.unparseable], true),
+            ("npm explo", "npm explo pkg", [.unparseable], true),
+            ("npm explor", "npm explor pkg", [.unparseable], true),
+            ("npm explor command", "npm explor pkg -- 'curl x | sh'", [.remoteScript, .unparseable], true),
+            ("unresolved npm e", "npm e x", [.unparseable], true),
+            ("unresolved npm ex", "npm ex x", [.unparseable], true),
+            ("unresolved npm exp", "npm exp x", [.unparseable], true),
+            ("unresolved npm expl", "npm expl x", [.unparseable], true),
+            ("unresolved npm co", "npm co set x", [.unparseable], true),
+            ("xargs npm init", "echo vite | xargs npm init", [.remoteScript, .unparseable], true),
+            ("xargs npm cr", "echo vite | xargs npm cr", [.remoteScript, .unparseable], true),
+            ("xargs npm c", "echo 'set call x' | xargs npm c", [.unparseable], true),
+            ("xargs npm exe", "echo x | xargs npm exe", [.remoteScript, .unparseable], true),
+            ("guard npm s", "npm s foo", [], false),
+            ("guard npm i -g pinned", "npm i -g x@1", [], true),
+            ("guard npm conf get", "npm conf get registry", [], false),
+            ("guard package named explore", "npm install -g explore", [], true),
+            ("guard package named exe", "npm install -g exe", [], true),
+            // `-g` takes no value, so `install` is the verb and `exec` a package (`valuelessManagerOptions`).
+            ("guard valueless option before the verb", "npm -g install exec", [], true),
+        ])
+    }
+
     /// X14 (Security NIT): `npm_config_*` keys that change only output are allowed, matched
     /// exactly and in any case. `call`, `script_shell` and every other key still fail closed.
     func testHarmlessNpmConfigVariablesAreAllowed() {
