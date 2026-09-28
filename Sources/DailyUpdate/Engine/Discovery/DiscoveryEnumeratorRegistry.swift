@@ -7,5 +7,6 @@ enum DiscoveryEnumeratorRegistry {
     static let all: [Enumerator] = [
         UvToolEnumerator(),
         PipxEnumerator(),
+        PipUserEnumerator(),
     ]
 }
