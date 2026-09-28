@@ -10,5 +10,9 @@ enum DiscoveryEnumeratorRegistry {
         PipUserEnumerator(),
         CargoEnumerator(),
         GemEnumerator(),
+        MiseEnumerator(),
+        AsdfEnumerator(),
+        PyenvEnumerator(),
+        RustupEnumerator(),
     ]
 }
