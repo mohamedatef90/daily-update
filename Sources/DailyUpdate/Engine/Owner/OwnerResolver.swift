@@ -14,7 +14,7 @@ enum ResolvedOwner: Equatable, Hashable {
     case yarnClassic(globalDir: String, package: String)
     case bun(root: String, package: String)
     case pipUser(site: String, distribution: String)
-    case cargo(root: String, crate: String)
+    case cargo(root: String, crate: String, source: CargoSource = .registry)
     case gem(gemDir: String, name: String, systemOwned: Bool)
     case appStore(adamID: String)
     case sparkleApp(feedURL: String)
@@ -24,6 +24,13 @@ enum ResolvedOwner: Equatable, Hashable {
     case agentPlugin(agent: String, marketplace: String, plugin: String)
     case system(provider: String)
     case unknown
+}
+
+/// ADR-002 §2 "cargo" (P2-3): `.crates2.json`'s `"<crate> <version> (<source>)"` key names where a
+/// crate came from. Only `.registry` ever gets `StrategyPlanner`'s plain `noStrategy`/"Listed
+/// only" — `.git` and `.path` can't be told an exact PyPI-style "latest" and become `manualOnly`.
+enum CargoSource: String, Equatable, Hashable {
+    case registry, git, path
 }
 
 enum NativeInstallerID: String, Equatable, Hashable {
@@ -79,7 +86,7 @@ struct OwnerResolution: Equatable {
         case .yarnClassic(let globalDir, let package): return "yarn:\(globalDir):\(package)"
         case .bun(let root, let package): return "bun:\(root):\(package)"
         case .pipUser(let site, let distribution): return "pip:\(site):\(distribution)"
-        case .cargo(let root, let crate): return "cargo:\(root):\(crate)"
+        case .cargo(let root, let crate, let source): return "cargo:\(root):\(crate):\(source.rawValue)"
         case .gem(let gemDir, let name, _): return "gem:\(gemDir):\(name)"
         case .appStore(let adamID): return "appStore:\(adamID)"
         case .sparkleApp(let feedURL): return "sparkle:\(feedURL)"
