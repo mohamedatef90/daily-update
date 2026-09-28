@@ -6,8 +6,13 @@ import Foundation
 struct DiscoveryRunResult: Sendable {
     let results: [EnumerationResult]
     let lookup: CommandPathLookup
-    let rows: [DetectorConfig]
+    let assembly: RowBuilder.Output
     let elapsedMs: Int
+
+    var rows: [DetectorConfig] { assembly.rows }
+
+    /// The Homebrew snapshot `StrategyPlanner` reads (§1), when the brew enumerator ran.
+    var brewInfo: BrewInfoProvider? { results.lazy.compactMap(\.brewInfo).first }
 }
 
 enum DiscoveryRunner {
@@ -16,26 +21,30 @@ enum DiscoveryRunner {
         catalog: [DetectorConfig] = [],
         settings: UserSettings = .defaults,
         fileSystem: ReadOnlyFileSystem = LiveFileSystem(),
-        layout: EcosystemLayout = .live()
+        layout: EcosystemLayout = .live(),
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> DiscoveryRunResult {
         let start = Date()
         let commandNames = catalog.compactMap(\.command)
         let lookup = await OwnerResolver.lookup(commandNames: commandNames, layout: layout)
+        // F5: the layout `lookup` rebuilt from the login snapshot (`HOMEBREW_PREFIX`, else a trusted
+        // brew's prefix) is the one enumerators read; the caller's is only the starting point.
         let context = DiscoveryContext(
             fileSystem: fileSystem,
             environmentSnapshot: lookup.environmentSnapshot,
             loginPath: lookup.loginPath,
-            layout: layout
+            layout: lookup.layout ?? layout,
+            processEnvironment: processEnvironment
         )
         let results = await DiscoveryCoordinator.run(enumerators: enumerators, context: context)
-        let rows = RowBuilder.build(
+        let assembly = RowBuilder.assemble(
             input: RowBuilder.Input(results: results, lookup: lookup),
             catalog: catalog,
             settings: settings,
             fileSystem: fileSystem
         )
         return DiscoveryRunResult(
-            results: results, lookup: lookup, rows: rows,
+            results: results, lookup: lookup, assembly: assembly,
             elapsedMs: Int(Date().timeIntervalSince(start) * 1000)
         )
     }

@@ -18,6 +18,15 @@ final class FixtureFileSystem {
         fileSystem = LiveFileSystem()
     }
 
+    /// A tree at a fixed path, recreated from scratch — for the discovery dump, whose row IDs
+    /// hash the paths and must come out the same on every run.
+    init(fixedRoot: URL) {
+        try? FileManager.default.removeItem(at: fixedRoot)
+        root = fixedRoot
+        try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        fileSystem = LiveFileSystem()
+    }
+
     deinit {
         try? FileManager.default.removeItem(at: root)
         for socketPath in socketPaths {
