@@ -86,11 +86,15 @@ struct BrewInfoProvider: Hashable, Sendable {
     /// F11: the newest `*.jws.json` mtime under `<cache>/api/` and `<cache>/api/internal/`, which
     /// is when brew's local API data — the source of every latest version here — last refreshed.
     let cacheModifiedAt: Date?
+    /// The prefix as the layout wrote it (`/usr/local`) → the canonical key in `prefixes`, so a
+    /// caller that derives `<P>/bin/brew` from the layout finds the same entry.
+    let prefixAliases: [String: String]
 
-    init(prefixes: [String: BrewPrefixInfo], cacheDirectory: String, cacheModifiedAt: Date?) {
+    init(prefixes: [String: BrewPrefixInfo], cacheDirectory: String, cacheModifiedAt: Date?, prefixAliases: [String: String] = [:]) {
         self.prefixes = prefixes
         self.cacheDirectory = cacheDirectory
         self.cacheModifiedAt = cacheModifiedAt
+        self.prefixAliases = prefixAliases
     }
 
     /// F11: how old the latest versions may be. P2-5 shows it on the Homebrew row, with a
@@ -106,12 +110,17 @@ struct BrewInfoProvider: Hashable, Sendable {
         DiscoveryPaths.parent(DiscoveryPaths.parent(DiscoveryPaths.standardized(brew)))
     }
 
+    func info(forBrewExecutable brew: String) -> BrewPrefixInfo? {
+        let prefix = Self.prefix(forBrewExecutable: brew)
+        return prefixes[prefixAliases[prefix] ?? prefix]
+    }
+
     func formula(_ name: String, brewExecutable: String) -> BrewFormulaRecord? {
-        prefixes[Self.prefix(forBrewExecutable: brewExecutable)]?.formulae[name]
+        info(forBrewExecutable: brewExecutable)?.formulae[name]
     }
 
     func cask(_ token: String, brewExecutable: String) -> BrewCaskRecord? {
-        prefixes[Self.prefix(forBrewExecutable: brewExecutable)]?.casks[token]
+        info(forBrewExecutable: brewExecutable)?.casks[token]
     }
 
     /// Every prefix's installed casks, sorted by prefix then token.
@@ -255,7 +264,9 @@ struct BrewEnumerator: Enumerator {
         var roots: [InstallRoot] = []
         var records: [InstalledPackage] = []
         var infos: [String: BrewPrefixInfo] = [:]
-        for prefix in prefixes {
+        var aliases: [String: String] = [:]
+        for (written, prefix) in prefixes {
+            if written != prefix { aliases[DiscoveryPaths.standardized(written)] = prefix }
             guard !scan.deadlinePassed() else { break }
             let rootTrusted = PathTrust.isTrustedDirectory(prefix)
             let brew = DiscoveryPaths.join(prefix, "bin", "brew")
@@ -286,7 +297,8 @@ struct BrewEnumerator: Enumerator {
         let provider = BrewInfoProvider(
             prefixes: infos,
             cacheDirectory: Self.cacheDirectory(context),
-            cacheModifiedAt: Self.newestAPICacheFile(in: Self.cacheDirectory(context), scan: &scan)
+            cacheModifiedAt: Self.newestAPICacheFile(in: Self.cacheDirectory(context), scan: &scan),
+            prefixAliases: aliases
         )
         return scan.result(roots: roots, records: records, brewInfo: provider)
     }
@@ -312,15 +324,16 @@ struct BrewEnumerator: Enumerator {
     // MARK: Roots
 
     /// `HOMEBREW_PREFIX` (via the layout the login snapshot built, F5), then the defaults. A
-    /// prefix counts only when its `Cellar` exists. Canonical and de-duplicated.
-    private func candidatePrefixes(_ context: DiscoveryContext, scan: EnumerationScan) -> [String] {
+    /// prefix counts only when its `Cellar` exists. Returns (as written, canonical), de-duplicated
+    /// by the canonical path.
+    private func candidatePrefixes(_ context: DiscoveryContext, scan: EnumerationScan) -> [(String, String)] {
         var seen = Set<String>()
-        var result: [String] = []
+        var result: [(String, String)] = []
         for prefix in context.layout.brewPrefixes {
             guard scan.isDirectory(DiscoveryPaths.join(prefix, "Cellar")),
                   let canonical = scan.canonical(prefix),
                   seen.insert(canonical).inserted else { continue }
-            result.append(canonical)
+            result.append((prefix, canonical))
         }
         return result
     }

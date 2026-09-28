@@ -1,49 +1,19 @@
 import XCTest
 @testable import DailyUpdate
 
-/// The P2-2 Homebrew fixtures: `brew-info-installed.json` and the Cellar/Caskroom tree it
-/// describes. The JSON keeps the shape of `brew info --json=v2 --installed` on this Mac (keys,
+/// The P2-2 Homebrew fixtures: `Fixtures/brew-info-installed.json` and the Cellar/Caskroom tree
+/// it describes. The JSON keeps the shape of `brew info --json=v2 --installed` on this Mac (keys,
 /// nesting, `installed[]`, `linked_keg`, `artifacts[]`) trimmed to the cases §9 lists: a linked
 /// on-request formula, a dependency, a linked keg-only formula, an unlinked keg-only formula, a
 /// third-party tap, a pin, two kegs of one formula, a name that fails §7.4, and the openclaw cask.
 /// Values are synthetic: on 2026-09-27 this Mac's Homebrew cache was gone, so the live call
 /// couldn't be captured (see the PR's live verification).
 enum BrewFixtures {
-    static let installedJSON = #"""
-    {
-      "formulae": [
-        {"name": "gh", "full_name": "gh", "tap": "homebrew/core", "versions": {"stable": "2.102.0", "head": "HEAD", "bottle": true},
-         "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "2.101.0", "outdated": true,
-         "installed": [{"version": "2.101.0", "installed_as_dependency": false, "installed_on_request": true, "poured_from_bottle": true}]},
-        {"name": "abseil", "full_name": "abseil", "tap": "homebrew/core", "versions": {"stable": "20260107.1"},
-         "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "20260107.1",
-         "installed": [{"version": "20260107.1", "installed_as_dependency": true, "installed_on_request": false}]},
-        {"name": "node@22", "full_name": "node@22", "tap": "homebrew/core", "versions": {"stable": "22.22.2"},
-         "revision": 1, "keg_only": true, "pinned": false, "linked_keg": "22.22.2",
-         "installed": [{"version": "22.22.2", "installed_as_dependency": false, "installed_on_request": true}]},
-        {"name": "python@3.12", "full_name": "python@3.12", "tap": "homebrew/core", "versions": {"stable": "3.12.11"},
-         "revision": 0, "keg_only": true, "pinned": false, "linked_keg": null,
-         "installed": [{"version": "3.12.10", "installed_as_dependency": false, "installed_on_request": true}]},
-        {"name": "bird", "full_name": "steipete/tap/bird", "tap": "steipete/tap", "versions": {"stable": "0.9.0"},
-         "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "0.8.0",
-         "installed": [{"version": "0.8.0", "installed_as_dependency": false, "installed_on_request": true}]},
-        {"name": "jq", "full_name": "jq", "tap": "homebrew/core", "versions": {"stable": "1.8.1"},
-         "revision": 0, "keg_only": false, "pinned": true, "linked_keg": "1.7.1",
-         "installed": [{"version": "1.7.1", "installed_as_dependency": false, "installed_on_request": true}]},
-        {"name": "openssl@3", "full_name": "openssl@3", "tap": "homebrew/core", "versions": {"stable": "3.5.0"},
-         "revision": 0, "keg_only": true, "pinned": false, "linked_keg": null,
-         "installed": [{"version": "3.3.0", "installed_as_dependency": true, "installed_on_request": false},
-                       {"version": "3.4.0", "installed_as_dependency": true, "installed_on_request": false}]}
-      ],
-      "casks": [
-        {"token": "openclaw", "full_token": "openclaw", "tap": "homebrew/cask", "name": ["OpenClaw"],
-         "version": "2026.1.24,4b1f", "installed": "2026.1.23", "auto_updates": true,
-         "artifacts": [{"app": ["Clawdbot.app"]},
-                       {"binary": ["{{appdir}}/Clawdbot.app/Contents/Resources/bin/openclaw", {"target": "openclaw"}]},
-                       {"uninstall": [{"quit": "com.clawdbot.app"}]}]}
-      ]
-    }
-    """#
+    static let installedJSON: String = {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/brew-info-installed.json")
+        return try! String(contentsOf: url, encoding: .utf8)
+    }()
 
     /// `installedJSON` plus one formula whose name fails §7.4.
     static let installedJSONWithRejectedName = installedJSON.replacingOccurrences(of: #""formulae": ["#, with: #"""
