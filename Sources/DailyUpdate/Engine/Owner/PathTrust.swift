@@ -54,8 +54,19 @@ enum PathTrust {
     /// `trustedAncestors` already applies to a directory, as opposed to `trusted(_:)`'s stricter
     /// file rule (no group *or* world write), which still applies to executables (D16 covers
     /// world-writable; D23 is a user-owned `drwxrwxr-x` Cellar, which this trusts).
+    ///
+    /// P2-2 (Security FU1): the path as written isn't enough. `stat` follows a symlinked root to
+    /// its target but never looks at the target's ancestors, so a root that links into a folder
+    /// someone else can write would pass. The canonical path's own ancestor chain is walked too,
+    /// and a root that can't be resolved isn't trusted.
     static func isTrustedDirectory(_ path: String) -> Bool {
-        var current = URL(fileURLWithPath: path).standardizedFileURL.path
+        let written = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard ancestorChainIsTrusted(written), let canonical = resolvedExecutable(written) else { return false }
+        return canonical == written || ancestorChainIsTrusted(canonical)
+    }
+
+    private static func ancestorChainIsTrusted(_ path: String) -> Bool {
+        var current = path
         while true {
             guard isTrustedPathEntry(current) else { return false }
             if current == "/" || current.isEmpty { return true }

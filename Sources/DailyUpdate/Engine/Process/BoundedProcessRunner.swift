@@ -43,9 +43,13 @@ struct BoundedProcessSpec: Sendable {
 }
 
 enum BoundedProcessRunner {
-    /// The grace period between `SIGTERM` and `SIGKILL`, and the hard stop after that: reading
-    /// never waits past `timeout + killGracePeriod` for EOF, even if a grandchild still holds a
-    /// pipe open.
+    /// The hard stop after a `SIGTERM`: reading never waits past `timeout + killGracePeriod` for
+    /// EOF, even if a grandchild still holds a pipe open.
+    ///
+    /// P2-2 (CR FU2): `SIGKILL` goes out halfway through this window — at `timeout + 1 s`, not the
+    /// amendment's `+ 2 s` — so the kill has a full second to land before reading stops at `+ 2 s`.
+    /// The same schedule applies after the stdout cap: `SIGTERM` at the cap, `SIGKILL` 1 s later,
+    /// reading stops 2 s later.
     static let killGracePeriod: TimeInterval = 2
 
     static func run(_ spec: BoundedProcessSpec) async -> QueryOutcome {
@@ -111,6 +115,9 @@ enum BoundedProcessRunner {
         // draining the pipe. A child that keeps writing past the cap (stdout's terminate-on-cap
         // path aside) must never see a full pipe buffer and block on write(2); that would hide
         // its real exit status behind a timeout instead of reporting it.
+        //
+        // P2-2 (Security re-review FU3, CR FU2): `exceeded` means bytes were actually dropped. A
+        // stream of exactly `cap` bytes is kept whole and isn't reported as truncated.
         func drainOnce(_ fd: Int32, into data: inout Data, cap: Int, exceeded: inout Bool) {
             var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             while true {
@@ -118,26 +125,42 @@ enum BoundedProcessRunner {
                     read(fd, rawBuffer.baseAddress, rawBuffer.count)
                 }
                 guard bytesRead > 0 else { break }
-                if data.count < cap {
-                    data.append(buffer, count: min(bytesRead, cap - data.count))
-                }
-                if data.count >= cap { exceeded = true }
+                let room = max(0, cap - data.count)
+                if room > 0 { data.append(buffer, count: min(bytesRead, room)) }
+                if bytesRead > room { exceeded = true }
             }
         }
+
+        var capKillDeadline: Date?
 
         while true {
             drainOnce(stdoutFD, into: &stdoutData, cap: spec.maxStdoutBytes, exceeded: &stdoutCapExceeded)
             drainOnce(stderrFD, into: &stderrData, cap: spec.maxStderrBytes, exceeded: &stderrTruncated)
 
+            let now = Date()
+            // Security FU5 / CR FU2: past the stdout cap the output is never parsed, and the child
+            // gets the same SIGTERM → SIGKILL escalation as a timeout, so one that ignores SIGTERM
+            // doesn't linger. The pipes keep draining meanwhile so it can't block on a write.
             if stdoutCapExceeded {
-                if process.isRunning { process.terminate() }
-                break
+                if capKillDeadline == nil {
+                    capKillDeadline = now.addingTimeInterval(killGracePeriod)
+                    kill(process.processIdentifier, SIGTERM)
+                }
+                if !process.isRunning { break }
+                if let capKillDeadline {
+                    if now >= capKillDeadline { break }
+                    if !sentKill, now >= capKillDeadline.addingTimeInterval(-killGracePeriod / 2) {
+                        sentKill = true
+                        kill(process.processIdentifier, SIGKILL)
+                    }
+                }
+                usleep(2000)
+                continue
             }
             if !process.isRunning {
                 break
             }
 
-            let now = Date()
             if now >= hardStopDeadline {
                 timedOut = true
                 break

@@ -57,26 +57,22 @@ final class RowBuilderTests: HermeticTestCase {
         XCTAssertEqual(rows.first?.inventory?.packageID, "gh")
     }
 
-    // MARK: D2-style: join by package, later PATH entry is competing (dropped, not duplicated)
+    // MARK: D2-style: join by package
 
-    func testJoinByPackageAndLaterPathEntryIsNotItsOwnRow() {
+    /// Join by package. (Which copy wins when two roots have the same package is R2's job, which
+    /// now looks at the files the login PATH runs — see `RowBuilderPathRankingTests`.)
+    func testJoinByPackageKeepsCatalogIdentity() {
         let activeRoot = root(path: "/fixture/nvm24", binDirectories: ["/fixture/nvm24/bin"])
-        let shadowedRoot = root(path: "/fixture/usrlocal", binDirectories: ["/fixture/usrlocal/bin"])
         let active = record(ecosystem: .npm, packageID: "@scope/tool", root: activeRoot, inode: 1)
-        let shadowed = record(ecosystem: .npm, packageID: "@scope/tool", root: shadowedRoot, inode: 2)
         let catalog = [DetectorConfig(
             id: "scoped-tool", name: "Scoped Tool", category: .cli, description: nil,
             packages: PackageIdentifiers(npm: "@scope/tool"),
             detect: nil, versionCommand: nil, checkCommand: nil, installCommand: nil, updateCommand: "", workingDirectory: nil
         )]
-        let lookup = CommandPathLookup(
-            candidatesByName: [:],
-            loginPath: .known(["/fixture/nvm24/bin", "/fixture/usrlocal/bin"])
-        )
-        let results = [EnumerationResult(ecosystem: .npm, records: [active, shadowed], status: .complete)]
+        let lookup = CommandPathLookup(candidatesByName: [:], loginPath: .known(["/fixture/nvm24/bin"]))
+        let results = [EnumerationResult(ecosystem: .npm, records: [active], status: .complete)]
         let rows = RowBuilder.build(input: .init(results: results, lookup: lookup), catalog: catalog)
-        XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows.first?.id, "scoped-tool")
+        XCTAssertEqual(rows.map(\.id), ["scoped-tool"])
         XCTAssertEqual(rows.first?.inventory?.rootPath, "/fixture/nvm24")
     }
 
@@ -89,24 +85,6 @@ final class RowBuilderTests: HermeticTestCase {
             EnumerationResult(ecosystem: .npm, records: [inactive], status: .complete),
         ]))
         XCTAssertTrue(rows.isEmpty)
-    }
-
-    // MARK: D5-style: a competing record from a different ecosystem doesn't get its own row either
-
-    func testOnlyThePathWinningRecordBecomesARow() {
-        let winnerRoot = root(path: "/fixture/native", binDirectories: ["/fixture/native/bin"])
-        let loserRoot = root(path: "/fixture/usrlocal", binDirectories: ["/fixture/usrlocal/bin"])
-        // Different ecosystems can't share a PackageKey, so this proves the general "one row per
-        // winning path position" mechanic using two same-ecosystem records instead (D2/D5's
-        // shared mechanic), keeping this test independent of D2's catalog-join test above.
-        let winner = record(packageID: "claude", root: winnerRoot, inode: 7)
-        let loser = record(packageID: "claude", root: loserRoot, inode: 8)
-        let lookup = CommandPathLookup(candidatesByName: [:], loginPath: .known(["/fixture/native/bin", "/fixture/usrlocal/bin"]))
-        let rows = RowBuilder.build(input: .init(
-            results: [EnumerationResult(ecosystem: .npm, records: [loser, winner], status: .complete)], lookup: lookup
-        ))
-        XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(rows.first?.inventory?.rootPath, "/fixture/native")
     }
 
     // MARK: D7-style: a dependency never gets a row
@@ -140,6 +118,8 @@ final class RowBuilderTests: HermeticTestCase {
         let results = [EnumerationResult(ecosystem: .npm, status: .partial([issue1, issue2]))]
         let rows = RowBuilder.build(input: .init(results: results))
         XCTAssertEqual(rows.count, 1)
+        // CR re-review FU3: the exact id, not just the count.
+        XCTAssertEqual(rows.first?.id, ItemBuilder.stableID(prefix: "inv-error-npm", path: "/fixture/npmroot"))
         XCTAssertEqual(rows.first?.description, "malformed package.json; permission denied")
     }
 

@@ -86,6 +86,54 @@ final class LoginEnvironmentSnapshotTests: HermeticTestCase {
         }
     }
 
+    /// F4 (Security FU2, CR FU1): a value with an embedded newline used to end its line early,
+    /// and whatever followed was parsed as a second variable. Values are NUL-terminated now, so
+    /// the newline stays inside the value and `isValid` drops it — and nothing is smuggled in.
+    func testNewlineInAnOverrideValueCannotSmuggleASecondVariable() async throws {
+        await withZshProfile("unset PNPM_HOME\nexport CARGO_HOME=$'/x\\nPNPM_HOME=/evil'\nexport BUN_INSTALL=/real/bun\n") {
+            let lookup = await OwnerResolver.lookup(commandNames: ["ls"])
+            XCTAssertNil(lookup.environmentSnapshot["CARGO_HOME"])
+            XCTAssertNil(lookup.environmentSnapshot["PNPM_HOME"])
+            XCTAssertEqual(lookup.environmentSnapshot["BUN_INSTALL"], "/real/bun")
+        }
+    }
+
+    /// F4: two entries with the same name can only come from output that isn't what the script
+    /// printed; neither copy is trusted.
+    func testDuplicatedOverrideNameIsDropped() {
+        let output = "__DAILY_UPDATE_WHENCE__PATH_BEGIN\n/usr/bin\n__DAILY_UPDATE_WHENCE__PATH_END\n" +
+            "__DAILY_UPDATE_WHENCE__ENV_BEGIN\nNVM_DIR=/a\u{0}NVM_DIR=/b\u{0}FNM_DIR=/f\u{0}__DAILY_UPDATE_WHENCE__ENV_END\n"
+        let lookup = OwnerResolver.parseLookupOutput(output, layout: .fixture(home: "/h"))
+        XCTAssertEqual(lookup.environmentSnapshot, ["FNM_DIR": "/f"])
+    }
+
+    /// D19 (CR FU3): the login shell timing out makes the PATH unknown, with the reason.
+    func testTimedOutLoginShellMakesLoginPathUnknown() async throws {
+        await withZshProfile("sleep 5\n") {
+            let lookup = await OwnerResolver.lookup(commandNames: ["ls"], timeout: 1)
+            XCTAssertEqual(lookup.loginPath, .unknown("timed out"))
+            XCTAssertEqual(lookup.failureMessage, "Command lookup failed: timed out")
+        }
+    }
+
+    /// D19 (CR FU3): output that stops before the PATH block's END marker is unknown, never an
+    /// empty or partial PATH.
+    func testMissingPathEndMarkerMakesLoginPathUnknown() {
+        let output = "__DAILY_UPDATE_WHENCE__PATH_BEGIN\n/usr/bin:/bin\n"
+        let lookup = OwnerResolver.parseLookupOutput(output, layout: .fixture(home: "/h"))
+        XCTAssertEqual(lookup.loginPath, .unknown("missing PATH marker"))
+    }
+
+    /// Security FU3, CR re-review FU2: the batch always runs, and always includes `brew`, even when
+    /// no valid catalog name is left.
+    func testBatchAlwaysRunsAndAlwaysLooksUpBrew() async throws {
+        await withZshProfile("export PATH=/usr/bin:/bin\n") {
+            let lookup = await OwnerResolver.lookup(commandNames: ["bad name"])
+            XCTAssertEqual(lookup.loginPath, .known(["/usr/bin", "/bin"]))
+            XCTAssertEqual(lookup.candidatesByName, ["brew": []])
+        }
+    }
+
     func testLoginEnvironmentOverridesValidation() {
         XCTAssertTrue(LoginEnvironmentOverrides.isValid(name: "HOMEBREW_PREFIX", value: "/opt/homebrew"))
         XCTAssertFalse(LoginEnvironmentOverrides.isValid(name: "HOMEBREW_PREFIX", value: "opt/homebrew"))

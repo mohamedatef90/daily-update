@@ -1,10 +1,19 @@
 import Foundation
 
-/// The enumerators `--discover` and (eventually) the live check flow run. P2-2 (Homebrew, npm
-/// family) and P2-4 (agent skills/plugins, system stubs) add their own here alongside P2-3's
-/// Python/Rust/Ruby enumerators below.
+/// The enumerators `--discover` and (from P2-5) the live check flow run, one per ecosystem. P2-2
+/// registers Homebrew, the Node package managers and the Node version managers; P2-3 (Python,
+/// Rust, Ruby) and P2-4 (agent skills/plugins, system stubs) add theirs here.
 enum DiscoveryEnumeratorRegistry {
     static let all: [Enumerator] = [
+        // P2-2: Homebrew and the Node family.
+        BrewEnumerator(),
+        NpmEnumerator(),
+        PnpmEnumerator(),
+        YarnClassicEnumerator(),
+        BunEnumerator(),
+        NodeRuntimeEnumerator.nvm,
+        NodeRuntimeEnumerator.fnm,
+        // P2-3: Python, Rust, Ruby and the other version managers.
         UvToolEnumerator(),
         PipxEnumerator(),
         PipUserEnumerator(),
@@ -15,4 +24,9 @@ enum DiscoveryEnumeratorRegistry {
         PyenvEnumerator(),
         RustupEnumerator(),
     ]
+
+    /// `InventoryResolver`'s lookup: the enumerator that owns an ecosystem.
+    static func enumerator(for ecosystem: Ecosystem) -> Enumerator? {
+        all.first { $0.ecosystem == ecosystem }
+    }
 }

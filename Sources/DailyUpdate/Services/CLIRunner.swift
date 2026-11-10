@@ -506,6 +506,9 @@ enum CLIRunner {
         for row in result.rows {
             let handleSuffix = row.handle.map { " (\($0))" } ?? ""
             output("  \(row.name)\(handleSuffix) [\(row.id)]")
+            for competing in result.assembly.competing[row.id] ?? [] {
+                output("    competing: \(competing.path) (\(competing.record.ecosystem.rawValue) \(competing.record.versionRaw ?? "?"))")
+            }
         }
         for enumerationResult in result.results {
             for issue in issuesFor(enumerationResult.status) {
@@ -517,20 +520,48 @@ enum CLIRunner {
         }
     }
 
+    /// `--discover --json`. CR FU9 (P2-1 review): rows carry their `description` (so the login-PATH
+    /// reason and each error row's message reach the JSON), and the top level reports the
+    /// `loginPath` state. ADR §5: `elapsedMs` for each enumerator.
     private static func printDiscoveryJSON(_ result: DiscoveryRunResult, output: (String) -> Void) {
+        if let data = try? JSONSerialization.data(withJSONObject: discoveryJSONPayload(result), options: [.prettyPrinted, .sortedKeys]),
+           let str = String(data: data, encoding: .utf8) {
+            output(str)
+        }
+    }
+
+    static func discoveryJSONPayload(_ result: DiscoveryRunResult) -> [String: Any] {
+        func recordJSON(_ record: InstalledPackage, _ extra: [String: Any] = [:]) -> [String: Any] {
+            var payload: [String: Any] = [
+                "ecosystem": record.ecosystem.rawValue, "packageID": record.packageID,
+                "version": record.versionRaw ?? NSNull(), "root": record.root.path, "rootLabel": record.root.label,
+            ]
+            for (key, value) in extra { payload[key] = value }
+            return payload
+        }
         let rows: [[String: Any]] = result.rows.map { row in
-            [
+            var payload: [String: Any] = [
                 "id": row.id,
                 "handle": row.handle ?? "",
                 "name": row.name,
+                "description": row.description ?? NSNull(),
                 "ecosystem": row.inventory?.ecosystem.rawValue ?? "",
                 "packageID": row.inventory?.packageID ?? "",
+                "root": row.inventory?.rootPath ?? NSNull(),
             ]
+            let competing = result.assembly.competing[row.id] ?? []
+            if !competing.isEmpty {
+                payload["competing"] = competing.map { recordJSON($0.record, ["path": $0.path, "command": $0.command]) }
+            }
+            return payload
         }
         let results: [[String: Any]] = result.results.map { enumerationResult in
             var payload: [String: Any] = [
                 "ecosystem": enumerationResult.ecosystem.rawValue,
                 "status": statusName(enumerationResult.status),
+                "elapsedMs": milliseconds(enumerationResult.elapsed),
+                "roots": enumerationResult.roots.count,
+                "records": enumerationResult.records.count,
             ]
             if case .unavailable(let reason) = enumerationResult.status {
                 payload["reason"] = reason
@@ -541,10 +572,36 @@ enum CLIRunner {
             }
             return payload
         }
-        let payload: [String: Any] = ["elapsedMs": result.elapsedMs, "rows": rows, "results": results]
-        if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
-           let str = String(data: data, encoding: .utf8) {
-            output(str)
+        var payload: [String: Any] = [
+            "elapsedMs": result.elapsedMs,
+            "loginPath": loginPathJSON(result.lookup.loginPath),
+            "rows": rows,
+            "results": results,
+            "inactiveInstalls": result.assembly.inactiveInstalls.map { recordJSON($0.record, ["listedUnder": $0.rowID ?? NSNull()]) },
+            "shadowedByUnownedFiles": result.assembly.shadowedByUnownedFiles.map {
+                recordJSON($0.record, ["path": $0.path, "command": $0.command, "activePath": $0.activePath])
+            },
+        ]
+        if let brewInfo = result.brewInfo {
+            payload["homebrew"] = [
+                "cacheDirectory": brewInfo.cacheDirectory,
+                "cacheAgeSeconds": brewInfo.cacheAge().map { Int($0) } ?? NSNull(),
+                "prefixes": brewInfo.prefixes.keys.sorted().map { ["prefix": $0, "source": brewInfo.prefixes[$0]?.source.rawValue ?? ""] },
+            ] as [String: Any]
+        }
+        return payload
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int {
+        let components = duration.components
+        return Int(components.seconds) * 1000 + Int(components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    private static func loginPathJSON(_ loginPath: LoginPath) -> [String: Any] {
+        switch loginPath {
+        case .known(let entries): return ["state": "known", "entries": entries.count]
+        case .empty: return ["state": "empty"]
+        case .unknown(let reason): return ["state": "unknown", "reason": reason]
         }
     }
 

@@ -193,6 +193,7 @@ final class UvToolStrategyTests: HermeticTestCase {
             brewCaskrooms: layout.brewCaskrooms, claudeNativeRoot: layout.claudeNativeRoot,
             opencodeNativeRoot: layout.opencodeNativeRoot, cursorAgentNativeRoot: layout.cursorAgentNativeRoot,
             uvToolRoots: [toolsRoot], pipxVenvRoots: layout.pipxVenvRoots, npmGlobalRoots: layout.npmGlobalRoots,
+            npmSystemPrefixes: layout.npmSystemPrefixes,
             nvmVersionsRoot: layout.nvmVersionsRoot, voltaRoot: layout.voltaRoot, fnmRoots: layout.fnmRoots
         )
 

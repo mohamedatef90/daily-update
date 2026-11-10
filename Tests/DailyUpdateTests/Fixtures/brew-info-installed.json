@@ -1,0 +1,33 @@
+{
+  "formulae": [
+    {"name": "gh", "full_name": "gh", "tap": "homebrew/core", "versions": {"stable": "2.102.0", "head": "HEAD", "bottle": true},
+     "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "2.101.0", "outdated": true,
+     "installed": [{"version": "2.101.0", "installed_as_dependency": false, "installed_on_request": true, "poured_from_bottle": true}]},
+    {"name": "abseil", "full_name": "abseil", "tap": "homebrew/core", "versions": {"stable": "20260107.1"},
+     "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "20260107.1",
+     "installed": [{"version": "20260107.1", "installed_as_dependency": true, "installed_on_request": false}]},
+    {"name": "node@22", "full_name": "node@22", "tap": "homebrew/core", "versions": {"stable": "22.22.2"},
+     "revision": 1, "keg_only": true, "pinned": false, "linked_keg": "22.22.2",
+     "installed": [{"version": "22.22.2", "installed_as_dependency": false, "installed_on_request": true}]},
+    {"name": "python@3.12", "full_name": "python@3.12", "tap": "homebrew/core", "versions": {"stable": "3.12.11"},
+     "revision": 0, "keg_only": true, "pinned": false, "linked_keg": null,
+     "installed": [{"version": "3.12.10", "installed_as_dependency": false, "installed_on_request": true}]},
+    {"name": "bird", "full_name": "steipete/tap/bird", "tap": "steipete/tap", "versions": {"stable": "0.9.0"},
+     "revision": 0, "keg_only": false, "pinned": false, "linked_keg": "0.8.0",
+     "installed": [{"version": "0.8.0", "installed_as_dependency": false, "installed_on_request": true}]},
+    {"name": "jq", "full_name": "jq", "tap": "homebrew/core", "versions": {"stable": "1.8.1"},
+     "revision": 0, "keg_only": false, "pinned": true, "linked_keg": "1.7.1",
+     "installed": [{"version": "1.7.1", "installed_as_dependency": false, "installed_on_request": true}]},
+    {"name": "openssl@3", "full_name": "openssl@3", "tap": "homebrew/core", "versions": {"stable": "3.5.0"},
+     "revision": 0, "keg_only": true, "pinned": false, "linked_keg": null,
+     "installed": [{"version": "3.3.0", "installed_as_dependency": true, "installed_on_request": false},
+                   {"version": "3.4.0", "installed_as_dependency": true, "installed_on_request": false}]}
+  ],
+  "casks": [
+    {"token": "openclaw", "full_token": "openclaw", "tap": "homebrew/cask", "name": ["OpenClaw"],
+     "version": "2026.1.24,4b1f", "installed": "2026.1.23", "auto_updates": true,
+     "artifacts": [{"app": ["Clawdbot.app"]},
+                   {"binary": ["{{appdir}}/Clawdbot.app/Contents/Resources/bin/openclaw", {"target": "openclaw"}]},
+                   {"uninstall": [{"quit": "com.clawdbot.app"}]}]}
+  ]
+}

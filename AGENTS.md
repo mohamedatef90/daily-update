@@ -20,13 +20,20 @@ Daily Update is a Swift Package Manager macOS 13+ app. Its executable target is
   `ReadOnlyQueries` (the sandboxed brew enricher calls), `DiscoveryCoordinator`,
   `RowBuilder`, `InventoryResolver` and `DiscoveryRunner`. A lint
   (`DiscoveryLintTests`) fails the build if anything here reaches for a write
-  or process API outside the two files exempted for that reason. Ecosystem
-  enumerators (Homebrew, npm, uv, …) register themselves in
-  `DiscoveryEnumeratorRegistry`, one file per ecosystem.
-- `Engine/Process/BoundedProcessRunner.swift` is the sandboxed-enricher process
-  contract (allowlisted environment, capped output, a hard timeout ceiling).
-  Only `Engine/Discovery/ReadOnlyQueries.swift` may reference it; everywhere
-  else still uses `ShellRunner`.
+  or process API outside the two files exempted for that reason.
+- `Engine/Discovery/Enumerators/` holds one enumerator per ecosystem, each
+  registered in `DiscoveryEnumeratorRegistry`: `BrewEnumerator` (the sandboxed
+  `brew info` enricher, its Cellar/Caskroom fallback, `InstalledCaskIndex` and
+  `BrewInfoProvider`), `NpmEnumerator`, `PnpmEnumerator`,
+  `YarnClassicEnumerator`, `BunEnumerator` and `NodeVersionManagers` (nvm, fnm,
+  volta). They read through `EnumerationScan`, the one helper that turns caps
+  and read failures into issue kinds; the lint covers this folder too.
+- `Engine/Process/BoundedProcessRunner.swift` is the bounded process contract
+  (an exact or inherited environment, capped output, SIGTERM then SIGKILL, a
+  hard read deadline). Inside `Engine/Discovery/` only `ReadOnlyQueries.swift`
+  may reference it. Outside Discovery it runs the `whence` login-shell batch
+  (`OwnerResolver`) and the npm provenance check (`StrategyPlanner`); every
+  other command still goes through `ShellRunner`.
 - `Services/` contains update detection, shell execution, persistence, scanning,
   scheduling, and app lifecycle behavior.
 - `Views/` contains SwiftUI screens and reusable UI components.
