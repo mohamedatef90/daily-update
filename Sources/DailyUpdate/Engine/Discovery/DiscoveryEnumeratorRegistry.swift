@@ -5,6 +5,7 @@ import Foundation
 /// Rust, Ruby) and P2-4 (agent skills/plugins, system stubs) add theirs here.
 enum DiscoveryEnumeratorRegistry {
     static let all: [Enumerator] = [
+        // P2-2: Homebrew and the Node family.
         BrewEnumerator(),
         NpmEnumerator(),
         PnpmEnumerator(),
@@ -12,6 +13,16 @@ enum DiscoveryEnumeratorRegistry {
         BunEnumerator(),
         NodeRuntimeEnumerator.nvm,
         NodeRuntimeEnumerator.fnm,
+        // P2-3: Python, Rust, Ruby and the other version managers.
+        UvToolEnumerator(),
+        PipxEnumerator(),
+        PipUserEnumerator(),
+        CargoEnumerator(),
+        GemEnumerator(),
+        MiseEnumerator(),
+        AsdfEnumerator(),
+        PyenvEnumerator(),
+        RustupEnumerator(),
     ]
 
     /// `InventoryResolver`'s lookup: the enumerator that owns an ecosystem.

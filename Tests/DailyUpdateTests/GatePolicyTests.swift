@@ -313,7 +313,8 @@ final class GatePolicyTests: HermeticTestCase {
             gated,
             Set(["agent-skills", "brew", "corepack", "gem", "global-npm", "global-pnpm", "global-yarn", "impeccable", "node", "pip-packages"])
         )
-        XCTAssertTrue(blocked.isEmpty)
+        // `npx skills list`/`check` is download-then-run since P2-0; P2-5 replaces the row.
+        XCTAssertEqual(blocked, ["agent-skills"])
 
         guard let flutter = bundled.first(where: { $0.id == "flutter" }),
               let flutterCheck = flutter.checkCommand else {
