@@ -16,7 +16,8 @@ A native macOS app that detects your apps, CLIs, runtimes, libraries, and git re
 - **Dashboard & history** — overview stats, duplicate detection, and update history
 - **Menu bar mode** — live update count badge and quick actions
 - **Launch at login** — start automatically when you log in
-- **CLI** — check, update, install, and health commands for scripting
+- **Discovery** — read-only enumeration of installed tools from Homebrew, npm, pnpm, Yarn, Bun, Node version managers, pip, pipx, uv tools, Cargo, and RubyGems
+- **CLI** — check, update, install, health, and discover commands for scripting
 
 ## Quick Start
 
@@ -88,10 +89,10 @@ Filter by category or **Updates Available** in the sidebar before using **Select
 |------|--------|
 | Add a custom app, CLI, or repo | **+ Add Item** in the toolbar (⌘N) |
 | Tune repo discovery | **Settings → Repo Scan** |
-| Auto-discover developer apps | **Settings → App Discovery** |
-| Scan agent skills folders | **Settings → Agent Skills Discovery** |
-| Disable bundled items | **Settings → Update List** |
-| Export/import config | **Settings → Advanced** |
+| Auto-discover developer apps | **Settings → Folders → App Discovery** |
+| Scan agent skills folders | **Settings → Folders → Agent Skills Discovery** |
+| Disable bundled items | **Settings → Update List → Ignored Items** |
+| Export/import config | **Settings → General → Import / Export** |
 
 ## Adding Items to the Update List
 
@@ -153,26 +154,33 @@ Additional scan folders (Settings → Folders) are always scanned fully. Use **R
 
 ## Pre-configured Items
 
-- **Apps:** Cursor, Codex, Claude, ChatGPT, ChatGPT Atlas, Zcode, Antigravity, Warp, Xcode
-- **AI agent CLIs:** Cursor Agent, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline, Gemini CLI, Qwen Code, OpenCode
-- **Other CLIs:** GitHub CLI
-- **Runtimes:** Node.js, npm, pnpm, yarn, Bun, Python, pip, Go, Java, .NET, Flutter, Dart, Rust, Homebrew, mise, asdf
-- **Libraries:** Agent skills (`npx skills`), global npm/pnpm/yarn/pip packages, Impeccable (uses your root folder)
+Bundled in `Sources/DailyUpdate/Resources/detectors.json`:
+
+- **Apps:** Cursor, Codex, Claude, ChatGPT, ChatGPT Atlas, ChatGPT Classic, Zcode, Antigravity IDE, Warp, Xcode
+- **AI agent and other CLIs:** Cursor Agent CLI, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline CLI, Gemini CLI, Qwen Code, OpenCode, GitHub CLI
+- **Runtimes and toolchains:** Swift, Flutter, Dart, CocoaPods, .NET SDK, Java (OpenJDK), Go, Node.js, npm, pnpm, Yarn, Bun, Corepack, Python, pip, Angular CLI, Homebrew, mise, asdf, rustup, Cargo, RubyGems, Composer
+- **Libraries:** Impeccable, Agent Skills (global), global npm, pnpm, and Yarn packages, user pip packages
 
 Paths like `{ROOT}` in bundled config expand to your chosen root folder.
 
 ## CLI
 
+Run the app binary with a flag. Without flags it opens the GUI.
+
 ```bash
-DailyUpdate.app/Contents/MacOS/DailyUpdate --check
-DailyUpdate.app/Contents/MacOS/DailyUpdate --update-all
-DailyUpdate.app/Contents/MacOS/DailyUpdate --install-all
-DailyUpdate.app/Contents/MacOS/DailyUpdate --health
-DailyUpdate.app/Contents/MacOS/DailyUpdate --json    # with --check or --health
+DailyUpdate.app/Contents/MacOS/DailyUpdate --check              # check for updates
+DailyUpdate.app/Contents/MacOS/DailyUpdate --update-all         # update all available items
+DailyUpdate.app/Contents/MacOS/DailyUpdate --update <item-id>   # update one item
+DailyUpdate.app/Contents/MacOS/DailyUpdate --install-all        # install all missing items
+DailyUpdate.app/Contents/MacOS/DailyUpdate --install <item-id>  # install one item
+DailyUpdate.app/Contents/MacOS/DailyUpdate --health             # run health checks
+DailyUpdate.app/Contents/MacOS/DailyUpdate --discover           # enumerate installed dev tools, runtimes and CLIs
+DailyUpdate.app/Contents/MacOS/DailyUpdate --yes                # confirm guarded actions when required
+DailyUpdate.app/Contents/MacOS/DailyUpdate --json               # JSON output with --check, --health or --discover
 DailyUpdate.app/Contents/MacOS/DailyUpdate --help
 ```
 
-`--update` and `--install` are aliases for `--update-all` and `--install-all`. CLI commands run a check first, then act on all matching items.
+CLI update and install commands run a check first, then act on the matching items.
 
 ## Development
 
@@ -190,16 +198,15 @@ See [AGENTS.md](AGENTS.md) for project structure and contribution guidelines.
 ```
 Sources/DailyUpdate/
 ├── DailyUpdateApp.swift
-├── Models/          # UpdateItem, UserSettings, DetectorConfig
-├── Services/        # Detection, scanning, config, shell runner
+├── Models/          # Settings, detector config, item categories, results
+├── Engine/          # Pure update logic: discovery, command planning, ownership, versions
+├── Services/        # Detection, scanning, config, shell runner, CLI, scheduler
 ├── Views/           # Onboarding, dashboard, settings, main UI
-└── Resources/       # detectors.json, check-app-update.sh
+└── Resources/       # detectors.json, scripts/check-app-update.sh, scripts/update-app.sh
 
-Tests/DailyUpdateTests/
+Tests/DailyUpdateTests/   # unit tests and fixtures
+scripts/                  # build-app.sh, generate-icon.sh, measure-discovery.sh
+Assets/AppIcon/           # app icon
 ```
 
 Bundled detector config: `Sources/DailyUpdate/Resources/detectors.json`
-
-## License
-
-MIT
