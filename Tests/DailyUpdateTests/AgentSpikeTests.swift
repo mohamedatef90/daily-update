@@ -146,16 +146,22 @@ final class AgentSpikeTests: XCTestCase {
         XCTAssertEqual(result.verdict.name, "blocked")
     }
 
-    func testAFetcherIsAllowedOnlyAsAPlainVersionQuery() async {
-        // An item that IS curl or wget needs a version reader; a bare version flag fetches nothing.
-        let plain = await evaluate(proposalJSON(version: #"["curl","--version"]"#))
-        XCTAssertEqual(plain.verdict, .acceptedCandidate, "\(plain.verdict)")
-        for blockedVersion in [#"["curl","https://x.example"]"#, #"["curl","--version","https://x.example"]"#, #"["curl","-o","/tmp/x","--version"]"#] {
+    func testAFetcherIsAllowedOnlyAsDashDashVersionOrDashCapitalV() async {
+        // An item that IS curl or wget needs a version reader; these two flags fetch nothing.
+        for allowed in [#"["curl","--version"]"#, #"["curl","-V"]"#] {
+            let result = await evaluate(proposalJSON(version: allowed))
+            XCTAssertEqual(result.verdict, .acceptedCandidate, "\(allowed): \(result.verdict)")
+        }
+        // `curl version` treats "version" as a host and requests http://version/; `curl -v` is verbose, not a version flag.
+        for blockedVersion in [#"["curl","version"]"#, #"["curl","-v"]"#, #"["curl","https://x.example"]"#,
+                               #"["curl","--version","https://x.example"]"#, #"["curl","-o","/tmp/x","--version"]"#] {
             let result = await evaluate(proposalJSON(version: blockedVersion))
             XCTAssertEqual(result.verdict.name, "blocked", blockedVersion)
         }
-        let asUpdate = await evaluate(proposalJSON(update: #"["curl","--version"]"#))
-        XCTAssertEqual(asUpdate.verdict.name, "blocked", "a fetcher is never an update command")
+        for asUpdate in [#"["curl","--version"]"#, #"["curl","-V"]"#] {
+            let result = await evaluate(proposalJSON(update: asUpdate))
+            XCTAssertEqual(result.verdict.name, "blocked", "a fetcher is never an update command: \(asUpdate)")
+        }
     }
 
     func testAVersionCommandMayNotInstall() async {

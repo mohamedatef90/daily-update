@@ -38,8 +38,8 @@ struct ProposalEvidence: Codable, Equatable {
 struct AgentProposal: Codable, Equatable {
     let ownerKind: ProposalOwnerKind
     /// argv array: executable first. Never a shell string. Nil means "no version reader is proposed" (the
-    /// evidence does not show one); that is allowed only with recommendation `investigate`, so an agent
-    /// never has to invent a placeholder command.
+    /// evidence does not show one). Allowed with `investigate`, `suggestRemoval` or `ignore`, never with
+    /// `update`, so an agent never has to invent a placeholder command.
     let versionCommand: [String]?
     /// Regular expression with exactly one capture group that extracts the version. Not evaluated when
     /// `versionCommand` is nil.
@@ -185,9 +185,10 @@ enum ProposalParser {
         if recommendation != .update, updateCommand != nil {
             throw ProposalSchemaError.badCombination("updateCommand is only allowed with recommendation update")
         }
-        // No version reader means the agent could not tell how to read the version: that is `investigate`.
-        if versionCommand == nil, recommendation != .investigate {
-            throw ProposalSchemaError.badCombination("versionCommand may be null only with recommendation investigate")
+        // No version reader is fine when nothing will be updated (`investigate`, `suggestRemoval`, `ignore`);
+        // an `update` needs one, because the engine verifies an update by reading the version.
+        if versionCommand == nil, recommendation == .update {
+            throw ProposalSchemaError.badCombination("versionCommand may be null only with recommendation investigate, suggestRemoval or ignore")
         }
 
         guard let confidenceNumber = object["confidence"] as? NSNumber,

@@ -397,18 +397,21 @@ final class AgentAI1Tests: HermeticTestCase {
 
     // MARK: - R2: a null versionCommand
 
-    func testANullVersionCommandIsAllowedOnlyWithInvestigate() throws {
+    func testANullVersionCommandIsAllowedWithInvestigateSuggestRemovalOrIgnoreButNotUpdate() throws {
         func parseNull(_ recommendation: String, update: String = "null") throws -> AgentProposal {
             try ProposalParser.parse(Data("""
             {"ownerKind":"unknown","versionCommand":null,"versionPattern":"","latestSource":"none","updateCommand":\(update),
              "verify":"none","confidence":0.4,"evidence":[],"notes":"n","recommendation":"\(recommendation)","recommendationReason":"r"}
             """.utf8))
         }
-        let parsed = try parseNull("investigate")
-        XCTAssertNil(parsed.versionCommand)
-        XCTAssertEqual(parsed.recommendation, .investigate)
-        for kind in ["update", "ignore", "suggestRemoval"] {
-            XCTAssertThrowsError(try parseNull(kind), kind) { error in
+        for kind in ["investigate", "suggestRemoval", "ignore"] {
+            let parsed = try parseNull(kind)
+            XCTAssertNil(parsed.versionCommand, kind)
+            XCTAssertEqual(parsed.recommendation.rawValue, kind)
+        }
+        // An update needs a version reader: the engine verifies an update by reading the version.
+        for update in ["null", #"["npm","install","-g","acme"]"#] {
+            XCTAssertThrowsError(try parseNull("update", update: update), "update with \(update)") { error in
                 guard case ProposalSchemaError.badCombination = error else { return XCTFail("\(error)") }
             }
         }
@@ -417,6 +420,25 @@ final class AgentAI1Tests: HermeticTestCase {
         {"ownerKind":"unknown","versionCommand":[],"versionPattern":"","latestSource":"none","updateCommand":null,
          "verify":"none","confidence":0.4,"evidence":[],"notes":"n","recommendation":"investigate","recommendationReason":"r"}
         """.utf8)))
+    }
+
+    /// The spike's accidental global `to`: a null version reader with suggestRemoval is valid, is gated as
+    /// destructive, and the engine builds the removal text.
+    func testToWithSuggestRemovalAndANullVersionCommandIsValid() async throws {
+        let context = try fixtureContext("real-npm-to")
+        let raw = Data("""
+        {"ownerKind":"npm","versionCommand":null,"versionPattern":"","latestSource":"none","updateCommand":null,
+         "verify":"none","confidence":0.85,"evidence":[{"action":"read","target":"which -a to","finding":"no executable named to on PATH"}],
+         "notes":"n","recommendation":"suggestRemoval","recommendationReason":"A common English word with no executable, so it looks accidental."}
+        """.utf8)
+        let result = await ProposalValidator.evaluate(raw: raw, context: context, environment: environment())
+        XCTAssertNotNil(result.proposal, "schema-valid: \(result.verdict)")
+        XCTAssertNil(result.proposal?.versionCommand)
+        XCTAssertEqual(result.verdict.name, "gated", "\(result.verdict)")
+        XCTAssertTrue(result.verdict.reasons.contains { $0.contains("removal suggestion") })
+        XCTAssertEqual(result.removalSuggestion?.copyableCommand, "npm uninstall -g --prefix /usr/local to")
+        XCTAssertNil(result.version)
+        XCTAssertNil(result.update)
     }
 
     func testANullVersionCommandIsAnAcceptedInvestigateRecommendationWithNothingToRun() async {

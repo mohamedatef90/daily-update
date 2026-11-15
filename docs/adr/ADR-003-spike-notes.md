@@ -138,13 +138,15 @@ name. Ordinary vocabulary (package managers, verbs, flags, versions) is ignored.
 
 ## `versionCommand` may be null (review R2)
 Null means "no version reader is proposed": the evidence does not show one (for example `--version` failed). It is
-allowed only with recommendation `investigate`, so the agent never has to invent a placeholder command; the
-parser rejects any other combination, and `versionPattern` is not evaluated when the command is null. Before
+allowed with recommendation `investigate`, `suggestRemoval` or `ignore` (none of them updates anything) and never
+with `update`, so the agent never has to invent a placeholder command; the parser rejects `update` with null, and
+`versionPattern` is not evaluated when the command is null. Before
 this, Codex wrote placeholders such as `unknown` for items without evidence (3 of 15 hold-out items).
 
 ## A fetcher as a version reader
-`curl`, `wget` and similar are blocked as commands, except as a plain version query (`wget --version`): an item
-that IS curl or wget needs a version reader and a bare version flag fetches nothing. Any URL or other argument,
+`curl`, `wget` and similar are blocked as commands, except as `--version` or `-V` alone: an item that IS curl or
+wget needs a version reader and those flags fetch nothing. Not allowed: `version` (curl and wget read it as a
+host and request `http://version/`) and `-v` (verbose for both, not a version flag). Any URL or other argument,
 and any use as an update command, stays blocked. (Found by a test of the brew-caveats case.)
 
 ## `recommendation`

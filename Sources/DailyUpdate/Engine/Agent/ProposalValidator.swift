@@ -209,10 +209,11 @@ enum ProposalValidator {
             gated.append("\(role) command runs an interpreter (\(base))")
             risks.append("interpreter \(base)")
         }
-        // A fetcher is blocked, except as a plain version query (`wget --version`): an item that IS curl or
-        // wget needs a version reader, and a bare version flag fetches nothing. Any URL or other argument,
-        // and any use as an update command, stays blocked.
-        let plainVersionQuery = role == "version" && arguments.count == 1 && ["--version", "-V", "-v", "version"].contains(arguments[0])
+        // A fetcher is blocked, except as a plain version query (`curl --version`, `curl -V`): an item that IS
+        // curl or wget needs a version reader, and these flags fetch nothing. Deliberately NOT allowed: `version`
+        // (curl and wget treat it as a host and request http://version/) and `-v` (verbose for both, not a
+        // version flag). Any URL or other argument, and any use as an update command, stays blocked.
+        let plainVersionQuery = role == "version" && arguments.count == 1 && ["--version", "-V"].contains(arguments[0])
         if fetchers.contains(base), !plainVersionQuery { block("network fetcher \(base)") }
         if destructiveExecutables.contains(base) { block("destructive or file-writing executable \(base)") }
         // `defaults` and `plutil` read app versions from Info.plist; only their read forms are allowed.
