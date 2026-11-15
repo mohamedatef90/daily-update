@@ -9,6 +9,8 @@
     "handle": "npm:@google/gemini-cli",
     "root": "~/.nvm/versions/node/v24.13.0",
     "commandName": "gemini",
+    "packageID": "@google/gemini-cli",
+    "appPath": "~/.nvm/versions/node/v24.13.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin:~/.npm-global/bin:~/.cargo/bin:~/.nvm/versions/node/current/bin:~/.pyenv/shims:~/.local/share/mise/shims:~/.bun/bin:~/Library/pnpm:~/.yarn/bin:~/.asdf/shims:~/.opencode/bin:~/.gemini/bin:~/.lmstudio/bin:~/.hermes/bin:~/.antigravity-ide/antigravity-ide/bin:/Applications/Codex.app/Contents/Resources:~/.antigravity/antigravity/bin:~/.nvm/versions/node/v24.13.0/bin:~/miniconda3/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/System/Cryptexes/App/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.app",
     "status": "upToDate",
     "currentPlannedCommand": "'~/.nvm/versions/node/v24.13.0/bin/npm' 'install' '-g' '--prefix' '~/.nvm/versions/node/v24.13.0' '@google/gemini-cli@0.68.0'",
     "competing": [

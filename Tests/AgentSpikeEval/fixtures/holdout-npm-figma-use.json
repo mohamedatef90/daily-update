@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "npm global under nvm",
+  "context": {
+    "id": "inv-npm-4d688d92e4061c74",
+    "name": "figma-use",
+    "ecosystem": "npm",
+    "handle": "npm:figma-use",
+    "root": "~/.nvm/versions/node/v24.13.0",
+    "commandName": "figma-use",
+    "packageID": "figma-use",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

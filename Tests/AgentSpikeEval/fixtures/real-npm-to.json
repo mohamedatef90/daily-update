@@ -8,6 +8,7 @@
     "handle": "npm:to",
     "root": "/usr/local",
     "commandName": "to",
+    "packageID": "to",
     "status": "listed",
     "competing": [],
     "extraText": []

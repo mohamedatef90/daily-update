@@ -92,6 +92,13 @@ struct SkillDiscoverySettings: Codable, Equatable {
     static var defaults: SkillDiscoverySettings { SkillDiscoverySettings() }
 }
 
+/// Which agent CLI the proposals use. Claude Code is the default because its no-tools mode is enforceable
+/// (`--tools=`); Codex has no equivalent (see docs/adr/ADR-003-spike-notes.md).
+enum AgentBackendChoice: String, Codable, CaseIterable {
+    case claudeCode
+    case codex
+}
+
 struct UserSettings: Codable {
     var hasCompletedSetup: Bool = false
     var rootFolder: String = ""
@@ -122,6 +129,10 @@ struct UserSettings: Codable {
     var scheduledCheckMinute: Int = 0
     var autoUpdateScheduledItems: Bool = false
     var showDashboardOnLaunch: Bool = false
+    /// AI-1: agent-proposed strategies. Default Off. When on, `--propose` may ask the chosen agent for a
+    /// proposal; nothing it proposes is ever executed or saved by this setting.
+    var agentProposals: Bool = false
+    var agentBackend: AgentBackendChoice = .claudeCode
 
     init() {}
 
@@ -163,6 +174,10 @@ struct UserSettings: Codable {
         scheduledCheckMinute = try container.decode(Int.self, forKey: .scheduledCheckMinute)
         autoUpdateScheduledItems = try container.decode(Bool.self, forKey: .autoUpdateScheduledItems)
         showDashboardOnLaunch = try container.decode(Bool.self, forKey: .showDashboardOnLaunch)
+        // AI-1: lenient, like `inventory` above. An older settings.json lacks these keys and must still
+        // load, or the next save() would overwrite the user's real settings with defaults.
+        agentProposals = try container.decodeIfPresent(Bool.self, forKey: .agentProposals) ?? false
+        agentBackend = try container.decodeIfPresent(AgentBackendChoice.self, forKey: .agentBackend) ?? .claudeCode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -172,7 +187,7 @@ struct UserSettings: Codable {
              skillDiscovery, inventory, showMenuBarIcon, menuBarOnly, launchAtLogin, repoScan,
              itemPreferences, updateCategoryOrder, notificationsEnabled, confirmBeforeUpdate,
              stashReposBeforeUpdate, scheduledCheckEnabled, scheduledCheckHour, scheduledCheckMinute,
-             autoUpdateScheduledItems, showDashboardOnLaunch
+             autoUpdateScheduledItems, showDashboardOnLaunch, agentProposals, agentBackend
     }
 
     func preference(for id: String) -> ItemPreference {

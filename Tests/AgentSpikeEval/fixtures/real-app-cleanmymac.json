@@ -5,6 +5,7 @@
     "id": "discovered-app-6b4e4fa6b07026dd",
     "name": "CleanMyMac_5",
     "category": "app",
+    "appPath": "/Applications/CleanMyMac_5.app",
     "status": "checkFailed",
     "observedVersion": "5.7.4",
     "currentPlannedCommand": "'~/daily-update/.build/out/Products/Debug/DailyUpdate_DailyUpdate.bundle/Contents/Resources/update-app.sh' auto '/Applications/CleanMyMac_5.app'",

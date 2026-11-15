@@ -19,6 +19,12 @@ enum ProposalVerifyRule: String, Codable, CaseIterable {
     case versionMatchesLatest, versionChanged, exitZero, none
 }
 
+/// What the agent thinks should happen. Only `update` may carry a command. `suggestRemoval` never does:
+/// the app builds the removal text itself and shows it gated as destructive.
+enum ProposalRecommendation: String, Codable, CaseIterable {
+    case update, ignore, suggestRemoval, investigate
+}
+
 enum ProposalEvidenceAction: String, Codable, CaseIterable {
     case ran, read
 }
@@ -42,6 +48,8 @@ struct AgentProposal: Codable, Equatable {
     let confidence: Double
     let evidence: [ProposalEvidence]
     let notes: String
+    let recommendation: ProposalRecommendation
+    let recommendationReason: String
 }
 
 enum ProposalSchemaError: Error, Equatable, CustomStringConvertible {
@@ -55,6 +63,7 @@ enum ProposalSchemaError: Error, Equatable, CustomStringConvertible {
     case tooLong(String)
     case badCharacters(String)
     case badPattern(String)
+    case badCombination(String)
 
     var description: String {
         switch self {
@@ -68,6 +77,7 @@ enum ProposalSchemaError: Error, Equatable, CustomStringConvertible {
         case .tooLong(let key): return "\(key) is too long"
         case .badCharacters(let key): return "\(key) contains control characters"
         case .badPattern(let reason): return "versionPattern rejected: \(reason)"
+        case .badCombination(let reason): return reason
         }
     }
 }
@@ -78,6 +88,7 @@ enum ProposalSchema {
     static let maxEvidenceCount = 12
     static let maxTextLength = 2000
     static let maxPatternLength = 200
+    static let maxReasonLength = 500
 
     /// The JSON Schema handed to `codex exec --output-schema`. Codex's structured output needs every
     /// property listed in `required` and `additionalProperties: false`. The same rules are enforced
@@ -89,7 +100,7 @@ enum ProposalSchema {
       "title": "DailyUpdateAgentProposal",
       "type": "object",
       "additionalProperties": false,
-      "required": ["ownerKind", "versionCommand", "versionPattern", "latestSource", "updateCommand", "verify", "confidence", "evidence", "notes"],
+      "required": ["ownerKind", "versionCommand", "versionPattern", "latestSource", "updateCommand", "verify", "confidence", "evidence", "notes", "recommendation", "recommendationReason"],
       "properties": {
         "ownerKind": {
           "type": "string",
@@ -131,7 +142,12 @@ enum ProposalSchema {
             }
           }
         },
-        "notes": { "type": "string", "maxLength": 2000 }
+        "notes": { "type": "string", "maxLength": 2000 },
+        "recommendation": {
+          "type": "string",
+          "enum": ["update", "ignore", "suggestRemoval", "investigate"]
+        },
+        "recommendationReason": { "type": "string", "maxLength": 500 }
       }
     }
     """
@@ -140,7 +156,7 @@ enum ProposalSchema {
 enum ProposalParser {
     private static let topLevelKeys: Set<String> = [
         "ownerKind", "versionCommand", "versionPattern", "latestSource", "updateCommand",
-        "verify", "confidence", "evidence", "notes",
+        "verify", "confidence", "evidence", "notes", "recommendation", "recommendationReason",
     ]
     private static let evidenceKeys: Set<String> = ["action", "target", "finding"]
 
@@ -159,6 +175,12 @@ enum ProposalParser {
         let pattern = try text(object["versionPattern"], key: "versionPattern", max: ProposalSchema.maxPatternLength)
         try checkPattern(pattern)
         let notes = try text(object["notes"], key: "notes", max: ProposalSchema.maxTextLength)
+        let recommendation: ProposalRecommendation = try enumValue(object["recommendation"], key: "recommendation")
+        let reason = try text(object["recommendationReason"], key: "recommendationReason", max: ProposalSchema.maxReasonLength)
+        // Only `update` may carry a command. In particular `suggestRemoval` carries none at all.
+        if recommendation != .update, updateCommand != nil {
+            throw ProposalSchemaError.badCombination("updateCommand is only allowed with recommendation update")
+        }
 
         guard let confidenceNumber = object["confidence"] as? NSNumber,
               CFGetTypeID(confidenceNumber) != CFBooleanGetTypeID() else { throw ProposalSchemaError.wrongType("confidence") }
@@ -181,7 +203,8 @@ enum ProposalParser {
 
         return AgentProposal(
             ownerKind: owner, versionCommand: versionCommand, versionPattern: pattern, latestSource: latest,
-            updateCommand: updateCommand, verify: verify, confidence: confidence, evidence: evidence, notes: notes)
+            updateCommand: updateCommand, verify: verify, confidence: confidence, evidence: evidence, notes: notes,
+            recommendation: recommendation, recommendationReason: reason)
     }
 
     private static func enumValue<T: RawRepresentable>(_ value: Any?, key: String) throws -> T where T.RawValue == String {

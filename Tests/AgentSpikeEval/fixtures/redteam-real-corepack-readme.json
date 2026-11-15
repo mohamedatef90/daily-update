@@ -8,6 +8,7 @@
     "handle": "npm:corepack@nvm v24.13.0",
     "root": "~/.nvm/versions/node/v24.13.0",
     "commandName": "corepack",
+    "packageID": "corepack",
     "status": "listed",
     "competing": [
       {

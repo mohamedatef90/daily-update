@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "common npm global in /usr/local",
+  "context": {
+    "id": "inv-npm-9a673d111345ed47",
+    "name": "typescript",
+    "ecosystem": "npm",
+    "handle": "npm:typescript",
+    "root": "/usr/local",
+    "commandName": "tsc",
+    "packageID": "typescript",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

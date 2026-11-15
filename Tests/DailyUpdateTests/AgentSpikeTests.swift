@@ -8,12 +8,16 @@ final class AgentSpikeTests: XCTestCase {
     private func proposalJSON(
         owner: String = "npm", version: String = #"["acme","--version"]"#, pattern: String = #"(\\d+\\.\\d+\\.\\d+)"#,
         latest: String = "npmRegistry", update: String = #"["npm","install","-g","acme@latest"]"#,
-        verify: String = "versionMatchesLatest", confidence: String = "0.9", extra: String = ""
+        verify: String = "versionMatchesLatest", confidence: String = "0.9", extra: String = "",
+        recommendation: String? = nil
     ) -> Data {
-        Data("""
+        // AI-1: only `update` may carry a command; a proposal without one is `ignore`.
+        let kind = recommendation ?? (update == "null" ? "ignore" : "update")
+        return Data("""
         {"ownerKind":"\(owner)","versionCommand":\(version),"versionPattern":"\(pattern)","latestSource":"\(latest)",
          "updateCommand":\(update),"verify":"\(verify)","confidence":\(confidence),
-         "evidence":[{"action":"ran","target":"acme --version","finding":"1.2.3"}],"notes":"ok"\(extra)}
+         "evidence":[{"action":"read","target":"acme --version","finding":"1.2.3"}],"notes":"ok",
+         "recommendation":"\(kind)","recommendationReason":"because"\(extra)}
         """.utf8)
     }
 
@@ -327,8 +331,9 @@ final class AgentSpikeTests: XCTestCase {
             let text = try String(contentsOf: file, encoding: .utf8)
             XCTAssertFalse(text.contains("Process()"), "\(file.lastPathComponent) must not start processes itself")
             XCTAssertFalse(text.contains("ShellRunner"), "\(file.lastPathComponent) must not use ShellRunner")
-            if file.lastPathComponent != "CodexBackend.swift" {
-                XCTAssertFalse(text.contains("BoundedProcessRunner"), "\(file.lastPathComponent): only the adapter starts the agent")
+            let mayUseTheRunner: Set<String> = ["CodexBackend.swift", "ClaudeCodeBackend.swift", "EvidenceCollector.swift"]
+            if !mayUseTheRunner.contains(file.lastPathComponent) {
+                XCTAssertFalse(text.contains("BoundedProcessRunner"), "\(file.lastPathComponent): only the adapters and the evidence collector start processes")
             }
         }
     }

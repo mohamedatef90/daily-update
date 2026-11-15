@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "uv tool",
+  "context": {
+    "id": "inv-uv-ba2c4022c4c1dcfc",
+    "name": "browser-use",
+    "ecosystem": "uv",
+    "handle": "uv:browser-use",
+    "root": "~/.local/share/uv/tools",
+    "commandName": "browser-use",
+    "packageID": "browser-use",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

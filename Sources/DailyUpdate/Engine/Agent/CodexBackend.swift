@@ -19,6 +19,22 @@ struct CodexBackend: AgentBackend {
     typealias Runner = (BoundedProcessSpec) async -> QueryOutcome
 
     let id = "codex"
+
+    /// Verified on codex-cli 0.167.0 by asking the model for its own tool list and by trying to make it
+    /// run a command (see docs/adr/ADR-003-spike-notes.md). Codex has no single switch that removes every
+    /// tool. These flags remove the shell, the code-mode exec tool, web search, image generation, goals,
+    /// sub-agents, apps, plugins, the browser and computer use, and hooks. `apply_patch`, `view_image`, the
+    /// MCP resource tools and the collaboration tools still exist, so this is NOT claimed as enforced.
+    /// What still limits the agent: the read-only sandbox, an empty working directory, no config or rules
+    /// loaded, and an evidence-only prompt.
+    let toolPolicy = AgentToolPolicy(
+        noToolsEnforced: false,
+        mechanism: "--disable shell_tool,unified_exec,code_mode_host,multi_agent,goals,image_generation,apps,plugins,browser_use,computer_use,hooks and web_search=disabled; read-only sandbox; empty working directory",
+        gap: "Codex has no switch that removes every tool: apply_patch, view_image, the MCP resource tools and the collaboration tools remain available to the model. Shell, code mode, web and sub-agents are disabled.")
+    static let disabledFeatures = [
+        "shell_tool", "unified_exec", "code_mode_host", "multi_agent", "goals", "image_generation", "apps",
+        "plugins", "browser_use", "computer_use", "hooks",
+    ]
     var locate: () -> String?
     var run: Runner
     var maxStdoutBytes = 512 * 1024
@@ -55,6 +71,8 @@ struct CodexBackend: AgentBackend {
     static func arguments(schemaPath: String, outputPath: String, workDirectory: String, prompt: String) -> [String] {
         [
             "exec", "--json",
+        ] + disabledFeatures.flatMap { ["--disable", $0] } + [
+            "-c", "web_search=\"disabled\"",
             "--sandbox", "read-only",
             "--ephemeral", "--skip-git-repo-check",
             "--ignore-user-config", "--ignore-rules",
@@ -105,7 +123,8 @@ struct CodexBackend: AgentBackend {
                                       workDirectory: workDirectory.path, prompt: request.prompt),
             environment: .exactly(Self.environment(codexExecutable: executable, tempDirectory: root.path)),
             timeout: min(request.timeout, 120),
-            maxStdoutBytes: maxStdoutBytes))
+            maxStdoutBytes: maxStdoutBytes,
+            workingDirectory: workDirectory.path))
 
         let events = Self.parseEvents(outcome.stdout)
         switch outcome.evidence.termination {

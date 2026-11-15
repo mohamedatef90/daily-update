@@ -8,6 +8,7 @@
     "handle": "npm:latest",
     "root": "/usr/local",
     "commandName": "latest",
+    "packageID": "latest",
     "status": "listed",
     "competing": [],
     "extraText": []

@@ -8,6 +8,7 @@
     "handle": "npm:update",
     "root": "/usr/local",
     "commandName": "update",
+    "packageID": "update",
     "status": "listed",
     "competing": [],
     "extraText": []

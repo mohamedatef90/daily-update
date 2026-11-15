@@ -3,7 +3,7 @@
   "title": "DailyUpdateAgentProposal",
   "type": "object",
   "additionalProperties": false,
-  "required": ["ownerKind", "versionCommand", "versionPattern", "latestSource", "updateCommand", "verify", "confidence", "evidence", "notes"],
+  "required": ["ownerKind", "versionCommand", "versionPattern", "latestSource", "updateCommand", "verify", "confidence", "evidence", "notes", "recommendation", "recommendationReason"],
   "properties": {
     "ownerKind": {
       "type": "string",
@@ -45,6 +45,11 @@
         }
       }
     },
-    "notes": { "type": "string", "maxLength": 2000 }
+    "notes": { "type": "string", "maxLength": 2000 },
+    "recommendation": {
+      "type": "string",
+      "enum": ["update", "ignore", "suggestRemoval", "investigate"]
+    },
+    "recommendationReason": { "type": "string", "maxLength": 500 }
   }
 }

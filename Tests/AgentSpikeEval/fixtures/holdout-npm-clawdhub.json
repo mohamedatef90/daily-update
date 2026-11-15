@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "npm global under nvm",
+  "context": {
+    "id": "inv-npm-226df45e1553d7ae",
+    "name": "clawdhub",
+    "ecosystem": "npm",
+    "handle": "npm:clawdhub",
+    "root": "~/.nvm/versions/node/v24.13.0",
+    "commandName": "clawdhub",
+    "packageID": "clawdhub",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

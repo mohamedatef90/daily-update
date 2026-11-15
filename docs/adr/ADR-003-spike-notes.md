@@ -1,4 +1,4 @@
-# ADR-003 spike notes: agent-proposed strategies (Codex adapter)
+# ADR-003 notes: agent-proposed strategies (spike, then AI-1 hardening)
 
 Status: spike, not a shipped feature. Decision: "the model proposes, the engine executes". The agent returns
 **data**. Nothing the agent proposes is run, dry-run, or saved by this code.
@@ -79,3 +79,68 @@ python3 -I Tests/AgentSpikeEval/run_eval.py --bin .build/debug/DailyUpdate \
   --fixtures Tests/AgentSpikeEval/fixtures --out /tmp/agent-spike-eval
 python3 -I Tests/AgentSpikeEval/capture_real_fixtures.py discover.json check.json Tests/AgentSpikeEval/fixtures
 ```
+
+
+---
+
+# AI-1 hardening (behind the `agentProposals` flag, default Off)
+
+Still nothing is executed, dry-run or saved, and there is no GUI. Saving a proposal as a custom item comes with
+the GUI in M2.
+
+## Evidence in, no tools
+The engine now collects a single item's facts itself (`EvidenceCollector`); the agent gets only that evidence and
+the schema.
+- `which -a <command>` and the real path chain (through `PathSearch`, no process);
+- `<command> --version` (through `BoundedProcessRunner`, exact environment, 10 s, 4 KB, the command passes
+  `CommandShapeClassifier` and `PathTrust` first);
+- `brew info --json=v2 <name>` for a brew formula or cask, inside the network-denied, write-denied sandbox profile
+  that discovery already uses;
+- the package's own `package.json` (npm; field values capped, script NAMES only), read through
+  `ReadOnlyFileSystem` from `<root>/lib/node_modules/<package>/` only;
+- the app's own `Contents/Info.plist` (only under `/Applications` or `~/Applications`; listed keys only).
+Caps: 3,000 characters per item, 12,000 in total, 64 KB manifest, 256 KB plist, 300 characters per field. No
+directory listing. Everything is redacted (`~`, `<user>`) and sits inside the untrusted block.
+A lint test checks that `EvidenceCollector` uses only `BoundedProcessRunner`, with the classifier gate and
+`PathTrust`, and none of `Process()`, `ShellRunner`, `FileManager`, `popen`, `system`.
+
+## Which backend can really run with no tools (verified, not assumed)
+Method: ask the model for its own tool list, and try to make it run a command, then read the event stream.
+- **Claude Code 2.1.322: enforceable.** `--tools=` (empty list) + `--strict-mcp-config` + `--setting-sources ""`
+  (+ `--disallowedTools` by name as a second layer). The model's own tool list is `StructuredOutput` only. Needs
+  `USER` and `LOGNAME` in the environment for the keychain login. `-p "<prompt>"` must come first because `--tools`
+  and `--disallowedTools` take lists.
+- **Codex 0.167.0: not enforceable, a gap.** There is no switch that removes every tool. With the default config
+  the model lists a shell (`exec_command`), code mode (`functions.exec`), web, `apply_patch`, `view_image`, MCP
+  resource tools, sub-agent tools, goals, image generation. `--disable shell_tool` removes only the shell. The set
+  in `CodexBackend.disabledFeatures` plus `-c web_search="disabled"` removes the shell, code mode (it fails
+  closed when its host is disabled), web, sub-agents, goals, image generation, apps, plugins, the browser and
+  hooks. **Still available to the model:** `apply_patch`, `view_image`, the MCP resource tools and the
+  collaboration tools. Two config keys I tried (`include_apply_patch_tool`, `tools.view_image`) do not exist in
+  this version. What still limits the agent: the read-only sandbox, an empty working directory, no config and no
+  rules loaded, and an evidence-only prompt. `CodexBackend.toolPolicy.noToolsEnforced` is `false` and the CLI says
+  so; the doc does not claim it is enforced.
+- `AgentBackend.toolPolicy` carries this in code. The default backend setting is Claude Code.
+
+## Taint check
+Any argv token, URL or domain in a proposal that appears in the untrusted text (the item's description and the
+extra text the app supplies) but NOT in the evidence or the item's identity makes the verdict `gated(taint)`. A
+token that appears nowhere is the agent's own knowledge and is allowed. A package `name@version` is judged by its
+name. Ordinary vocabulary (package managers, verbs, flags, versions) is ignored. Blocking rules still win:
+`blocked` beats `gated`, and a blocked verdict lists only its blocking reasons (the findings are in `taint`).
+
+## `recommendation`
+`update | ignore | suggestRemoval | investigate`, plus a reason. Only `update` may carry a command (the parser
+rejects `updateCommand` with any other recommendation). `suggestRemoval` is always `gated` ("destructive, needs a
+person"), and the removal text is built by the engine from the item's validated identity (for example
+`npm uninstall -g --prefix <root> <package>`), never taken from the agent.
+
+## The flag
+`UserSettings.agentProposals` (default `false`) and `agentBackend` (default `claudeCode`). Both decode leniently,
+so an older `settings.json` still loads. `--propose` and `--propose-fixture` print how to turn it on and exit `3`
+when it is off. `DAILY_UPDATE_AGENT_PROPOSALS=1` turns it on for one process (used by the eval) without editing the
+settings file.
+
+## One engine change outside Agent/
+`BoundedProcessSpec` has an optional `workingDirectory` (default nil: every existing caller is unchanged), so the
+agents start in an empty temporary directory and never read a project file.

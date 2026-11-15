@@ -41,6 +41,9 @@ struct ProposalEvaluation {
     var version: CommandAssessment?
     var update: CommandAssessment?
     var ownerCheck: String
+    var taint: [TaintCheck.Finding] = []
+    /// Set only for `suggestRemoval`; built by the engine, never by the agent.
+    var removalSuggestion: RemovalSuggestion?
 }
 
 /// Everything the validator needs from the machine, injectable so tests need no real tools.
@@ -97,17 +100,23 @@ enum ProposalValidator {
         "/var/root", "/Library/Keychains",
     ]
 
-    static func evaluate(raw: Data, context: AgentItemContext, environment: ProposalEnvironment) async -> ProposalEvaluation {
+    static func evaluate(
+        raw: Data, context: AgentItemContext, evidence: EvidenceBundle = EvidenceBundle(items: [], notes: []),
+        environment: ProposalEnvironment
+    ) async -> ProposalEvaluation {
         let proposal: AgentProposal
         do {
             proposal = try ProposalParser.parse(raw)
         } catch {
             return ProposalEvaluation(proposal: nil, verdict: .invalid("\(error)"), version: nil, update: nil, ownerCheck: "not run")
         }
-        return await evaluate(proposal: proposal, context: context, environment: environment)
+        return await evaluate(proposal: proposal, context: context, evidence: evidence, environment: environment)
     }
 
-    static func evaluate(proposal: AgentProposal, context: AgentItemContext, environment: ProposalEnvironment) async -> ProposalEvaluation {
+    static func evaluate(
+        proposal: AgentProposal, context: AgentItemContext,
+        evidence: EvidenceBundle = EvidenceBundle(items: [], notes: []), environment: ProposalEnvironment
+    ) async -> ProposalEvaluation {
         var blocked: [String] = []
         var gated: [String] = []
 
@@ -144,6 +153,25 @@ enum ProposalValidator {
             gated.append("low confidence (\(proposal.confidence))")
         }
 
+        // Taint: a token, URL or domain that is only in the untrusted text is never accepted.
+        let taint = TaintCheck.findings(proposal: proposal, context: context, evidence: evidence)
+        for finding in taint {
+            gated.append("taint: \(finding.kind) \(finding.token.prefix(80)) appears only in untrusted text")
+        }
+
+        // Recommendation paths.
+        var removal: RemovalSuggestion?
+        switch proposal.recommendation {
+        case .update:
+            if proposal.updateCommand == nil { gated.append("recommendation is update but no update command was proposed") }
+        case .suggestRemoval:
+            // No command from the agent. The engine builds the text, and it is always a person's decision.
+            removal = RemovalSuggestion.make(for: context)
+            gated.append("removal suggestion: destructive, needs a person")
+        case .ignore, .investigate:
+            break
+        }
+
         let verdict: ProposalVerdict
         if !blocked.isEmpty {
             verdict = .blocked(unique(blocked))
@@ -152,7 +180,9 @@ enum ProposalValidator {
         } else {
             verdict = .acceptedCandidate
         }
-        return ProposalEvaluation(proposal: proposal, verdict: verdict, version: version, update: update, ownerCheck: ownerCheck)
+        return ProposalEvaluation(
+            proposal: proposal, verdict: verdict, version: version, update: update, ownerCheck: ownerCheck,
+            taint: taint, removalSuggestion: removal)
     }
 
     // MARK: - One command
