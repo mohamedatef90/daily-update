@@ -149,6 +149,13 @@ enum StrategyPlanner {
         services: Services = .live
     ) async -> StrategyPlan? {
         guard usesTypedEngine(config: config) else { return nil }
+        // P2-5: an inventory row has no `command`; it is resolved by its identity through the enumerator
+        // that owns its ecosystem, then handed to the same planner as every other typed row.
+        if config.source == .inventory {
+            return await checkPlan(
+                config: config, currentVersion: currentVersion, resolve: inventoryResolver(pathLookup: pathLookup),
+                layout: pathLookup?.layout ?? layout, fetchRelease: fetchRelease, services: services)
+        }
         guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
             return StrategyPlan(
                 ownerResolution: OwnerResolution(commandName: "", active: nil, competing: [], resolveError: .invalidCommandName),
@@ -291,17 +298,53 @@ enum StrategyPlanner {
     }
 
     static func currentVersion(
-        config: DetectorConfig, pathLookup: CommandPathLookup?, services: Services = .live
+        config: DetectorConfig, pathLookup: CommandPathLookup?, services: Services = .live,
+        inventoryResolve: ((InventoryIdentity) async -> InstalledPackage?)? = nil
     ) async -> (version: String?, owner: OwnerCandidate?) {
-        guard let name = config.command else { return (nil, nil) }
         let layout = pathLookup?.layout ?? .live()
-        let resolution = await OwnerResolver.resolve(commandName: name, lookup: pathLookup, layout: layout)
+        let resolution: OwnerResolution
+        if config.source == .inventory {
+            guard let found = await inventoryResolution(config: config, pathLookup: pathLookup, resolve: inventoryResolve) else { return (nil, nil) }
+            resolution = found.resolution
+        } else {
+            guard let name = config.command else { return (nil, nil) }
+            resolution = await OwnerResolver.resolve(commandName: name, lookup: pathLookup, layout: layout)
+        }
         guard case .ready(let strategy) = prepare(
             config: config, resolution: resolution, layout: layout,
             loginPath: pathLookup?.loginPath ?? .known([]), environmentSnapshot: pathLookup?.environmentSnapshot ?? [:],
             services: services
         ) else { return (nil, nil) }
         return (await strategy.currentVersion(), resolution.active)
+    }
+
+    /// P2-5: re-reads one inventory package from the enumerator that owns its ecosystem, using the login
+    /// environment the caller's `CommandPathLookup` already captured (the same one discovery used).
+    /// Read-only: it only reads manifests and the file system.
+    static func inventoryResolver(pathLookup: CommandPathLookup?) -> (InventoryIdentity) async -> InstalledPackage? {
+        let context = DiscoveryContext(
+            fileSystem: LiveFileSystem(),
+            environmentSnapshot: pathLookup?.environmentSnapshot ?? [:],
+            loginPath: pathLookup?.loginPath ?? .unknown("Not queried"),
+            layout: pathLookup?.layout ?? .live(),
+            processEnvironment: ProcessInfo.processInfo.environment)
+        return { identity in
+            await InventoryResolver.resolve(identity: identity, context: context, enumerators: DiscoveryEnumeratorRegistry.enumerator(for:))
+        }
+    }
+
+    /// The record and the owner resolution `checkPlan` builds for an inventory row.
+    static func inventoryResolution(
+        config: DetectorConfig, pathLookup: CommandPathLookup?,
+        resolve: ((InventoryIdentity) async -> InstalledPackage?)? = nil
+    ) async -> (record: InstalledPackage, resolution: OwnerResolution)? {
+        guard config.source == .inventory, let identity = config.inventory, !identity.isErrorMarker,
+              let record = await (resolve ?? inventoryResolver(pathLookup: pathLookup))(identity) else { return nil }
+        let executable = record.executables.first ?? record.packageDirectory
+        return (record, OwnerResolution(
+            commandName: identity.packageID,
+            active: OwnerCandidate(commandPath: executable, resolvedPath: executable, owner: record.owner),
+            competing: []))
     }
 
     static func ownershipFingerprint(for config: DetectorConfig, resolution: OwnerResolution) -> String? {
@@ -336,15 +379,23 @@ enum StrategyPlanner {
         targetVersion: String?,
         pathLookup: CommandPathLookup? = nil,
         layout: EcosystemLayout = .live(),
-        services: Services = .live
+        services: Services = .live,
+        inventoryResolve: ((InventoryIdentity) async -> InstalledPackage?)? = nil
     ) async -> (commandSpec: CommandSpec, fingerprint: String)? {
         guard usesTypedEngine(config: config) else { return nil }
-        guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
-            return nil
-        }
-
         let layout = pathLookup?.layout ?? layout
-        let resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
+        let resolution: OwnerResolution
+        if config.source == .inventory {
+            // The same record checks `checkPlan` applies: an untrusted root or a link never gets a command.
+            guard let found = await inventoryResolution(config: config, pathLookup: pathLookup, resolve: inventoryResolve),
+                  !found.record.flags.contains(.untrustedRoot), !found.record.flags.contains(.linked) else { return nil }
+            resolution = found.resolution
+        } else {
+            guard let commandName = config.command?.trimmingCharacters(in: .whitespacesAndNewlines), !commandName.isEmpty else {
+                return nil
+            }
+            resolution = await OwnerResolver.resolve(commandName: commandName, lookup: pathLookup, layout: layout)
+        }
         switch prepare(
             config: config, resolution: resolution, layout: layout,
             loginPath: pathLookup?.loginPath ?? .known([]), environmentSnapshot: pathLookup?.environmentSnapshot ?? [:],

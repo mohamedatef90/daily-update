@@ -23,6 +23,17 @@ struct SettingsView: View {
         .padding()
     }
 
+    private var discoveryStatusText: String {
+        switch appState.discoveryStatus {
+        case .off: return "Off"
+        case .idle: return "Not run yet"
+        case .running: return "Scanning…"
+        case .ready(let rows, let issues, let ms):
+            return "\(rows) found in \(String(format: "%.1f", Double(ms) / 1000)) s" + (issues > 0 ? ", \(issues) place(s) not fully read" : "")
+        case .failed(let reason): return "Didn't finish: \(reason)"
+        }
+    }
+
     private var generalTab: some View {
         Form {
             Section("Automatic Updates") {
@@ -242,6 +253,42 @@ struct SettingsView: View {
                 } label: {
                     Label("Add Applications Folder", systemImage: "plus")
                 }
+            }
+
+            Section("Installed Tools") {
+                Toggle("Discover installed tools automatically", isOn: Binding(
+                    get: { appState.discoveryEnabled },
+                    set: { appState.discoveryEnabled = $0 }
+                ))
+                Text("Lists what Homebrew, npm, pnpm, Yarn, Bun, uv, pipx, Cargo and RubyGems installed, and which copy runs. Read-only: it never installs or changes anything.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Rescan") { Task { await appState.rescan() } }
+                        .disabled(!appState.discoveryEnabled || appState.discoveryStatus.isRunning)
+                    if appState.discoveryStatus.isRunning { ProgressView().controlSize(.small) }
+                    Text(discoveryStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Agent Proposals (experimental)") {
+                Toggle("Let me ask an agent about tools I can't check", isOn: Binding(
+                    get: { appState.agentProposalsEnabled },
+                    set: { appState.agentProposalsEnabled = $0 }
+                ))
+                Text("Off by default. When On, an item that could not be checked gets an \"Ask Agent\" action. It sends the tool's name, version output and paths (your home folder and name removed) to the agent you pick, under that agent's own account. Nothing it suggests is run or saved unless you choose to save it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Agent", selection: Binding(
+                    get: { appState.agentBackendChoice },
+                    set: { appState.agentBackendChoice = $0 }
+                )) {
+                    Text("Claude Code (tools turned off)").tag(AgentBackendChoice.claudeCode)
+                    Text("Codex (cannot fully turn tools off)").tag(AgentBackendChoice.codex)
+                }
+                .disabled(!appState.agentProposalsEnabled)
             }
 
             Section("App Discovery") {

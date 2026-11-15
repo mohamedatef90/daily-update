@@ -122,6 +122,8 @@ Manage custom items in **Settings → Update List**.
 | Rescan apps on launch | On | Discover new apps in Applications folders |
 | Rescan agent skills on launch | On | Discover skills and plugin git repos |
 | Show dashboard on launch | Off | Open dashboard instead of item list |
+| Discover installed tools automatically | On | After the first screen appears, list what Homebrew, npm, pnpm, Yarn, Bun, uv, pipx, Cargo and RubyGems installed (read-only), with an **Ecosystems** section in the sidebar and an owner badge on each row. **Rescan** in Settings runs it again. Off: the app behaves as before |
+| Agent proposals (experimental) | Off | Adds an **Ask Agent** action to items that could not be checked. It sends the tool's name, version output and paths (home folder and account name removed) to Claude Code or Codex. Nothing it proposes is run; you can save an accepted update proposal as a custom item, which still needs your review before it runs |
 | Confirm before updating | On | Show dry-run preview of commands |
 | Stash git repos before pull | On | `git stash` before repo updates |
 | Notify when updates found | On | macOS notification after check |
@@ -129,6 +131,12 @@ Manage custom items in **Settings → Update List**.
 | Show menu bar icon | On | Icon in top menu bar with update count |
 | Menu bar only | Off | Hide Dock icon, run from menu bar |
 | Launch at login | Off | Start when you log in |
+
+## Installed tools (M2)
+
+Discovery rows go through the same path as every other item: the planner builds the command, the safety checks run, you see the dry-run, the executor runs it and the result is verified. Discovery itself never installs or changes anything. If it fails or takes longer than 20 seconds, the usual list stays and a small banner says so.
+
+The item info panel shows where a tool is installed: the owner, the file that runs, other installs it hides (for example an old copy in `/usr/local`), installs under another Node version, and files outside any package manager that run instead. This is display only; acting on those installs is planned for a later milestone.
 
 ## Menu Bar
 

@@ -5,6 +5,8 @@ import Foundation
 @MainActor
 final class AppState: ObservableObject {
     typealias PlannedCommandResolver = @Sendable (DetectorConfig, String?, CommandPathLookup) async -> (commandSpec: CommandSpec, fingerprint: String)?
+    /// M2: one read-only discovery pass. Injected so tests never scan the real machine.
+    typealias Discoverer = @Sendable ([DetectorConfig], UserSettings) async throws -> DiscoveryRunResult
 
     @Published var items: [UpdateItem] = []
     @Published var selectedCategory: ItemCategory? = nil
@@ -30,12 +32,31 @@ final class AppState: ObservableObject {
     @Published var healthIssues: [HealthIssue] = []
     @Published var duplicateGroups: [DuplicateGroup] = []
     @Published var launchAtLoginError: String?
+    // M2 (P2-5): discovery state. All display data; see AppState+Discovery.swift.
+    @Published var discoveryStatus: DiscoveryStatus = .idle
+    @Published var discoveryDetails: [String: ItemDiscoveryDetails] = [:]
+    /// Inactive installs that belong to no row (R3 snapshot level).
+    @Published var discoveryUnlistedInactive: [DiscoveredInstall] = []
+    @Published var selectedEcosystem: Ecosystem? = nil
+    /// M2 / AI-2: the "Ask agent" sheet. Nil when closed. Only ever set when `agentProposals` is On.
+    @Published var agentSession: AgentSession? = nil
 
     let settingsStore: UserSettingsStore
     private let scheduler = SchedulerService()
 
     weak var appDelegate: AppDelegate?
-    private var configs: [DetectorConfig] = []
+    var configs: [DetectorConfig] = []
+    /// The catalog, user and scanned rows, before discovery rows are merged in.
+    var catalogConfigs: [DetectorConfig] = []
+    var lastDiscovery: DiscoveryRunResult?
+    var lastDiscoveryDate: Date?
+    var discoveryTask: Task<Void, Never>?
+    let discoverer: Discoverer
+    /// One agent run. Replaceable so tests never start a real agent.
+    var agentEvaluator: (AgentItemContext, AgentBackendChoice) async throws -> AgentProposeCommand.Result = { context, choice in
+        try await AgentProposeCommand.evaluate(context: context, backend: AgentProposeCommand.backend(for: choice))
+    }
+    let discoversOnLaunch: Bool
     private let plannedCommandResolver: PlannedCommandResolver
     private var wakeObserver: NSObjectProtocol?
     private var hasRunStartupCheck = false
@@ -60,10 +81,16 @@ final class AppState: ObservableObject {
                 targetVersion: targetVersion,
                 pathLookup: lookup
             )
-        }
+        },
+        discoverer: @escaping Discoverer = { catalog, settings in
+            await DiscoveryRunner.run(catalog: catalog, settings: settings)
+        },
+        discoversOnLaunch: Bool = NSClassFromString("XCTestCase") == nil
     ) {
         self.settingsStore = settingsStore
         self.plannedCommandResolver = plannedCommandResolver
+        self.discoverer = discoverer
+        self.discoversOnLaunch = discoversOnLaunch
         settingsStore.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -72,6 +99,7 @@ final class AppState: ObservableObject {
         history = UpdateHistoryStore.load()
         showOnboarding = !settingsStore.settings.hasCompletedSetup
         reloadConfigs()
+        if discoversOnLaunch { startDiscovery() }
         setupWakeObserver()
         syncLaunchAtLogin()
         scheduler.start(appState: self)
@@ -185,6 +213,7 @@ final class AppState: ObservableObject {
     var filteredItems: [UpdateItem] {
         var result = activeItems
         if let selectedCategory { result = result.filter { $0.category == selectedCategory } }
+        if let selectedEcosystem { result = result.filter { $0.inventory?.ecosystem == selectedEcosystem } }
         if showUpdatesOnly {
             result = result.filter {
                 $0.status == .updateAvailable || $0.status == .gated || $0.status == .updatePending
@@ -215,6 +244,7 @@ final class AppState: ObservableObject {
         if showDashboard { return "Dashboard" }
         if showHistory { return "History" }
         if showUpdatesOnly { return "Updates Available" }
+        if let selectedEcosystem { return EcosystemPresentation.title(selectedEcosystem) }
         if let selectedCategory { return selectedCategory.label }
         return "All Items"
     }
@@ -257,10 +287,20 @@ final class AppState: ObservableObject {
         if showDashboard { return "dashboard" }
         if showHistory { return "history" }
         if showUpdatesOnly { return "updates" }
+        if let selectedEcosystem { return "eco:" + selectedEcosystem.rawValue }
         return selectedCategory?.rawValue ?? "all"
     }
 
     func setSidebarSelection(_ tag: String) {
+        selectedEcosystem = nil
+        if tag.hasPrefix("eco:"), let ecosystem = Ecosystem(rawValue: String(tag.dropFirst(4))) {
+            showDashboard = false
+            showHistory = false
+            selectedCategory = nil
+            showUpdatesOnly = false
+            selectedEcosystem = ecosystem
+            return
+        }
         switch tag {
         case "dashboard":
             showDashboard = true
@@ -344,12 +384,22 @@ final class AppState: ObservableObject {
             discoveredSkillCount = 0
         }
 
-        configs = ConfigLoader.loadConfigs(
+        catalogConfigs = ConfigLoader.loadConfigs(
             settings: settings,
             discoveredRepos: discoveredRepos,
             discoveredApps: discoveredApps,
             discoveredSkills: discoveredSkills
         )
+        // M2: keep the last discovery's rows visible across a reload, so the list does not flicker.
+        configs = settings.discoverInstalledTools && lastDiscovery != nil
+            ? Self.mergeDiscovery(catalog: catalogConfigs, rows: lastDiscovery?.rows ?? [])
+            : catalogConfigs
+        if !settings.discoverInstalledTools {
+            lastDiscovery = nil
+            discoveryDetails = [:]
+            discoveryUnlistedInactive = []
+            discoveryStatus = .off
+        }
         items = configs.map { applyPreferences(to: $0.toUpdateItem()) }
         duplicateGroups = DuplicateDetector.find(in: installedItems)
         markDuplicates()
@@ -357,7 +407,7 @@ final class AppState: ObservableObject {
         publishWidgetSnapshot()
     }
 
-    private func applyPreferences(to item: UpdateItem) -> UpdateItem {
+    func applyPreferences(to item: UpdateItem) -> UpdateItem {
         var item = item
         let pref = settingsStore.preference(for: item.id)
         item.autoUpdate = pref.autoUpdate
@@ -545,6 +595,8 @@ final class AppState: ObservableObject {
         checkedItemCount = 0
         appendLog("Starting update check…")
         if rescanReposOnLaunch { reloadConfigs() }
+        // M2: the check sees the discovered rows too. A failed discovery never blocks it.
+        await ensureFreshDiscovery()
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
@@ -1217,7 +1269,7 @@ final class AppState: ObservableObject {
         ))
     }
 
-    private func appendLog(_ line: String) {
+    func appendLog(_ line: String) {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         logLines.insert("[\(formatter.string(from: Date()))] \(line)", at: 0)

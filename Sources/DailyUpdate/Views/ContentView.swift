@@ -83,6 +83,15 @@ struct SidebarView: View {
                 }
             }
 
+            if appState.discoveryEnabled, !appState.ecosystemGroups.isEmpty {
+                Section("Ecosystems") {
+                    ForEach(appState.ecosystemGroups) { group in
+                        sidebarRow(title: group.title, icon: group.icon, count: group.count)
+                            .tag("eco:" + group.ecosystem.rawValue)
+                    }
+                }
+            }
+
             Section("Status") {
                 sidebarRow(
                     title: "Updates Available",

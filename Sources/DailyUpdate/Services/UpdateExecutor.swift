@@ -124,12 +124,19 @@ enum UpdateExecutor {
         }
 
         let afterLookup = typed ? await runner.lookupCommand(config.command ?? "") : pathLookup
+        // Verification re-resolves the same owner the same way the plan did: by command for catalog rows,
+        // by identity for discovered (inventory) rows.
         let check = await UpdateCheckService.check(config, installed: true,
             reviewedCommandHash: reviewedCommandHash, pathLookup: afterLookup)
         let afterVersion = typed ? check.currentVersion : await DetectionService.getVersion(config)
         if typed {
-            let afterOwner = await OwnerResolver.resolve(commandName: config.command ?? "", lookup: afterLookup,
-                layout: afterLookup?.layout ?? .live()).active
+            let afterOwner: OwnerCandidate?
+            if config.source == .inventory {
+                afterOwner = (await StrategyPlanner.inventoryResolution(config: config, pathLookup: afterLookup))?.resolution.active
+            } else {
+                afterOwner = await OwnerResolver.resolve(commandName: config.command ?? "", lookup: afterLookup,
+                    layout: afterLookup?.layout ?? .live()).active
+            }
             guard let beforeOwner = before?.owner, let afterOwner,
                   beforeOwner.owner == afterOwner.owner, beforeOwner.commandPath == afterOwner.commandPath,
                   check.status == .upToDate else {

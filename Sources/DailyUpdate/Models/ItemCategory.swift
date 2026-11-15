@@ -157,6 +157,8 @@ struct UpdateItem: Identifiable, Hashable {
     var detectedPaths: [String] = []
     var needsReview: Bool = false
     var detectRule: DetectRule? = nil
+    /// M2: set for rows discovery found (and for catalog rows it joined). Display only.
+    var inventory: InventoryIdentity? = nil
 
     var isSnoozed: Bool {
         guard let snoozedUntil else { return false }

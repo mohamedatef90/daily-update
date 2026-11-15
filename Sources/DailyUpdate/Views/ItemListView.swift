@@ -14,6 +14,7 @@ struct ItemListView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerBar
+            DiscoveryBanner()
 
             if displayItems.isEmpty {
                 VStack(spacing: 12) {
@@ -35,7 +36,7 @@ struct ItemListView: View {
                     .width(32)
 
                     TableColumn("Name") { item in
-                        ItemNameCell(item: item, onShowInfo: { infoItem = item })
+                        ItemNameCell(item: item, ownerBadge: appState.ownerBadge(for: item), onShowInfo: { infoItem = item })
                             .contextMenu { itemContextMenu(for: item) }
                     }
                     .width(min: 180, ideal: 240)
@@ -69,12 +70,27 @@ struct ItemListView: View {
         .safeAreaInset(edge: .bottom) {
             bottomBar
         }
+        .sheet(item: $appState.agentSession) { session in
+            AskAgentSheet(session: session)
+                .environmentObject(appState)
+        }
         .popover(item: $infoItem) { item in
-            ScrollView {
-                ItemInfoView(item: item)
-                    .padding(16)
+            VStack(spacing: 0) {
+                ScrollView {
+                    ItemInfoView(item: item, discovery: appState.discoveryDetails[item.id])
+                        .padding(16)
+                }
+                if appState.canAskAgent(item) {
+                    // Outside the scroll view, so it is always visible.
+                    Divider()
+                    Button("Ask Agent…") {
+                        infoItem = nil
+                        Task { await appState.askAgent(for: item.id) }
+                    }
+                    .padding(10)
+                }
             }
-            .frame(width: 380, height: 420)
+            .frame(width: 420, height: 560)
         }
         .confirmationDialog(
             "Run Manually in Terminal",
@@ -274,8 +290,50 @@ struct LogPanel: View {
     }
 }
 
+/// M2: the non-blocking line under the toolbar while discovery runs, or when it did not finish.
+struct DiscoveryBanner: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        switch appState.discoveryStatus {
+        case .running:
+            banner {
+                ProgressView().controlSize(.small)
+                Text("Looking for installed tools…")
+            }
+        case .failed(let reason):
+            banner {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                Text("Couldn't list installed tools (\(reason)). Your usual list is shown.")
+                Spacer()
+                Button("Try Again") { appState.startDiscovery() }.controlSize(.small)
+            }
+        case .ready(_, let issues, _) where issues > 0:
+            banner {
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
+                Text("\(issues) place\(issues == 1 ? "" : "s") couldn't be fully read. Some installed tools may be missing.")
+                Spacer()
+                Button("Rescan") { Task { await appState.rescan() } }.controlSize(.small)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func banner<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 8) { content() }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+    }
+}
+
 struct ItemNameCell: View {
     let item: UpdateItem
+    var ownerBadge: String? = nil
     var onShowInfo: (() -> Void)?
 
     var body: some View {
@@ -336,6 +394,15 @@ struct ItemNameCell: View {
                         .padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.12))
                         .clipShape(Capsule())
+                    if let ownerBadge {
+                        Text(ownerBadge)
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.14))
+                            .clipShape(Capsule())
+                            .help("Who installed and updates this tool")
+                    }
                 }
             }
         }
@@ -442,6 +509,10 @@ extension ItemListView {
             Button("Retry Update") {
                 Task { await appState.retryUpdate(for: item.id) }
             }
+            Divider()
+        }
+        if appState.canAskAgent(item) {
+            Button("Ask Agent…") { Task { await appState.askAgent(for: item.id) } }
             Divider()
         }
         if item.needsAdministratorPermission {

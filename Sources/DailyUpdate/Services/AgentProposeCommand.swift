@@ -48,6 +48,12 @@ enum AgentProposeCommand {
                 ecosystem: $0.record.ecosystem.rawValue, packageID: $0.record.packageID)
         }
         let planned = item.map { $0.plannedUpdateCommandSpec?.displayString ?? $0.updateCommand }
+        // A discovered row has no catalog command; use the one its own install provides.
+        let discoveredCommand = row?.inventory.flatMap { identity in
+            discovery.results.lazy.flatMap(\.records).first {
+                $0.ecosystem == identity.ecosystem && $0.packageID == identity.packageID && $0.root.path == identity.rootPath
+            }
+        }.flatMap { AppState.primaryCommand(of: $0) }
         return AgentItemContext(
             id: itemID,
             name: item?.name ?? row?.name ?? itemID,
@@ -55,7 +61,7 @@ enum AgentProposeCommand {
             ecosystem: row?.inventory?.ecosystem.rawValue,
             handle: row?.handle,
             root: row?.inventory?.rootPath,
-            commandName: item?.command ?? row?.command,
+            commandName: item?.command ?? row?.command ?? discoveredCommand,
             packageID: row?.inventory?.packageID,
             appPath: appPath(detected: item?.detectedPaths ?? [], planned: planned),
             status: item?.status.rawValue ?? "listed",
@@ -87,7 +93,70 @@ enum AgentProposeCommand {
         return try? JSONDecoder().decode(AgentItemContext.self, from: data)
     }
 
-    /// The whole pipeline for one item. Returns the process exit code and prints one report.
+    /// Everything one agent run produced, as data. The CLI prints it; the "Ask agent" sheet shows it.
+    struct Result {
+        var context: AgentItemContext
+        var backendID: String
+        var backendVersion: String
+        var toolPolicy: AgentToolPolicy
+        var evidence: EvidenceBundle
+        var sentToAgent: String
+        var redactionLeaks: [String]
+        var response: AgentResponse
+        /// Nil when the agent failed or produced nothing the parser could read.
+        var evaluation: ProposalEvaluation?
+        var failure: String?
+        /// A short redacted excerpt of output that was discarded because it was not valid.
+        var discardedExcerpt: String?
+
+        var verdict: ProposalVerdict {
+            if let evaluation { return evaluation.verdict }
+            return .invalid(failure ?? "no valid proposal")
+        }
+        var proposal: AgentProposal? { evaluation?.proposal }
+    }
+
+    enum Unavailable: Error, Equatable {
+        case backend(id: String, reason: String)
+    }
+
+    /// The whole pipeline for one item: detect, collect evidence, ask, validate. Executes nothing, saves nothing.
+    static func evaluate(
+        context: AgentItemContext,
+        backend: AgentBackend,
+        collector: EvidenceCollector = EvidenceCollector(),
+        environment: ProposalEnvironment = .live()
+    ) async throws -> Result {
+        let detection = await backend.detect()
+        guard case .available(_, let backendVersion) = detection else {
+            if case .unavailable(let reason) = detection { throw Unavailable.backend(id: backend.id, reason: reason) }
+            throw Unavailable.backend(id: backend.id, reason: "unavailable")
+        }
+        let evidence = await collector.collect(for: context)
+        let prompt = AgentPrompt.build(for: context, evidence: evidence)
+        let leaks = AgentRedaction.leaks(in: prompt)
+        let response = await backend.investigate(AgentRequest(prompt: prompt, schemaJSON: ProposalSchema.json))
+        var result = Result(
+            context: context, backendID: backend.id, backendVersion: backendVersion, toolPolicy: backend.toolPolicy,
+            evidence: evidence, sentToAgent: prompt, redactionLeaks: leaks, response: response)
+        switch response.outcome {
+        case .failed(let reason):
+            result.failure = reason
+        case .completed(let raw):
+            let evaluation = await ProposalValidator.evaluate(raw: raw, context: context, evidence: evidence, environment: environment)
+            if evaluation.proposal != nil {
+                result.evaluation = evaluation
+            } else {
+                // Invalid output is discarded, never repaired. Only a short redacted excerpt is kept.
+                result.failure = evaluation.verdict.reasons.first
+                result.discardedExcerpt = AgentRedaction.redact(String(data: raw.prefix(400), encoding: .utf8) ?? "<binary>")
+                result.evaluation = evaluation
+            }
+        }
+        return result
+    }
+
+    /// The CLI report: runs `evaluate` and prints it. Returns the process exit code.
     static func run(
         context: AgentItemContext,
         json: Bool,
@@ -96,75 +165,70 @@ enum AgentProposeCommand {
         environment: ProposalEnvironment = .live(),
         output: (String) -> Void = { print($0) }
     ) async -> Int32 {
-        let detection = await backend.detect()
-        guard case .available(_, let backendVersion) = detection else {
-            if case .unavailable(let reason) = detection {
-                output(json ? jsonString(["item": context.id, "backend": backend.id, "error": reason, "executed": false, "saved": false])
-                            : "Agent backend \(backend.id) is unavailable: \(reason)")
-            }
+        let result: Result
+        do {
+            result = try await evaluate(context: context, backend: backend, collector: collector, environment: environment)
+        } catch Unavailable.backend(let id, let reason) {
+            output(json ? jsonString(["item": context.id, "backend": id, "error": reason, "executed": false, "saved": false])
+                        : "Agent backend \(id) is unavailable: \(reason)")
+            return 2
+        } catch {
+            output("Could not ask the agent: \(error)")
             return 2
         }
 
-        let evidence = await collector.collect(for: context)
-        let prompt = AgentPrompt.build(for: context, evidence: evidence)
-        let leaks = AgentRedaction.leaks(in: prompt)
-        let response = await backend.investigate(AgentRequest(prompt: prompt, schemaJSON: ProposalSchema.json))
-
         var report: [String: Any] = [
             "item": context.id,
-            "backend": backend.id,
-            "backendVersion": backendVersion,
-            "toolPolicy": ["noToolsEnforced": backend.toolPolicy.noToolsEnforced,
-                           "mechanism": backend.toolPolicy.mechanism,
-                           "gap": (backend.toolPolicy.gap as Any?) ?? NSNull()] as [String: Any],
-            "evidence": evidence.items.map { ["kind": $0.kind, "source": $0.source, "chars": $0.text.count, "truncated": $0.truncated] as [String: Any] },
-            "evidenceNotes": evidence.notes,
-            "sentToAgent": prompt,
-            "redactionCheck": ["passed": leaks.isEmpty, "leaks": leaks],
-            "latencyMs": response.latencyMs,
-            "usage": usageJSON(response.usage),
-            "reportedCostUSD": response.reportedCostUSD ?? "unknown",
-            "agentToolCalls": response.agentCommands.map { AgentRedaction.redact($0) },
+            "backend": result.backendID,
+            "backendVersion": result.backendVersion,
+            "toolPolicy": ["noToolsEnforced": result.toolPolicy.noToolsEnforced,
+                           "mechanism": result.toolPolicy.mechanism,
+                           "gap": (result.toolPolicy.gap as Any?) ?? NSNull()] as [String: Any],
+            "evidence": result.evidence.items.map { ["kind": $0.kind, "source": $0.source, "chars": $0.text.count, "truncated": $0.truncated] as [String: Any] },
+            "evidenceNotes": result.evidence.notes,
+            "probeOutcome": (result.evidence.probe.map { ["outcome": $0.outcome.rawValue, "detail": $0.detail] } as Any?) ?? NSNull(),
+            "sentToAgent": result.sentToAgent,
+            "redactionCheck": ["passed": result.redactionLeaks.isEmpty, "leaks": result.redactionLeaks],
+            "latencyMs": result.response.latencyMs,
+            "usage": usageJSON(result.response.usage),
+            "reportedCostUSD": result.response.reportedCostUSD ?? "unknown",
+            "agentToolCalls": result.response.agentCommands.map { AgentRedaction.redact($0) },
             "executed": false,
             "saved": false,
         ]
 
-        switch response.outcome {
-        case .failed(let reason):
+        if case .failed(let reason) = result.response.outcome {
             report["outcome"] = "agentFailed"
             report["reason"] = reason
             report["verdict"] = ["name": "invalid", "reasons": [reason]]
             emit(report, json: json, output: output)
             return 2
-        case .completed(let raw):
-            let evaluation = await ProposalValidator.evaluate(raw: raw, context: context, evidence: evidence, environment: environment)
-            report["outcome"] = "completed"
-            report["schemaValid"] = evaluation.proposal != nil
-            report["verdict"] = ["name": evaluation.verdict.name, "reasons": evaluation.verdict.reasons]
-            report["ownerCheck"] = evaluation.ownerCheck
-            report["taint"] = evaluation.taint.map { ["token": $0.token, "kind": $0.kind] }
-            if let proposal = evaluation.proposal, let data = try? JSONEncoder().encode(proposal),
-               let object = try? JSONSerialization.jsonObject(with: data) {
-                report["proposal"] = object
-                report["recommendation"] = proposal.recommendation.rawValue
-            } else {
-                // Invalid output is discarded, never repaired. Only a short redacted excerpt is kept.
-                let excerpt = String(data: raw.prefix(400), encoding: .utf8) ?? "<binary>"
-                report["discardedOutputExcerpt"] = AgentRedaction.redact(excerpt)
-            }
-            var commands: [String: Any] = [:]
-            for assessment in [evaluation.version, evaluation.update].compactMap({ $0 }) {
-                commands[assessment.role] = ["display": assessment.display, "risks": assessment.risks]
-            }
-            report["commands"] = commands
-            if let removal = evaluation.removalSuggestion {
-                // Built by the engine from the item's identity. Shown as text; never run.
-                let command: Any = removal.copyableCommand ?? NSNull()
-                report["removalSuggestion"] = ["text": removal.text, "copyableCommand": command, "gate": removal.gate] as [String: Any]
-            }
-            emit(report, json: json, output: output)
-            return 0
         }
+        let evaluation = result.evaluation
+        report["outcome"] = "completed"
+        report["schemaValid"] = result.proposal != nil
+        report["verdict"] = ["name": result.verdict.name, "reasons": result.verdict.reasons]
+        report["ownerCheck"] = evaluation?.ownerCheck ?? "not run"
+        report["taint"] = (evaluation?.taint ?? []).map { ["token": $0.token, "kind": $0.kind] }
+        if let proposal = result.proposal, let data = try? JSONEncoder().encode(proposal),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            report["proposal"] = object
+            report["recommendation"] = proposal.recommendation.rawValue
+        } else if let excerpt = result.discardedExcerpt {
+            report["discardedOutputExcerpt"] = excerpt
+        }
+        var commands: [String: Any] = [:]
+        for assessment in [evaluation?.version, evaluation?.update].compactMap({ $0 }) {
+            commands[assessment.role] = ["display": assessment.display, "risks": assessment.risks]
+        }
+        report["commands"] = commands
+        if let removal = evaluation?.removalSuggestion {
+            // Built by the engine from the item's identity. Shown as text; never run.
+            let command: Any = removal.copyableCommand ?? NSNull()
+            report["removalSuggestion"] = ["text": removal.text, "copyableCommand": command, "gate": removal.gate] as [String: Any]
+        }
+        emit(report, json: json, output: output)
+        return 0
     }
 
     private static func usageJSON(_ usage: AgentUsage?) -> Any {

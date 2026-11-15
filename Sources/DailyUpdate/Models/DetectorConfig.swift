@@ -145,7 +145,8 @@ extension DetectorConfig {
             workingDirectory: workingDirectory,
             detectedPaths: detect?.paths ?? [],
             needsReview: needsReview ?? false,
-            detectRule: detect
+            detectRule: detect,
+            inventory: inventory
         )
     }
 }

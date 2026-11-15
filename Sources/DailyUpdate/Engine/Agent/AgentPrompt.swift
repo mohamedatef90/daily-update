@@ -97,6 +97,9 @@ enum AgentPrompt {
     - Prefer a bare executable name such as "npm" or "brew" over a path.
     - versionCommand is a read-only command that prints the installed version (usually the tool with \
     `--version`). versionPattern is a regular expression with exactly one capture group for the version. \
+    probeOutcome says why the engine's own `<tool> --version` probe gave what it gave. "exitedNonZero" means the \
+    tool does not accept `--version`: propose the tool's own way to print its version only if the evidence \
+    shows one, otherwise use null. It does not mean the tool is broken or unsafe.
     If the evidence does not show how to read the version, set versionCommand to null (and give an empty \
     versionPattern); this is allowed with recommendation "investigate", "suggestRemoval" or "ignore", but \
     never with "update". Never invent a placeholder command.
@@ -131,10 +134,11 @@ enum AgentPrompt {
             var item: AgentItemContext
             var evidence: [EvidenceItem]
             var evidenceNotes: [String]
+            var probeOutcome: ProbeReport?
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let payload = Payload(item: context, evidence: evidence.items, evidenceNotes: evidence.notes)
+        let payload = Payload(item: context, evidence: evidence.items, evidenceNotes: evidence.notes, probeOutcome: evidence.probe)
         let data = (try? encoder.encode(payload)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         let safeData = data
             .replacingOccurrences(of: closeTag, with: "[closing tag removed]")
