@@ -34,6 +34,24 @@ extension AppState {
         discoveryDetails[item.id]?.ownerBadge
     }
 
+    /// A single-item `--update` or `--install` checks only that item (after discovery, so a discovered row exists).
+    func checkItems(ids: [String]) async {
+        await ensureFreshDiscovery()
+        await recheckItems(ids: ids, useDiscoverySnapshot: true)
+    }
+
+    /// The Homebrew data of the last discovery pass, only while that pass is recent. Nil means "ask brew".
+    func freshBrewSnapshot() -> BrewInfoProvider? {
+        guard settingsStore.settings.discoverInstalledTools, let date = lastDiscoveryDate,
+              Date().timeIntervalSince(date) < Self.discoveryFreshness else { return nil }
+        return lastDiscovery?.brewInfo
+    }
+
+    /// Called after an update ran: what discovery saw is no longer true.
+    func invalidateDiscoverySnapshot() {
+        lastDiscoveryDate = nil
+    }
+
     // MARK: - Running
 
     /// Starts (or restarts) a discovery pass in the background. Never blocks the caller.
@@ -129,7 +147,21 @@ extension AppState {
         return merged
     }
 
-    func applyDiscovery(_ result: DiscoveryRunResult) {
+    /// Applies a result that waited for a check or an update to finish.
+    func applyPendingDiscovery() {
+        guard let result = pendingDiscovery, !isUpdating else { return }
+        pendingDiscovery = nil
+        applyDiscovery(result, deferIfBusy: false)
+    }
+
+    func applyDiscovery(_ result: DiscoveryRunResult, deferIfBusy: Bool = true) {
+        // `checkAll`, `recheckItems` and `updateSelected` walk `items` and `configs` by position. Replacing both
+        // under them misaligns the two lists, so a result that arrives mid-run waits until the run ends.
+        if deferIfBusy, isChecking || isUpdating {
+            pendingDiscovery = result
+            discoveryStatus = .running
+            return
+        }
         lastDiscovery = result
         lastDiscoveryDate = Date()
         let merged = Self.mergeDiscovery(catalog: catalogConfigs, rows: result.rows)

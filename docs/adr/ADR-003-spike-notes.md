@@ -164,3 +164,31 @@ settings file.
 ## One engine change outside Agent/
 `BoundedProcessSpec` has an optional `workingDirectory` (default nil: every existing caller is unchanged), so the
 agents start in an empty temporary directory and never read a project file.
+
+
+---
+
+# M2.1: reporting, verification and version readers
+
+- **Version readers (`VersionReaders.swift`).** The evidence probe asks `<tool> --version`. When that fails with a
+  non-zero exit or no version in the output, and only then, a reviewed fixed table may name the tool's own reader
+  (`ng version`, `java -version`, `go version`, `ssh -V`, `tmux -V`, `ffmpeg -version`, `nginx -v`). The probe
+  outcome `okViaAllowlistedReader` records it. Rules, enforced by tests: every entry passes the classifier with
+  no risk and `PathTrust`, runs through `BoundedProcessRunner`, has plain 1 or 2 word arguments with no mutating
+  word, and no package manager is ever an entry (`npm version`, `yarn version` and `pnpm version` WRITE
+  `package.json` and a git tag). Nothing else is ever tried: no other flag, no guessing.
+- **Version on stderr.** The probe reads a version from stdout or stderr (`java -version`, `ssh -V`, `nginx -v`).
+- **Owner check after an update.** For a discovered row (including a catalog entry that discovery joined to its
+  install) "same owner" means the same `ResolvedOwner` (package manager, prefix and package). Its `commandPath`
+  is the installed file, which moves when the package updates, and comparing it reported every Homebrew update as
+  a failed verification. A catalog row still requires the same command path.
+- **A no-op update is not a success.** If the command finished, the version did not change, and the check still
+  reports an update available, the result is `failedVerification`, not "updated".
+- **Outcomes.** `ActionOutcomeKind`: `updated` (changed and verified), `handedOff` (the app's own updater was
+  opened, nothing installed yet), `failedVerification`, `failed`, `skipped`. Only `updated` is a success in the
+  history (`success`); the history entry also records `outcome`. `--update` and `--install` print the plan,
+  progress and one outcome line, and exit 0, 1, 2 (needs confirmation) or 3 (handed off).
+- **Single-item `--update`/`--install`** checks only that item (after discovery, so a discovered row exists).
+- **Homebrew snapshot in checks.** A check that follows a fresh discovery pass uses its Homebrew data instead of
+  starting `brew info` per item. The snapshot is dropped after any update and never read by the verification
+  after an update (it holds the old version).

@@ -177,6 +177,38 @@ final class AppStateDiscoveryTests: HermeticTestCase {
         XCTAssertEqual(calls.value, 0)
     }
 
+    /// `checkAll` and `updateSelected` address `items` and `configs` by position. A discovery result that arrives
+    /// while one runs must wait, or the two lists misalign.
+    func testADiscoveryResultThatArrivesDuringACheckOrAnUpdateWaits() async {
+        let box = Box([inventoryRow(package: "a")])
+        let state = makeState(discoverer: { _, _ in self.result(rows: box.value) })
+        await state.runDiscovery()
+        let before = state.items.map(\.id)
+        XCTAssertTrue(before.contains("inv-npm-a"))
+
+        box.value = [inventoryRow(package: "a"), inventoryRow(package: "b")]
+        state.isChecking = true
+        await state.runDiscovery()
+        XCTAssertEqual(state.items.map(\.id), before, "the list is not replaced while a check runs")
+        XCTAssertNotNil(state.pendingDiscovery)
+
+        state.isChecking = false
+        state.applyPendingDiscovery()
+        XCTAssertTrue(state.items.contains { $0.id == "inv-npm-b" }, "it is applied once the check is over")
+        XCTAssertNil(state.pendingDiscovery)
+        XCTAssertEqual(state.discoveryStatus, .ready(rows: 2, issues: 0, elapsedMs: 7))
+
+        box.value = [inventoryRow(package: "c")]
+        state.isUpdating = true
+        await state.runDiscovery()
+        XCTAssertTrue(state.items.contains { $0.id == "inv-npm-b" }, "nor while an update runs")
+        state.applyPendingDiscovery()
+        XCTAssertNotNil(state.pendingDiscovery, "and not applied while the update still runs")
+        state.isUpdating = false
+        state.applyPendingDiscovery()
+        XCTAssertTrue(state.items.contains { $0.id == "inv-npm-c" })
+    }
+
     func testAFreshDiscoveryIsReusedByACheck() async {
         let calls = Box(0)
         let state = makeState(discoverer: { _, _ in calls.value += 1; return self.result(rows: []) }, autoDiscovers: true)

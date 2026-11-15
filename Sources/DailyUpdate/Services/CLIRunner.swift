@@ -11,6 +11,15 @@ protocol CLIRunnerState: AnyObject {
     func deselectAll(limitTo ids: [String]?)
     func setSelection(for id: String, selected: Bool)
     func updateSelected(skipDryRun: Bool, explicitTargetIDs: [String]?) async
+    /// Check only these items (a single-item `--update` or `--install` must not check everything first).
+    func checkItems(ids: [String]) async
+    /// What each item of the last `updateSelected` run ended as. Empty for a state that does not report it.
+    var lastActionOutcomes: [String: ActionOutcome] { get }
+}
+
+extension CLIRunnerState {
+    func checkItems(ids: [String]) async { await checkAll() }
+    var lastActionOutcomes: [String: ActionOutcome] { [:] }
 }
 
 extension AppState: CLIRunnerState {
@@ -167,7 +176,7 @@ enum CLIRunner {
                 output: output
             )
         case .install(let itemID):
-            await state.checkAll()
+            await state.checkItems(ids: [itemID])
             return await runScopedAction(
                 state: state,
                 itemID: itemID,
@@ -176,7 +185,7 @@ enum CLIRunner {
                 output: output
             )
         case .update(let itemID):
-            await state.checkAll()
+            await state.checkItems(ids: [itemID])
             return await runScopedAction(
                 state: state,
                 itemID: itemID,
@@ -360,10 +369,13 @@ enum CLIRunner {
         }
 
         let targetIDs = Set(entries.map(\.id))
+        output("Running \(entries.count) action\(entries.count == 1 ? "" : "s")…")
         await state.updateSelected(skipDryRun: true, explicitTargetIDs: nil)
+        printOutcomes(state: state, orderedIDs: entries.map(\.id), output: output)
         return actionExitCode(
             state: state,
             targetIDs: targetIDs,
+            orderedIDs: entries.map(\.id),
             failOnAnyCheckFailure: failOnAnyCheckFailure
         )
     }
@@ -467,9 +479,47 @@ enum CLIRunner {
             return 2
         }
 
+        // The plan, then progress, then the verified outcome. Nothing runs silently.
+        printDryRunPlan(entries: [
+            DryRunEntry(
+                id: item.id, name: item.name, command: action == .install ? item.installCommand : updateCommand,
+                action: item.actionLabel, category: item.category)
+        ], output: output)
+        output("Running…")
         state.setSelection(for: item.id, selected: true)
         await state.updateSelected(skipDryRun: true, explicitTargetIDs: [item.id])
-        return actionExitCode(state: state, targetIDs: Set([item.id]))
+        printOutcomes(state: state, orderedIDs: [item.id], output: output)
+        return actionExitCode(state: state, targetIDs: Set([item.id]), orderedIDs: [item.id])
+    }
+
+    /// One line per item: what it really ended as. Only "Updated" means changed AND verified.
+    @MainActor
+    private static func printOutcomes(state: any CLIRunnerState, orderedIDs: [String], output: (String) -> Void) {
+        let outcomes = state.lastActionOutcomes
+        for id in orderedIDs {
+            guard let outcome = outcomes[id] else { continue }
+            let label = "\(outcome.name) (\(outcome.itemID))"
+            let versions: String = {
+                switch (outcome.from, outcome.to) {
+                case (let from?, let to?) where from != to: return "\(from) → \(to)"
+                case (_, let to?): return to
+                case (let from?, _): return from
+                default: return "version unknown"
+                }
+            }()
+            switch outcome.kind {
+            case .updated:
+                output("✓ \(outcome.installing ? "Installed" : "Updated") \(label): \(versions) (verified)")
+            case .handedOff:
+                output("↪ Handed off \(label): \(outcome.message ?? "finish the update in the app"). Nothing is installed yet; version \(versions).")
+            case .failedVerification:
+                output("✗ Ran, but could not verify \(label): \(outcome.message ?? "the result did not match"). Version \(versions).")
+            case .failed:
+                output("✗ Failed \(label): \(outcome.message ?? "the command did not succeed").")
+            case .skipped:
+                output("– Skipped \(label): \(outcome.message ?? "not run").")
+            }
+        }
     }
 
     @MainActor
@@ -484,6 +534,7 @@ enum CLIRunner {
             .sorted()
         if ids.isEmpty {
             output("No items are currently eligible for \(action.noun).")
+            output("Run --check to list all item IDs.")
             return
         }
 
@@ -491,6 +542,7 @@ enum CLIRunner {
         for id in ids {
             output("  \(id)")
         }
+        output("Run --check to list all item IDs.")
     }
 
     private static func printDryRunPlan(entries: [DryRunEntry], output: (String) -> Void) {
@@ -502,13 +554,30 @@ enum CLIRunner {
     }
 
     @MainActor
+    /// 0: every item was updated and verified. 1: something failed, could not be verified, or was skipped.
+    /// 3: nothing failed, but at least one item was handed to the app's own updater and is not installed yet.
+    /// (2 means "needs confirmation" and is returned before anything runs.)
+    static func exitCode(for outcomes: [ActionOutcome]) -> Int32 {
+        if outcomes.contains(where: { $0.kind == .failed || $0.kind == .failedVerification || $0.kind == .skipped }) { return 1 }
+        if outcomes.contains(where: { $0.kind == .handedOff }) { return 3 }
+        return 0
+    }
+
+    @MainActor
     private static func actionExitCode(
         state: any CLIRunnerState,
         targetIDs: Set<String>,
+        orderedIDs: [String] = [],
         failOnAnyCheckFailure: Bool = false
     ) -> Int32 {
         if failOnAnyCheckFailure && state.items.contains(where: { $0.status == .checkFailed }) {
             return 1
+        }
+        // The run's own report wins over the re-checked status: a handoff is still "updateAvailable" afterwards.
+        let reported = state.lastActionOutcomes
+        let relevant = targetIDs.compactMap { reported[$0] }
+        if !relevant.isEmpty, relevant.count == targetIDs.count {
+            return exitCode(for: relevant)
         }
         for item in state.items where targetIDs.contains(item.id) {
             switch item.status {
@@ -539,6 +608,9 @@ enum CLIRunner {
           DailyUpdate --agent claude|codex   Which agent --propose uses (default: the agentBackend setting)
           DailyUpdate --json               JSON output (with --check, --health or --discover)
           DailyUpdate --help               Show this help
+
+        Exit codes for --update and --install: 0 updated and verified, 1 failed or not verified,
+          2 needs confirmation (--yes), 3 handed off to the app's own updater and not installed yet.
 
         Run without flags to open the GUI.
         """)

@@ -18,8 +18,12 @@ struct UpdateHistoryEntry: Codable, Identifiable {
     let success: Bool
     let message: String?
     let command: String
+    /// `ActionOutcomeKind.rawValue`. Nil in entries written before it existed (read `success` then).
+    var outcome: String? = nil
 
-    init(itemID: String, itemName: String, fromVersion: String?, toVersion: String?, success: Bool, message: String?, command: String) {
+    var outcomeKind: ActionOutcomeKind? { outcome.flatMap(ActionOutcomeKind.init(rawValue:)) }
+
+    init(itemID: String, itemName: String, fromVersion: String?, toVersion: String?, success: Bool, message: String?, command: String, outcome: String? = nil) {
         self.id = UUID()
         self.itemID = itemID
         self.itemName = itemName
@@ -29,6 +33,7 @@ struct UpdateHistoryEntry: Codable, Identifiable {
         self.success = success
         self.message = message
         self.command = command
+        self.outcome = outcome
     }
 }
 
