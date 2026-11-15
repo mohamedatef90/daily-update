@@ -138,6 +138,11 @@ enum ShellLexer {
                     word += hereString ? "<<<" : "<<"; started = true
                     index += hereString ? 3 : 2; continue
                 }
+                // zsh reads `<->` and `<1-9>` as a numeric glob, not a redirection: `x=<-> brew upgrade`.
+                if char == "<", let length = numericGlobLength(chars, at: index) {
+                    word += String(chars[index..<(index + length)]); started = true; glob = true
+                    index += length; continue
+                }
                 if let length = redirectionLength(chars, at: index) {
                     // `2>&1`, `2>err`: a word of only digits right before the operator is its fd.
                     if started, isFileDescriptorPrefix(chars, before: index, count: word.count) {
@@ -246,6 +251,17 @@ enum ShellLexer {
         default:
             return nil
         }
+    }
+
+    /// `<->`, `<1-9>`, `<5->` and `<-5>`: optional digits, `-`, optional digits, `>`.
+    private static func numericGlobLength(_ chars: [Character], at index: Int) -> Int? {
+        var end = index + 1
+        while end < chars.count, chars[end].isASCII, chars[end].isNumber { end += 1 }
+        guard end < chars.count, chars[end] == "-" else { return nil }
+        end += 1
+        while end < chars.count, chars[end].isASCII, chars[end].isNumber { end += 1 }
+        guard end < chars.count, chars[end] == ">" else { return nil }
+        return end + 1 - index
     }
 
     private static func isFileDescriptorPrefix(_ chars: [Character], before index: Int, count: Int) -> Bool {
