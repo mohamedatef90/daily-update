@@ -133,6 +133,9 @@ struct UserSettings: Codable {
     /// proposal; nothing it proposes is ever executed or saved by this setting.
     var agentProposals: Bool = false
     var agentBackend: AgentBackendChoice = .claudeCode
+    /// M2 (P2-5): list the tools installed through Homebrew, npm, uv and the other ecosystems next to the
+    /// catalog, using the read-only discovery. When Off, the app behaves exactly as before.
+    var discoverInstalledTools: Bool = true
 
     init() {}
 
@@ -178,6 +181,7 @@ struct UserSettings: Codable {
         // load, or the next save() would overwrite the user's real settings with defaults.
         agentProposals = try container.decodeIfPresent(Bool.self, forKey: .agentProposals) ?? false
         agentBackend = try container.decodeIfPresent(AgentBackendChoice.self, forKey: .agentBackend) ?? .claudeCode
+        discoverInstalledTools = try container.decodeIfPresent(Bool.self, forKey: .discoverInstalledTools) ?? true
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -187,7 +191,7 @@ struct UserSettings: Codable {
              skillDiscovery, inventory, showMenuBarIcon, menuBarOnly, launchAtLogin, repoScan,
              itemPreferences, updateCategoryOrder, notificationsEnabled, confirmBeforeUpdate,
              stashReposBeforeUpdate, scheduledCheckEnabled, scheduledCheckHour, scheduledCheckMinute,
-             autoUpdateScheduledItems, showDashboardOnLaunch, agentProposals, agentBackend
+             autoUpdateScheduledItems, showDashboardOnLaunch, agentProposals, agentBackend, discoverInstalledTools
     }
 
     func preference(for id: String) -> ItemPreference {

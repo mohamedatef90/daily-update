@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ItemInfoView: View {
     let item: UpdateItem
+    var discovery: ItemDiscoveryDetails? = nil
     var compact: Bool = false
 
     var body: some View {
@@ -45,6 +46,12 @@ struct ItemInfoView: View {
             }
             infoRow("Installed", item.isInstalled ? "Yes" : "No")
 
+            if let discovery {
+                Divider()
+                installsSection(discovery)
+                Divider()
+            }
+
             if let description = item.description, !description.isEmpty {
                 infoRow("Details", description)
             }
@@ -73,6 +80,40 @@ struct ItemInfoView: View {
 
             Divider()
             infoRow("ID", item.id, monospaced: true)
+        }
+    }
+
+    /// M2: where this tool is installed. Display only: there are no actions on other installs yet.
+    private func installsSection(_ discovery: ItemDiscoveryDetails) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            infoRow("Owner", discovery.ownerBadge)
+            if let activePath = discovery.activePath {
+                infoRow("Active path", PathDisplay.home(activePath), monospaced: true)
+            }
+            installList("Other installs this one hides", icon: "arrow.triangle.branch", installs: discovery.competing)
+            installList("Installed but not in use (another Node version)", icon: "moon.zzz", installs: discovery.inactive)
+            installList("A file outside any package manager runs instead", icon: "questionmark.folder", installs: discovery.shadowedByUnownedFiles)
+        }
+    }
+
+    @ViewBuilder
+    private func installList(_ title: String, icon: String, installs: [DiscoveredInstall]) -> some View {
+        if !installs.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                Label(title, systemImage: icon)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(installs) { install in
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(PathDisplay.home(install.path))
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text([install.version.map { "v\($0)" }, install.owner].compactMap { $0 }.joined(separator: " · "))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 

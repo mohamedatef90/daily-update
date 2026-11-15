@@ -26,13 +26,43 @@ struct EvidenceItem: Codable, Equatable {
     }
 }
 
+/// Why the `<tool> --version` probe gave what it gave. AI-2 diagnosis: before this, a failed probe and a probe that
+/// never ran looked the same. These are facts about the probe, never about the tool's safety.
+enum ProbeOutcome: String, Codable, Equatable {
+    /// Exit 0 and a version-looking token in the output.
+    case ok
+    /// Exit 0 but nothing that looks like a version (for example a banner or help text).
+    case noVersionToken
+    /// A non-zero exit: the tool does not understand `--version` (Angular's `ng` wants `ng version`, Java wants
+    /// `-version`). Not a PATH, trust or gate problem; the agent is told so and may propose another reader.
+    case exitedNonZero
+    case timedOut
+    case outputCapExceeded
+    case signaled
+    case launchFailed
+    /// The executable is not in a location `PathTrust` accepts (for example a writable folder).
+    case skippedUntrustedLocation
+    /// The classifier flagged the command, so it was not started.
+    case skippedGatedCommand
+    case noExecutableOnPath
+    case noCommandName
+}
+
+struct ProbeReport: Codable, Equatable {
+    var outcome: ProbeOutcome
+    /// Short, redacted detail: the exit code and the first line of stderr, never more than 200 characters.
+    var detail: String
+}
+
 struct EvidenceBundle: Equatable {
     var items: [EvidenceItem]
     /// Why something was not collected (shown to the agent as a fact, and in the CLI report).
     var notes: [String]
+    /// The `--version` probe's outcome. Nil only for a bundle that was built by hand.
+    var probe: ProbeReport? = nil
 
     /// Everything the agent sees from the evidence, trusted or not.
-    var combinedText: String { (items.map(\.text) + notes).joined(separator: "\n") }
+    var combinedText: String { (items.map(\.text) + notes + [probe.map { "probeOutcome: \($0.outcome.rawValue) \($0.detail)" } ?? ""]).joined(separator: "\n") }
     /// Only the structured identity facts (see `EvidenceItem`).
     var trustedText: String { items.map(\.trusted).filter { !$0.isEmpty }.joined(separator: "\n") }
 }
@@ -73,10 +103,12 @@ struct EvidenceCollector {
     func collect(for context: AgentItemContext) async -> EvidenceBundle {
         var items: [EvidenceItem] = []
         var notes: [String] = []
+        var probe = ProbeReport(outcome: .noCommandName, detail: "")
 
         if let name = context.commandName, Self.isValidCommandName(name) {
             let candidates = PathSearch.candidates(for: name, pathEntries: pathEntries(), fileSystem: fileSystem)
             if candidates.isEmpty {
+                probe = ProbeReport(outcome: .noExecutableOnPath, detail: "")
                 notes.append("`which -a \(name)`: no executable named \(name) on PATH")
             } else {
                 let lines = candidates.map { candidate -> String in
@@ -86,10 +118,12 @@ struct EvidenceCollector {
                 items.append(makeItem(kind: "which", source: "which -a \(name)", text: lines.joined(separator: "\n"),
                                       trusted: lines.joined(separator: "\n")))
                 if let active = candidates.first {
-                    if let version = await versionEvidence(executable: active, name: name) {
+                    let (version, report) = await versionEvidence(executable: active, name: name)
+                    probe = report
+                    if let version {
                         items.append(version)
                     } else {
-                        notes.append("version probe for \(name) was skipped (untrusted location or gated command)")
+                        notes.append("version probe for \(name) was skipped (\(report.outcome.rawValue))")
                     }
                 }
             }
@@ -120,16 +154,21 @@ struct EvidenceCollector {
             total += item.text.count
             kept.append(item)
         }
-        return EvidenceBundle(items: kept, notes: notes.map { AgentRedaction.redact($0, home: home, user: user) })
+        probe.detail = AgentRedaction.redact(probe.detail, home: home, user: user)
+        return EvidenceBundle(items: kept, notes: notes.map { AgentRedaction.redact($0, home: home, user: user) }, probe: probe)
     }
 
     // MARK: - `<tool> --version`
 
-    private func versionEvidence(executable: String, name: String) async -> EvidenceItem? {
+    private func versionEvidence(executable: String, name: String) async -> (EvidenceItem?, ProbeReport) {
         let spec = CommandSpec(executablePath: executable, arguments: ["--version"])
         // The classifier gate: a command with any risk is never started.
-        guard CommandShapeClassifier.classify(spec.displayString).risks.isEmpty,
-              isTrustedExecutable(executable) else { return nil }
+        guard CommandShapeClassifier.classify(spec.displayString).risks.isEmpty else {
+            return (nil, ProbeReport(outcome: .skippedGatedCommand, detail: ""))
+        }
+        guard isTrustedExecutable(executable) else {
+            return (nil, ProbeReport(outcome: .skippedUntrustedLocation, detail: ""))
+        }
         let directory = URL(fileURLWithPath: executable).deletingLastPathComponent().path
         let outcome = await run(BoundedProcessSpec(
             executable: executable, arguments: ["--version"],
@@ -140,19 +179,28 @@ struct EvidenceCollector {
             timeout: Self.versionTimeout, maxStdoutBytes: 4096, maxStderrBytes: 2048,
             workingDirectory: NSTemporaryDirectory()))
         var text: String
+        var report: ProbeReport
+        let token = Self.versionToken(in: String(decoding: outcome.stdout, as: UTF8.self))
         switch outcome.evidence.termination {
         case .exited(let code):
             let out = String(decoding: outcome.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             let err = outcome.evidence.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             text = "exit \(code)\n" + [out, err.isEmpty ? "" : "stderr: " + err].filter { !$0.isEmpty }.joined(separator: "\n")
-        case .timedOut: text = "timed out"
-        case .outputCapExceeded: text = "output cap exceeded"
-        case .signaled(let signal): text = "killed by signal \(signal)"
-        case .launchFailed: text = "could not start"
+            let firstLine = String((err.isEmpty ? out : err).split(separator: "\n").first ?? "").prefix(160)
+            if code != 0 {
+                report = ProbeReport(outcome: .exitedNonZero, detail: "exit \(code): \(firstLine)")
+            } else if token == nil {
+                report = ProbeReport(outcome: .noVersionToken, detail: String(firstLine))
+            } else {
+                report = ProbeReport(outcome: .ok, detail: "")
+            }
+        case .timedOut(let afterMs): text = "timed out"; report = ProbeReport(outcome: .timedOut, detail: "after \(afterMs) ms")
+        case .outputCapExceeded: text = "output cap exceeded"; report = ProbeReport(outcome: .outputCapExceeded, detail: "")
+        case .signaled(let signal): text = "killed by signal \(signal)"; report = ProbeReport(outcome: .signaled, detail: "signal \(signal)")
+        case .launchFailed: text = "could not start"; report = ProbeReport(outcome: .launchFailed, detail: "")
         }
         // Only the parsed version token is structured; the rest of the output is free text.
-        let token = Self.versionToken(in: String(decoding: outcome.stdout, as: UTF8.self))
-        return makeItem(kind: "version", source: "\(name) --version", text: text, trusted: token ?? "")
+        return (makeItem(kind: "version", source: "\(name) --version", text: text, trusted: token ?? ""), report)
     }
 
     /// The first version-looking token (`1.2.3`, `10.157`, `2.0.0-beta.1`) in a command's output.
