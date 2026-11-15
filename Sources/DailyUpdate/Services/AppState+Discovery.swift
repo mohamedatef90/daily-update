@@ -222,3 +222,40 @@ extension AppState {
         return details
     }
 }
+
+/// Check results that arrived but are not applied to the visible list yet. A check finishes one item at a time;
+/// applying each one separately publishes `items` 100+ times in a few seconds, and each publish makes SwiftUI
+/// lay out the whole Table again. The buffer lets the UI refresh a few times a second instead, while the check
+/// itself runs at full speed.
+struct CheckResultBuffer {
+    /// The shortest time between two applications to the visible list.
+    static let interval: TimeInterval = 0.4
+
+    private var pending: [(Int, UpdateItem)] = []
+    private(set) var takenCount = 0
+    private var lastFlush: Date
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = Date.init) {
+        self.now = now
+        self.lastFlush = now()
+    }
+
+    var isEmpty: Bool { pending.isEmpty }
+
+    mutating func add(index: Int, item: UpdateItem) {
+        pending.append((index, item))
+    }
+
+    func shouldFlush() -> Bool {
+        !pending.isEmpty && now().timeIntervalSince(lastFlush) >= Self.interval
+    }
+
+    mutating func take() -> [(Int, UpdateItem)] {
+        let result = pending
+        takenCount = result.count
+        pending = []
+        lastFlush = now()
+        return result
+    }
+}

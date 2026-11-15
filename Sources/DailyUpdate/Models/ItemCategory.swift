@@ -249,7 +249,10 @@ struct UpdateItem: Identifiable, Hashable {
     var isActionable: Bool {
         if isSnoozed || permanentlyIgnored { return false }
         if canInstall { return true }
-        return canUpdate && !updateCommand.isEmpty
+        // A discovered row has no hand-written `updateCommand`; the planner builds its command at check time.
+        // That planned spec is the ONLY command such a row can run, and `updateSelected` still re-plans it and
+        // compares the ownership fingerprint right before running it.
+        return canUpdate && (!updateCommand.isEmpty || plannedUpdateCommandSpec != nil)
     }
 
     var actionLabel: String {

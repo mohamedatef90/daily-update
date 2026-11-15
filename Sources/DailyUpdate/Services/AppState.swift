@@ -100,11 +100,21 @@ final class AppState: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        StallMonitor.start()
+        StallMonitor.mark("init: load settings and history")
         loadSettings()
         history = UpdateHistoryStore.load()
         showOnboarding = !settingsStore.settings.hasCompletedSetup
-        reloadConfigs()
-        if discoversOnLaunch { startDiscovery() }
+        StallMonitor.mark("init: reloadConfigs")
+        // The window must not wait for the folder scans: first show the configured items, then scan in the background.
+        if discoversOnLaunch {
+            applyConfigs(settings: settingsStore.settings, scan: DiscoveredScan())
+            startDiscovery()
+            Task { [weak self] in await self?.reloadConfigsOffMain() }
+        } else {
+            reloadConfigs()   // tests and other hermetic callers: deterministic, synchronous
+        }
+        StallMonitor.mark("init: done")
         setupWakeObserver()
         syncLaunchAtLogin()
         scheduler.start(appState: self)
@@ -337,32 +347,19 @@ final class AppState: ObservableObject {
 
     // MARK: - Config
 
-    func reloadConfigs() {
-        ConfigLoader.ensureUserConfigExists()
-        let settings = settingsStore.settings
-        var discoveredRepos: [DetectorConfig] = []
-        var discoveredApps: [DetectorConfig] = []
-        var discoveredSkills: [DetectorConfig] = []
-
-        if settings.hasCompletedSetup && rescanReposOnLaunch {
-            let options = settings.repoScan.scanOptions
-            discoveredRepos = RepoScanner.discoverRepos(
+    /// The three folder scans, a pure function of the settings. It touches no AppState, so it can run off the main actor.
+    nonisolated static func scanDiscoveredConfigs(settings: UserSettings, rescanRepos: Bool, rescanApps: Bool, rescanSkills: Bool) -> DiscoveredScan {
+        var scan = DiscoveredScan()
+        if settings.hasCompletedSetup && rescanRepos {
+            scan.repos = RepoScanner.discoverRepos(
                 in: settings.allScanFolders,
                 rootFolder: settings.rootFolder,
-                options: options
+                options: settings.repoScan.scanOptions
             )
-            discoveredRepoCount = discoveredRepos.count
-        } else {
-            discoveredRepoCount = 0
         }
-
-        let preliminary = ConfigLoader.loadConfigs(
-            settings: settings,
-            discoveredRepos: discoveredRepos
-        )
-
-        if settings.hasCompletedSetup && settings.appDiscovery.enabled && rescanAppsOnLaunch {
-            discoveredApps = AppScanner.discoverApps(
+        let preliminary = ConfigLoader.loadConfigs(settings: settings, discoveredRepos: scan.repos)
+        if settings.hasCompletedSetup && settings.appDiscovery.enabled && rescanApps {
+            scan.apps = AppScanner.discoverApps(
                 in: settings.applicationFolders,
                 excludingPaths: ConfigLoader.knownAppPaths(from: preliminary),
                 excludingBundleIDs: ConfigLoader.knownBundleIDs(from: preliminary),
@@ -371,23 +368,50 @@ final class AppState: ObservableObject {
                     scanUtilitiesFolder: settings.appDiscovery.scanUtilitiesFolder
                 )
             )
-            discoveredAppCount = discoveredApps.count
-        } else {
-            discoveredAppCount = 0
         }
-
-        if settings.hasCompletedSetup && settings.skillDiscovery.enabled && rescanSkillsOnLaunch {
-            discoveredSkills = SkillsScanner.discoverSkillItems(
+        if settings.hasCompletedSetup && settings.skillDiscovery.enabled && rescanSkills {
+            scan.skills = SkillsScanner.discoverSkillItems(
                 excludingPaths: ConfigLoader.knownItemPaths(from: preliminary),
                 options: SkillScanOptions(
                     scanPluginCaches: settings.skillDiscovery.scanPluginCaches,
                     skillRoots: settings.skillDiscovery.skillRoots
                 )
             )
-            discoveredSkillCount = discoveredSkills.count
-        } else {
-            discoveredSkillCount = 0
         }
+        return scan
+    }
+
+    struct DiscoveredScan: Sendable {
+        var repos: [DetectorConfig] = []
+        var apps: [DetectorConfig] = []
+        var skills: [DetectorConfig] = []
+    }
+
+    /// Same result as `reloadConfigs()`, but the folder scans run on a background thread. The main actor only
+    /// builds the list from the scan result, so the window is never held up by a slow disk or a large repo folder.
+    func reloadConfigsOffMain() async {
+        let settings = settingsStore.settings
+        let flags = (rescanReposOnLaunch, rescanAppsOnLaunch, rescanSkillsOnLaunch)
+        StallMonitor.mark("reload: scan off main")
+        let scan = await Task.detached(priority: .userInitiated) {
+            Self.scanDiscoveredConfigs(settings: settings, rescanRepos: flags.0, rescanApps: flags.1, rescanSkills: flags.2)
+        }.value
+        StallMonitor.mark("reload: apply")
+        applyConfigs(settings: settingsStore.settings, scan: scan)
+    }
+
+    func reloadConfigs() {
+        let settings = settingsStore.settings
+        let scan = Self.scanDiscoveredConfigs(settings: settings, rescanRepos: rescanReposOnLaunch, rescanApps: rescanAppsOnLaunch, rescanSkills: rescanSkillsOnLaunch)
+        applyConfigs(settings: settings, scan: scan)
+    }
+
+    private func applyConfigs(settings: UserSettings, scan: DiscoveredScan) {
+        ConfigLoader.ensureUserConfigExists()
+        let discoveredRepos = scan.repos, discoveredApps = scan.apps, discoveredSkills = scan.skills
+        discoveredRepoCount = discoveredRepos.count
+        discoveredAppCount = discoveredApps.count
+        discoveredSkillCount = discoveredSkills.count
 
         catalogConfigs = ConfigLoader.loadConfigs(
             settings: settings,
@@ -599,10 +623,13 @@ final class AppState: ObservableObject {
         isChecking = true
         checkedItemCount = 0
         appendLog("Starting update check…")
-        if rescanReposOnLaunch { reloadConfigs() }
+        StallMonitor.mark("check: reloadConfigs")
+        if rescanReposOnLaunch { await reloadConfigsOffMain() }
         // M2: the check sees the discovered rows too. A failed discovery never blocks it.
+        StallMonitor.mark("check: discovery")
         await ensureFreshDiscovery()
         applyPendingDiscovery()
+        StallMonitor.mark("check: lookup")
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
@@ -610,10 +637,12 @@ final class AppState: ObservableObject {
         // The discovery pass that just ran already read Homebrew once: a check uses it instead of starting
         // `brew info` per item. Only here, never after an update (see `recheckItems`): it is a snapshot.
         let brewSnapshot = freshBrewSnapshot()
+        StallMonitor.mark("check: items")
         totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
         let maximumConcurrentChecks = 6
+        var buffer = CheckResultBuffer()
         for batchStart in stride(from: 0, to: configs.count, by: maximumConcurrentChecks) {
             let batchEnd = min(batchStart + maximumConcurrentChecks, configs.count)
             await withTaskGroup(of: (Int, UpdateItem).self) { group in
@@ -679,16 +708,22 @@ final class AppState: ObservableObject {
                     item.plannedUpdateCommandSpec = check.plannedUpdateCommandSpec
                     item.ownerFingerprint = check.ownerFingerprint
                     applyPinnedGateIfNeeded(to: &item)
-                    item.isSelected = item.status == .updateAvailable && !item.isSnoozed
+                    // Nothing is pre-selected after a check, except items the user marked for auto-update.
+                    // "Select All Updates" is an explicit action.
+                    item.isSelected = AppState.isPreselectedAfterCheck(item)
                     return (index, item)
                 }
             }
+            // Results are applied in groups, not one by one: every publish makes SwiftUI lay the whole table out
+            // again, and on a launch check that was one full layout per item (see CheckResultBuffer).
             for await (index, updated) in group {
-                items[index] = updated
-                checkedItemCount += 1
+                buffer.add(index: index, item: updated)
+                if buffer.shouldFlush() { applyCheckResults(&buffer) }
             }
         }
         }
+        applyCheckResults(&buffer)
+        StallMonitor.mark("check: finishing")
 
         lastCheckDate = Date()
         isChecking = false
@@ -702,6 +737,22 @@ final class AppState: ObservableObject {
         if notificationsEnabled, updateAvailableCount > 0 {
             await NotificationService.notifyUpdatesAvailable(count: updateAvailableCount)
         }
+    }
+
+    /// The default selection after a check: nothing, except an item the user marked for auto-update.
+    nonisolated static func isPreselectedAfterCheck(_ item: UpdateItem) -> Bool {
+        item.status == .updateAvailable && !item.isSnoozed && item.autoUpdate
+    }
+
+    /// One assignment of `items` and one count update for everything the buffer holds.
+    private func applyCheckResults(_ buffer: inout CheckResultBuffer) {
+        guard !buffer.isEmpty else { return }
+        var updated = items
+        for (index, item) in buffer.take() where updated.indices.contains(index) {
+            updated[index] = item
+        }
+        items = updated
+        checkedItemCount += buffer.takenCount
     }
 
     func requestUpdateSelected() async {
@@ -1125,7 +1176,9 @@ final class AppState: ObservableObject {
             } else if reconciled == .upToDate {
                 items[index].statusMessage = nil
             }
+            // Same default as a full check: only items marked for auto-update stay selected.
             items[index].isSelected = items[index].status == .updateAvailable && !items[index].isBulkOperation
+                && items[index].autoUpdate && !items[index].isSnoozed
         }
 
         refreshDuplicates()
