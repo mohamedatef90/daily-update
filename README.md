@@ -16,7 +16,8 @@ A native macOS app that detects your apps, CLIs, runtimes, libraries, and git re
 - **Dashboard & history** — overview stats, duplicate detection, and update history
 - **Menu bar mode** — live update count badge and quick actions
 - **Launch at login** — start automatically when you log in
-- **CLI** — check, update, install, and health commands for scripting
+- **Discovery** — read-only enumeration of installed tools from Homebrew, npm, pnpm, Yarn, Bun, Node version managers, pip, pipx, uv tools, Cargo, and RubyGems
+- **CLI** — check, update, install, health, and discover commands for scripting
 
 ## Quick Start
 
@@ -26,6 +27,8 @@ cd daily-update
 ./scripts/build-app.sh
 open DailyUpdate.app
 ```
+
+To keep a copy in `~/Applications`, run `./scripts/install-app.sh` after building (see [Install to ~/Applications](#install-to-applications)).
 
 On first launch you'll be guided through folder setup. After that, run **Check Updates** to populate the list.
 
@@ -88,10 +91,10 @@ Filter by category or **Updates Available** in the sidebar before using **Select
 |------|--------|
 | Add a custom app, CLI, or repo | **+ Add Item** in the toolbar (⌘N) |
 | Tune repo discovery | **Settings → Repo Scan** |
-| Auto-discover developer apps | **Settings → App Discovery** |
-| Scan agent skills folders | **Settings → Agent Skills Discovery** |
-| Disable bundled items | **Settings → Update List** |
-| Export/import config | **Settings → Advanced** |
+| Auto-discover developer apps | **Settings → Folders → App Discovery** |
+| Scan agent skills folders | **Settings → Folders → Agent Skills Discovery** |
+| Disable bundled items | **Settings → Update List → Ignored Items** |
+| Export/import config | **Settings → General → Import / Export** |
 
 ## Adding Items to the Update List
 
@@ -153,26 +156,76 @@ Additional scan folders (Settings → Folders) are always scanned fully. Use **R
 
 ## Pre-configured Items
 
-- **Apps:** Cursor, Codex, Claude, ChatGPT, ChatGPT Atlas, Zcode, Antigravity, Warp, Xcode
-- **AI agent CLIs:** Cursor Agent, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline, Gemini CLI, Qwen Code, OpenCode
-- **Other CLIs:** GitHub CLI
-- **Runtimes:** Node.js, npm, pnpm, yarn, Bun, Python, pip, Go, Java, .NET, Flutter, Dart, Rust, Homebrew, mise, asdf
-- **Libraries:** Agent skills (`npx skills`), global npm/pnpm/yarn/pip packages, Impeccable (uses your root folder)
+Bundled in `Sources/DailyUpdate/Resources/detectors.json`:
+
+- **Apps:** Cursor, Codex, Claude, ChatGPT, ChatGPT Atlas, ChatGPT Classic, Zcode, Antigravity IDE, Warp, Xcode
+- **AI agent and other CLIs:** Cursor Agent CLI, Codex CLI, Claude Code, Hermes Agent, OpenClaw, Cline CLI, Gemini CLI, Qwen Code, OpenCode, GitHub CLI
+- **Runtimes and toolchains:** Swift, Flutter, Dart, CocoaPods, .NET SDK, Java (OpenJDK), Go, Node.js, npm, pnpm, Yarn, Bun, Corepack, Python, pip, Angular CLI, Homebrew, mise, asdf, rustup, Cargo, RubyGems, Composer
+- **Libraries:** Impeccable, Agent Skills (global), global npm, pnpm, and Yarn packages, user pip packages
 
 Paths like `{ROOT}` in bundled config expand to your chosen root folder.
 
 ## CLI
 
+Run the app binary with a flag. Without a flag it opens the GUI: only arguments that start with `-` count as CLI flags, so `DailyUpdate check` (no dashes) opens the window.
+
 ```bash
-DailyUpdate.app/Contents/MacOS/DailyUpdate --check
-DailyUpdate.app/Contents/MacOS/DailyUpdate --update-all
-DailyUpdate.app/Contents/MacOS/DailyUpdate --install-all
-DailyUpdate.app/Contents/MacOS/DailyUpdate --health
-DailyUpdate.app/Contents/MacOS/DailyUpdate --json    # with --check or --health
-DailyUpdate.app/Contents/MacOS/DailyUpdate --help
+# After ./scripts/build-app.sh (or ./scripts/install-app.sh, see below):
+DD=DailyUpdate.app/Contents/MacOS/DailyUpdate   # or ~/Applications/DailyUpdate.app/Contents/MacOS/DailyUpdate
+
+$DD --check                    # check every item and print its status
+$DD --check --json             # same, as JSON
+$DD --discover                 # read-only inventory of installed dev tools, runtimes and CLIs
+$DD --discover --json          # same, as JSON
+$DD --health                   # health checks (PATH, tools, folders)
+$DD --health --json
+$DD --update <item-id> --yes   # update one item
+$DD --install <item-id> --yes  # install one item
+$DD --update-all               # update everything that has an update
+$DD --install-all              # install everything that is missing
+$DD --help                     # also -h
 ```
 
-`--update` and `--install` are aliases for `--update-all` and `--install-all`. CLI commands run a check first, then act on all matching items.
+Each run accepts **one action command** (`--check`, `--discover`, `--health`, `--update`, `--install`, `--update-all`, `--install-all`) plus the modifiers `--json` and `--yes`. `--update` and `--install` also accept `--update=<item-id>` and `--install=<item-id>`.
+
+| Flag | Behaviour |
+|------|-----------|
+| `--check` | Checks all items and lists each one's status. Exits `1` if any item's check failed, otherwise `0`. |
+| `--discover` | Enumerates tools from Homebrew, npm, pnpm, Yarn, Bun, version managers, pip, pipx, uv, Cargo and RubyGems. Read-only. Exit `0`. |
+| `--health` | Runs the health checks. Exit `0`. |
+| `--update <item-id>` | Runs a check, then updates that one item. |
+| `--install <item-id>` | Runs a check, then installs that one item. |
+| `--update-all` / `--install-all` | Runs a check, then acts on every matching item. |
+| `--json` | Machine-readable output. It only changes `--check`, `--health` and `--discover`; other commands ignore it. |
+| `--yes` | Confirms an action that would otherwise stop and ask. It does nothing for `--check`, `--discover` and `--health`. |
+
+**JSON shapes**
+
+- `--check --json`: an array of items with `id`, `name`, `category`, `status`, `currentVersion`, `currentVersionRaw`, `latestVersion`, `plannedCommand`, `blockReason` and `gateReasons`. `status` values seen include `upToDate`, `updateAvailable`, `checkFailed`, `notInstalled`, `gated`, `blocked` and `unknown`.
+- `--health --json`: an array of `{ severity, title, detail }`.
+- `--discover --json`: an object with `elapsedMs`, `homebrew`, `loginPath`, `rows`, `results`, `inactiveInstalls` and `shadowedByUnownedFiles`. Each row has `id`, `name`, `description`, `ecosystem`, `handle`, `packageID` and `root`.
+
+**Item IDs.** Use the `id` field from `--check --json`. If the ID is unknown, or the item is not eligible for that action, the command prints `Item ID not found` or `is not available for update/install`, lists the IDs that are eligible, and exits `1`.
+
+**Confirmation and safety**
+
+- With **Confirm before updating** on (the default), `--update-all` and `--install-all` print a dry-run plan and exit `2` with `Confirmation required. Re-run with --yes` until you pass `--yes`.
+- A single `--update <id>` stops with a dry-run plan and exit `2` when the item is gated or is a bulk operation, and `--update <id>` or `--install <id>` does the same when the item's command needs review, until you add `--yes`.
+- A single `--update <id>` or `--install <id>` that would run a **remote script** is never run from the CLI, with or without `--yes`: it prints the plan and exits `2`, and you confirm it in the app. `--install-all` prints `skipped <id>` for such installs.
+- `--update-all` exits `1` if any item's check failed.
+
+**Exit codes:** `0` success, `1` failure (failed check, failed action, unknown item, or a bad command line), `2` waiting for confirmation, or the item must be handled in the app (also `--install-all` when it skipped remote-script installs and nothing else matched).
+
+Bad command lines print the problem and the help text, then exit `1`: an unknown option (`Unknown option: --x`), a stray argument, a missing value (`--install` with no ID, or `--install=`), or more than one action command.
+
+## Install to ~/Applications
+
+```bash
+./scripts/build-app.sh      # builds DailyUpdate.app in the repo folder
+./scripts/install-app.sh    # copies it to ~/Applications/DailyUpdate.app
+```
+
+`install-app.sh` copies the bundle next to the destination under a temporary name first, so a failed copy never touches the installed app, then swaps it in and removes the old copy. It refuses to run if there is no built app. Quit Daily Update before installing a new version. If **Launch at login** is on, turn it off and on again in Settings after installing, so the login item points at the copy in `~/Applications`. Set `DAILY_UPDATE_INSTALL_DIR` to install somewhere else.
 
 ## Development
 
@@ -181,6 +234,7 @@ swift build              # debug build
 swift build -c release   # release binary in .build/release
 swift test               # run unit tests
 ./scripts/build-app.sh   # build DailyUpdate.app bundle
+./scripts/install-app.sh  # copy the built app to ~/Applications
 ```
 
 See [AGENTS.md](AGENTS.md) for project structure and contribution guidelines.
@@ -190,16 +244,16 @@ See [AGENTS.md](AGENTS.md) for project structure and contribution guidelines.
 ```
 Sources/DailyUpdate/
 ├── DailyUpdateApp.swift
-├── Models/          # UpdateItem, UserSettings, DetectorConfig
-├── Services/        # Detection, scanning, config, shell runner
+├── Models/          # Settings, detector config, item categories, results
+├── Engine/          # Pure update logic: discovery, command planning, ownership, versions
+├── Services/        # Detection, scanning, config, shell runner, CLI, scheduler
 ├── Views/           # Onboarding, dashboard, settings, main UI
-└── Resources/       # detectors.json, check-app-update.sh
+└── Resources/       # detectors.json, scripts/check-app-update.sh, scripts/update-app.sh
 
-Tests/DailyUpdateTests/
+Tests/DailyUpdateTests/   # unit tests and fixtures
+scripts/                  # build-app.sh, install-app.sh, generate-icon.sh, measure-discovery.sh
+docs/adr/                 # architecture decision records
+Assets/AppIcon/           # app icon
 ```
 
 Bundled detector config: `Sources/DailyUpdate/Resources/detectors.json`
-
-## License
-
-MIT
