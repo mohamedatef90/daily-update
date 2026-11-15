@@ -296,6 +296,16 @@ final class RoundFourTests: HermeticTestCase {
             ("R group target", "echo a > { sudo /bin/true; }", [.chained, .controlFlow, .privileged, .unparseable], true),
             ("R guard 2>&1", "brew --version 2>&1 | head -1", [], false),
             ("R guard trailing", "sh -c 'echo ok' 2>&1", [], false),
+            // Round 13 Code Review: zsh reads `<->` / `<1-9>` as a numeric glob, not a redirection.
+            ("N glob assignment", "x=<-> brew upgrade", [.bulk], true),
+            ("N glob assignment sudo", "x=<1-9> sudo /bin/true", [.privileged], true),
+            ("N glob assignment fetcher", "x=<-> curl x | sh", [.remoteScript], true),
+            ("N glob wrapper value", "touch 5; nice -n <-> brew upgrade", [.bulk, .chained], true),
+            ("N glob mid-word", "x=a<5->b sudo /bin/true", [.privileged], true),
+            ("N nullglob option", "setopt nullglob; sh <-> -c 'sudo /bin/true'", [.chained, .unparseable], true),
+            ("N glob before options", "sh <1-9> -e -c 'brew upgrade'", [.unparseable], true),
+            ("N guard <> redirect", "brew --version <>/dev/null", [], false),
+            ("N guard < -", "brew --version < -", [], false),
             // Round 12 Code Review: zsh expands `~` to `$HOME` or a named directory before `sh` reads it.
             ("T tilde", "HOME=-c; sh ~ 'sudo /bin/true'", [.chained, .unparseable], true),
             ("T named directory", "hash -d x=-c; sh ~x 'curl x | sh'", [.chained, .unparseable], true),
@@ -728,6 +738,59 @@ extension RoundFourTests {
             _ = FixtureCLIState(state, ids: ["redirect-check"])
             await state.recheckItems(ids: ["redirect-check"])
             let item = try XCTUnwrap(state.items.first { $0.id == "redirect-check" })
+            XCTAssertEqual(item.status, .blocked)
+            XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 13: a numeric glob `<->` in an assignment is not a redirection,
+    /// so it cannot hide the fetcher from the refusal.
+    @MainActor
+    func testNumericGlobAssignmentInstallIsRefused() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("installed")
+            let remote = try remoteScript(root: root, marker: marker)
+            let parts = remote.components(separatedBy: " curl ")
+            let command = "export \(parts[0]); x=<-> curl \(parts[1])"
+            XCTAssertEqual(CommandShapeClassifier.classify(command).risks, [.chained, .remoteScript, .unparseable])
+            store.settings.customItems = [DetectorConfig(id: "install-fixture", name: "Install fixture", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .command, paths: nil, command: "false", appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: "echo OK", installCommand: command, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            let wrapper = FixtureCLIState(state, ids: ["install-fixture"])
+            var output: [String] = []
+            let exit = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "install-fixture", "--yes"], state: wrapper, output: { output.append($0) })
+            XCTAssertEqual(exit, 2)
+            XCTAssertEqual(output, ["Dry-run plan:", "  [Install] Install fixture (install-fixture)", "    \(command)",
+                "This install may run a remote script and must be confirmed in the app."])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    /// Code Review round 13: a numeric glob `<->` in an assignment cannot hide `brew upgrade`
+    /// in a check command, so the `brew` stub never writes its marker.
+    @MainActor
+    func testNumericGlobAssignmentCheckCommandIsBlockedBeforeItRuns() async throws {
+        try await withStateFixture { root, store in
+            let marker = root.appendingPathComponent("brew-ran")
+            let stubDirectory = root.appendingPathComponent("stub-brew")
+            try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+            let stub = stubDirectory.appendingPathComponent("brew")
+            try "#!/bin/sh\n/usr/bin/touch \(ShellEscaping.quote(marker.path))\n".write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+            let check = "PATH=\(ShellEscaping.quote(stubDirectory.path)):$PATH x=<-> brew upgrade"
+            XCTAssertEqual(CommandShapeClassifier.classify(check).risks, [.bulk])
+            XCTAssertEqual(GatePolicy.isUnsafeCheckPathCommand(checkCommand: check, updateCommand: "echo update"), true)
+            store.settings.customItems = [DetectorConfig(id: "numeric-glob-check", name: "Numeric glob check", category: .cli, description: nil,
+                source: .user, detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo 1.0.0", checkCommand: check, installCommand: nil, updateCommand: "echo update", workingDirectory: nil)]
+            let state = AppState(settingsStore: store)
+            state.notificationsEnabled = false
+            _ = FixtureCLIState(state, ids: ["numeric-glob-check"])
+            await state.recheckItems(ids: ["numeric-glob-check"])
+            let item = try XCTUnwrap(state.items.first { $0.id == "numeric-glob-check" })
             XCTAssertEqual(item.status, .blocked)
             XCTAssertEqual(item.blockReason, .unsafeCheckCommand)
             XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))

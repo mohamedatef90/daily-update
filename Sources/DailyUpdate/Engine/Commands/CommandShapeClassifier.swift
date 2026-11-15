@@ -902,6 +902,13 @@ enum CommandShapeClassifier {
     /// `~x` after `hash -d x=-c;`, and `^x` / `x#` under `setopt extendedglob`.
     private static let shellOptionExpansionCharacters = Set("$`{*?[~^#")
 
+    /// A word zsh may expand into another word, or none: a numeric glob `<->` that
+    /// `setopt nullglob` removes lets the next word become the option.
+    private static func couldExpand(_ word: String) -> Bool {
+        word.contains(where: shellOptionExpansionCharacters.contains)
+            || word.range(of: "<[0-9]*-[0-9]*>", options: .regularExpression) != nil
+    }
+
     /// The script `sh`/`bash`/`zsh`/`fish`/`csh` would run. One walk over the words after the
     /// shell: a word that could expand, or an option that is not a `-` cluster of
     /// `c e f i l n s u v x` (`--wordexp`, `--command`, `+c`, `-o name`, `-C`), fails closed.
@@ -919,7 +926,7 @@ enum CommandShapeClassifier {
         var index = 1
         while index < stripped.count {
             let word = stripped[index]
-            if word.contains(where: shellOptionExpansionCharacters.contains) { return .unparseable }
+            if couldExpand(word) { return .unparseable }
             guard isOption(word) else {
                 if readsStdin { return .none }
                 // `sh /dev/stdin` and `sh /dev/fd/0` read the script from stdin.
@@ -941,7 +948,7 @@ enum CommandShapeClassifier {
                 if isOption(script) { return .unparseable }
                 // fish keeps reading options after the script: `fish -c 'x' -C 'y'`, `{-c,'y'}`.
                 if isFish, stripped.dropFirst(index + 2).contains(where: {
-                    isOption($0) || $0.contains(where: shellOptionExpansionCharacters.contains)
+                    isOption($0) || couldExpand($0)
                 }) { return .unparseable }
                 return .script(script)
             }
