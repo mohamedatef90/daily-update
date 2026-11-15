@@ -138,7 +138,7 @@ enum UpdateExecutor {
                     layout: afterLookup?.layout ?? .live()).active
             }
             guard let beforeOwner = before?.owner, let afterOwner,
-                  beforeOwner.owner == afterOwner.owner, beforeOwner.commandPath == afterOwner.commandPath,
+                  StrategyPlanner.isSameOwner(config: config, before: beforeOwner, after: afterOwner),
                   check.status == .upToDate else {
                 return .failedVerification(current: afterVersion, latest: check.latestVersion,
                     reason: check.message ?? "Could not verify the same owner at the latest version")
@@ -153,6 +153,18 @@ enum UpdateExecutor {
 
         if usesInAppUpdateFlow(command), !versionChanged(from: beforeVersion, to: afterVersion) {
             return .pendingInApp(current: afterVersion ?? beforeVersion, latest: latest)
+        }
+
+        // The command finished, the version did not change, and the check STILL says an update is available:
+        // that is not a success, whatever "latest" the fallbacks above settled on (with no known latest they
+        // fall back to the installed version, which made a no-op update look verified).
+        if check.status == .updateAvailable || check.status == .updatePending,
+           !versionChanged(from: beforeVersion, to: afterVersion), !hasInAppFallback(command) {
+            return .failedVerification(
+                current: afterVersion ?? beforeVersion,
+                latest: check.latestVersion ?? targetLatest,
+                reason: "The command finished, but the check still reports an update available (version \(afterVersion ?? beforeVersion ?? "unknown")). Nothing was verified as updated."
+            )
         }
 
         if VersionComparator.isAtLeast(current: afterVersion, latest: latest) {

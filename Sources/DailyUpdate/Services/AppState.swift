@@ -40,6 +40,8 @@ final class AppState: ObservableObject {
     @Published var selectedEcosystem: Ecosystem? = nil
     /// M2 / AI-2: the "Ask agent" sheet. Nil when closed. Only ever set when `agentProposals` is On.
     @Published var agentSession: AgentSession? = nil
+    /// The result of each item in the last `updateSelected` run (reset at the start of every run).
+    @Published var lastActionOutcomes: [String: ActionOutcome] = [:]
 
     let settingsStore: UserSettingsStore
     private let scheduler = SchedulerService()
@@ -49,6 +51,9 @@ final class AppState: ObservableObject {
     /// The catalog, user and scanned rows, before discovery rows are merged in.
     var catalogConfigs: [DetectorConfig] = []
     var lastDiscovery: DiscoveryRunResult?
+    /// A discovery result that arrived while a check or an update was running. Applying it then would replace
+    /// the item list under a loop that addresses items by position, so it waits (see `applyDiscovery`).
+    var pendingDiscovery: DiscoveryRunResult?
     var lastDiscoveryDate: Date?
     var discoveryTask: Task<Void, Never>?
     let discoverer: Discoverer
@@ -597,10 +602,14 @@ final class AppState: ObservableObject {
         if rescanReposOnLaunch { reloadConfigs() }
         // M2: the check sees the discovered rows too. A failed discovery never blocks it.
         await ensureFreshDiscovery()
+        applyPendingDiscovery()
 
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
         let pathLookup = await strategyLookup(for: configs)
+        // The discovery pass that just ran already read Homebrew once: a check uses it instead of starting
+        // `brew info` per item. Only here, never after an update (see `recheckItems`): it is a snapshot.
+        let brewSnapshot = freshBrewSnapshot()
         totalItemCount = configs.count
         for index in items.indices { items[index].status = .checking }
 
@@ -656,7 +665,8 @@ final class AppState: ObservableObject {
                         config,
                         installed: detection.installed,
                         reviewedCommandHash: reviewedHash,
-                        pathLookup: pathLookup
+                        pathLookup: pathLookup,
+                        brewInfo: brewSnapshot
                     )
                     item.status = check.status
                     item.currentVersionRaw = check.currentVersionRaw
@@ -682,6 +692,7 @@ final class AppState: ObservableObject {
 
         lastCheckDate = Date()
         isChecking = false
+        applyPendingDiscovery()
         refreshDuplicates()
         appendLog("Check complete — \(updateAvailableCount) update(s) available")
         saveSettings()
@@ -831,6 +842,7 @@ final class AppState: ObservableObject {
         }
 
         isUpdating = true
+        lastActionOutcomes = [:]
         appendLog("Running \(targets.count) action(s)…")
         var successCount = 0
         var failCount = 0
@@ -855,6 +867,7 @@ final class AppState: ObservableObject {
                 skippedDueToChanges += 1
                 items[initialIndex].isSelected = false
                 appendLog("\(items[initialIndex].name): changed since you confirmed, not run")
+                recordSkipped(items[initialIndex])
                 continue
             }
 
@@ -871,6 +884,7 @@ final class AppState: ObservableObject {
                     skippedDueToChanges += 1
                     items[initialIndex].isSelected = false
                     appendLog("\(items[initialIndex].name): changed since you confirmed, not run")
+                    recordSkipped(items[initialIndex])
                     continue
                 }
 
@@ -930,14 +944,20 @@ final class AppState: ObservableObject {
                 queueAdministratorPermission(for: items[index])
             }
 
+            let outcome = ActionOutcome(
+                itemID: target.id, name: target.name, kind: result.outcomeKind, from: fromVersion, to: result.currentVersion,
+                message: result.message, command: command, installing: installing)
+            lastActionOutcomes[target.id] = outcome
+            // Only a verified update is a success. A handoff to the app's own updater is recorded as such.
             let entry = UpdateHistoryEntry(
                 itemID: target.id,
                 itemName: target.name,
                 fromVersion: fromVersion,
                 toVersion: result.currentVersion,
-                success: result.completedOrInitiated,
+                success: outcome.isSuccess,
                 message: result.message,
-                command: command
+                command: command,
+                outcome: outcome.kind.rawValue
             )
             UpdateHistoryStore.append(entry)
             history.insert(entry, at: 0)
@@ -948,7 +968,7 @@ final class AppState: ObservableObject {
                 successfulIDs.insert(target.id)
                 appendLog("✓ \(target.name) \(installing ? "installed" : "updated")")
             case .updatePending:
-                successCount += 1
+                // Handed off, not installed: not counted as a success (and not as a failure).
                 appendLog("↪ \(target.name): \(result.message ?? "Finish update in app")")
             case .failedVerification:
                 failCount += 1
@@ -960,6 +980,13 @@ final class AppState: ObservableObject {
         }
 
         isUpdating = false
+        // An update changed what is installed: the discovery snapshot (and its Homebrew data) is now out of date,
+        // so the next check discovers again.
+        invalidateDiscoverySnapshot()
+        pendingDiscovery = nil   // it describes the machine before this run
+        if discoveryStatus.isRunning, discoversOnLaunch { startDiscovery() } else if discoveryStatus.isRunning, let last = lastDiscovery {
+            discoveryStatus = .ready(rows: last.rows.count, issues: 0, elapsedMs: last.elapsedMs)
+        }
         appendLog("Action run finished")
         if successCount == 0, failCount == 0, skippedDueToChanges == targets.count {
             appendLog("Nothing run: all items changed since you confirmed")
@@ -1012,13 +1039,22 @@ final class AppState: ObservableObject {
         administratorPermissionItem = nil
     }
 
-    func recheckItems(ids: [String], successfulIDs: Set<String> = []) async {
+    private func recordSkipped(_ item: UpdateItem) {
+        lastActionOutcomes[item.id] = ActionOutcome(
+            itemID: item.id, name: item.name, kind: .skipped, from: item.currentVersion, to: nil,
+            message: "It changed since you confirmed, so it was not run", command: actionCommand(for: item))
+    }
+
+    func recheckItems(ids: [String], successfulIDs: Set<String> = [], useDiscoverySnapshot: Bool = false) async {
         guard !ids.isEmpty else { return }
         let appFolders = settingsStore.settings.applicationFolders
         let prefs = settingsStore.settings.itemPreferences
         let idSet = Set(ids)
         let scopedConfigs = configs.filter { idSet.contains($0.id) }
         let pathLookup = await strategyLookup(for: scopedConfigs)
+        // After an update the snapshot is out of date (it holds the old version), so only a check that follows a
+        // fresh discovery may use it. The verification after an update never does.
+        let brewSnapshot = useDiscoverySnapshot ? freshBrewSnapshot() : nil
 
         for index in items.indices where idSet.contains(items[index].id) {
             items[index].status = .checking
@@ -1061,7 +1097,8 @@ final class AppState: ObservableObject {
                 config,
                 installed: detection.installed,
                 reviewedCommandHash: reviewedHash,
-                pathLookup: pathLookup
+                pathLookup: pathLookup,
+                brewInfo: brewSnapshot
             )
             let reconciled = reconcileAfterUpdate(
                 wasSuccessfulUpdate: successfulIDs.contains(items[index].id),

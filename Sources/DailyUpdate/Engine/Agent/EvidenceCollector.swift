@@ -31,6 +31,8 @@ struct EvidenceItem: Codable, Equatable {
 enum ProbeOutcome: String, Codable, Equatable {
     /// Exit 0 and a version-looking token in the output.
     case ok
+    /// `--version` failed, and the tool's reviewed entry in `VersionReaders` (for example `ng version`) worked.
+    case okViaAllowlistedReader
     /// Exit 0 but nothing that looks like a version (for example a banner or help text).
     case noVersionToken
     /// A non-zero exit: the tool does not understand `--version` (Angular's `ng` wants `ng version`, Java wants
@@ -160,8 +162,27 @@ struct EvidenceCollector {
 
     // MARK: - `<tool> --version`
 
+    /// `<tool> --version` first. If that fails because the tool does not understand the flag, the reviewed
+    /// `VersionReaders` table may name the tool's own way to print its version; nothing else is ever tried.
     private func versionEvidence(executable: String, name: String) async -> (EvidenceItem?, ProbeReport) {
-        let spec = CommandSpec(executablePath: executable, arguments: ["--version"])
+        let first = await probe(executable: executable, name: name, arguments: ["--version"])
+        guard first.1.outcome == .exitedNonZero || first.1.outcome == .noVersionToken,
+              let reader = VersionReaders.arguments(forExecutableNamed: URL(fileURLWithPath: executable).lastPathComponent) else {
+            return first
+        }
+        let second = await probe(executable: executable, name: name, arguments: reader)
+        let readerText = ([name] + reader).joined(separator: " ")
+        if second.1.outcome == .ok {
+            return (second.0, ProbeReport(outcome: .okViaAllowlistedReader,
+                                          detail: "`\(readerText)` worked after `--version` failed (\(first.1.detail))"))
+        }
+        var report = first.1
+        report.detail += "; the reviewed reader `\(readerText)` also gave \(second.1.outcome.rawValue)"
+        return (first.0, report)
+    }
+
+    private func probe(executable: String, name: String, arguments: [String]) async -> (EvidenceItem?, ProbeReport) {
+        let spec = CommandSpec(executablePath: executable, arguments: arguments)
         // The classifier gate: a command with any risk is never started.
         guard CommandShapeClassifier.classify(spec.displayString).risks.isEmpty else {
             return (nil, ProbeReport(outcome: .skippedGatedCommand, detail: ""))
@@ -171,7 +192,7 @@ struct EvidenceCollector {
         }
         let directory = URL(fileURLWithPath: executable).deletingLastPathComponent().path
         let outcome = await run(BoundedProcessSpec(
-            executable: executable, arguments: ["--version"],
+            executable: executable, arguments: arguments,
             environment: .exactly([
                 "HOME": home, "PATH": [directory, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].joined(separator: ":"),
                 "LANG": "en_US.UTF-8", "NO_COLOR": "1",
@@ -180,11 +201,12 @@ struct EvidenceCollector {
             workingDirectory: NSTemporaryDirectory()))
         var text: String
         var report: ProbeReport
-        let token = Self.versionToken(in: String(decoding: outcome.stdout, as: UTF8.self))
+        let out = String(decoding: outcome.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let err = outcome.evidence.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Some tools print their version to stderr (`java -version`, `ssh -V`, `nginx -v`).
+        let token = Self.versionToken(in: out) ?? Self.versionToken(in: err)
         switch outcome.evidence.termination {
         case .exited(let code):
-            let out = String(decoding: outcome.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            let err = outcome.evidence.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             text = "exit \(code)\n" + [out, err.isEmpty ? "" : "stderr: " + err].filter { !$0.isEmpty }.joined(separator: "\n")
             let firstLine = String((err.isEmpty ? out : err).split(separator: "\n").first ?? "").prefix(160)
             if code != 0 {
@@ -200,7 +222,8 @@ struct EvidenceCollector {
         case .launchFailed: text = "could not start"; report = ProbeReport(outcome: .launchFailed, detail: "")
         }
         // Only the parsed version token is structured; the rest of the output is free text.
-        return (makeItem(kind: "version", source: "\(name) --version", text: text, trusted: token ?? ""), report)
+        let source = ([name] + arguments).joined(separator: " ")
+        return (makeItem(kind: "version", source: source, text: text, trusted: token ?? ""), report)
     }
 
     /// The first version-looking token (`1.2.3`, `10.157`, `2.0.0-beta.1`) in a command's output.

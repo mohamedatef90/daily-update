@@ -764,3 +764,120 @@ final class ProbeOutcomeTests: HermeticTestCase {
         XCTAssertTrue(bundle.combinedText.contains("evil.example"), "the agent sees it, as untrusted text")
     }
 }
+
+/// M2.1: the reviewed version-reader table, and the probe that uses it.
+@MainActor
+final class VersionReaderTests: HermeticTestCase {
+    private func outcome(_ termination: Termination, stdout: String = "", stderr: String = "") -> QueryOutcome {
+        QueryOutcome(
+            evidence: ProcessEvidence(executable: "x", arguments: [], termination: termination, stderr: stderr, stderrTruncated: false, elapsedMs: 1),
+            stdout: Data(stdout.utf8))
+    }
+
+    private func collect(tool: String, responses: @escaping ([String]) -> QueryOutcome, calls: ((BoundedProcessSpec) -> Void)? = nil) async -> EvidenceBundle {
+        let tree = FixtureFileSystem()
+        let path = tree.makeFile(at: "bin/\(tool)", contents: "#!/bin/sh\n")
+        tree.chmod(path, 0o755)
+        var collector = EvidenceCollector()
+        collector.fileSystem = tree.fileSystem
+        collector.home = tree.root.path
+        collector.user = "tester"
+        collector.pathEntries = { [tree.path("bin")] }
+        collector.isTrustedExecutable = { _ in true }
+        collector.run = { spec in calls?(spec); return responses(spec.arguments) }
+        return await collector.collect(for: AgentItemContext(id: tool, name: tool, commandName: tool))
+    }
+
+    // MARK: The table itself
+
+    func testTheShippedTableIsReadOnlyAndClassifierClean() {
+        XCTAssertEqual(VersionReaders.violations(), [])
+        XCTAssertFalse(VersionReaders.table.isEmpty)
+    }
+
+    func testNoPackageManagerOrWriteCapableToolIsEverInTheTable() {
+        for name in ["npm", "pnpm", "yarn", "bun", "cargo", "pip", "pip3", "pipx", "uv", "gem", "brew", "git", "node", "python3", "sh", "bash", "curl", "sudo"] {
+            XCTAssertNil(VersionReaders.arguments(forExecutableNamed: name), "\(name) must never have a reader (`npm version` and `yarn version` write files)")
+            XCTAssertTrue(VersionReaders.neverAllowed.contains(name), name)
+        }
+    }
+
+    func testTheCheckCatchesEveryKindOfBadEntry() {
+        let bad: [String: [String]] = [
+            "npm": ["version"],                 // a package manager: `version` writes package.json and a git tag
+            "tool-a": ["install"],              // a mutating word
+            "tool-b": ["--version; rm -rf ~"],  // not a plain word or flag
+            "tool-c": ["a", "b", "c"],          // too many
+            "tool-d": [],                       // none
+            "tool-e": ["-c", "x y"],            // a space
+        ]
+        let found = VersionReaders.violations(in: bad)
+        for name in bad.keys { XCTAssertTrue(found.contains { $0.hasPrefix(name) }, "\(name) was not flagged: \(found)") }
+        XCTAssertEqual(VersionReaders.violations(in: ["good": ["-V"]]), [])
+    }
+
+    // MARK: The probe
+
+    func testNgIsReadWithItsOwnReaderAfterVersionFails() async {
+        var seen: [[String]] = []
+        let bundle = await collect(tool: "ng", responses: { args in
+            if args == ["--version"] { return self.outcome(.exited(1), stderr: "Error: You need to specify a command before moving on.") }
+            if args == ["version"] { return self.outcome(.exited(0), stdout: "Angular CLI: 17.1.2\nNode: 24.13.0\n") }
+            return self.outcome(.exited(2))
+        }, calls: { seen.append($0.arguments) })
+        XCTAssertEqual(seen, [["--version"], ["version"]], "--version first, then the table's reader, nothing else")
+        XCTAssertEqual(bundle.probe?.outcome, .okViaAllowlistedReader)
+        XCTAssertTrue(bundle.probe?.detail.contains("ng version") ?? false)
+        XCTAssertFalse(bundle.probe?.detail.contains("tester") ?? true)
+        let version = bundle.items.first { $0.kind == "version" }
+        XCTAssertEqual(version?.source, "ng version")
+        XCTAssertEqual(version?.trusted, "17.1.2")
+    }
+
+    func testAToolThatAcceptsVersionNeverUsesTheTable() async {
+        var seen: [[String]] = []
+        let bundle = await collect(tool: "ng", responses: { _ in self.outcome(.exited(0), stdout: "ng 17.1.2") }, calls: { seen.append($0.arguments) })
+        XCTAssertEqual(seen, [["--version"]])
+        XCTAssertEqual(bundle.probe?.outcome, .ok)
+    }
+
+    func testAToolNotInTheTableGetsOnlyTheOneProbe() async {
+        var seen: [[String]] = []
+        let bundle = await collect(tool: "nano-pdf", responses: { _ in self.outcome(.exited(2), stderr: "Usage: nano-pdf [OPTIONS] COMMAND") }, calls: { seen.append($0.arguments) })
+        XCTAssertEqual(seen, [["--version"]], "no other flag is ever tried")
+        XCTAssertEqual(bundle.probe?.outcome, .exitedNonZero)
+    }
+
+    func testWhenTheReaderAlsoFailsTheOriginalCauseIsReportedWithBoth() async {
+        let bundle = await collect(tool: "go", responses: { _ in self.outcome(.exited(1), stderr: "boom") })
+        XCTAssertEqual(bundle.probe?.outcome, .exitedNonZero)
+        XCTAssertTrue(bundle.probe?.detail.contains("go version") ?? false, bundle.probe?.detail ?? "")
+        XCTAssertTrue(bundle.probe?.detail.contains("also gave") ?? false)
+    }
+
+    func testAVersionPrintedToStderrIsRead() async {
+        let bundle = await collect(tool: "java", responses: { args in
+            args == ["--version"] ? self.outcome(.exited(1), stderr: "Unrecognized option: --version")
+                : self.outcome(.exited(0), stderr: "openjdk version \"21.0.1\" 2023-10-17")
+        })
+        XCTAssertEqual(bundle.probe?.outcome, .okViaAllowlistedReader)
+        XCTAssertEqual(bundle.items.first { $0.kind == "version" }?.trusted, "21.0.1")
+    }
+
+    func testEveryReaderGoesThroughTheClassifierGateAndTheTrustCheck() async {
+        var started = 0
+        let tree = FixtureFileSystem()
+        let path = tree.makeFile(at: "bin/ng", contents: "#!/bin/sh\n")
+        tree.chmod(path, 0o755)
+        var collector = EvidenceCollector()
+        collector.fileSystem = tree.fileSystem
+        collector.home = tree.root.path
+        collector.pathEntries = { [tree.path("bin")] }
+        collector.isTrustedExecutable = { _ in false }
+        collector.run = { _ in started += 1; return self.outcome(.exited(0), stdout: "1.0.0") }
+        let bundle = await collector.collect(for: AgentItemContext(id: "ng", name: "ng", commandName: "ng"))
+        XCTAssertEqual(started, 0, "an untrusted location starts nothing, reader or not")
+        XCTAssertEqual(bundle.probe?.outcome, .skippedUntrustedLocation)
+    }
+}
+

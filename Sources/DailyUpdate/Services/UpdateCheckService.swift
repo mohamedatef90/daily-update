@@ -18,7 +18,8 @@ enum UpdateCheckService {
         installed: Bool,
         reviewedCommandHash: String? = nil,
         pathLookup: CommandPathLookup? = nil,
-        fetchRelease: @escaping StrategyPlanner.ReleaseFetcher = StrategyPlanner.liveReleaseFetcher
+        fetchRelease: @escaping StrategyPlanner.ReleaseFetcher = StrategyPlanner.liveReleaseFetcher,
+        brewInfo: BrewInfoProvider? = nil
     ) async -> CheckResult {
         guard installed else {
             return CheckResult(
@@ -67,7 +68,8 @@ enum UpdateCheckService {
             currentRaw: nil,
             reviewedCommandHash: reviewedCommandHash,
             pathLookup: pathLookup,
-            fetchRelease: fetchRelease
+            fetchRelease: fetchRelease,
+            brewInfo: brewInfo
         ) {
             return strategyResult
         }
@@ -416,13 +418,15 @@ enum UpdateCheckService {
         currentRaw: String?,
         reviewedCommandHash: String?,
         pathLookup: CommandPathLookup?,
-        fetchRelease: @escaping StrategyPlanner.ReleaseFetcher
+        fetchRelease: @escaping StrategyPlanner.ReleaseFetcher,
+        brewInfo: BrewInfoProvider? = nil
     ) async -> CheckResult? {
         guard let plan = await StrategyPlanner.checkPlan(
             config: config,
             currentVersion: current,
             pathLookup: pathLookup,
-            fetchRelease: fetchRelease
+            fetchRelease: fetchRelease,
+            services: .live(brewInfo: brewInfo)
         ) else {
             return nil
         }

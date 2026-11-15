@@ -175,11 +175,19 @@ struct HistoryView: View {
                     }
 
                     TableColumn("Result") { entry in
-                        Label(entry.success ? "Success" : "Failed", systemImage: entry.success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundStyle(entry.success ? .green : .red)
-                            .font(.caption)
+                        Group {
+                        if entry.outcomeKind == .handedOff {
+                            Label("Handed off", systemImage: "arrow.up.forward.app")
+                                .foregroundStyle(.orange)
+                                .help("The app's own updater was opened. Nothing is installed until you finish it there.")
+                        } else {
+                            Label(entry.success ? "Success" : "Failed", systemImage: entry.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(entry.success ? .green : .red)
+                        }
+                        }
+                        .font(.caption)
                     }
-                    .width(90)
+                    .width(100)
 
                     TableColumn("Reason") { entry in
                         let reason = entry.message ?? (entry.success ? "Completed" : "No reason reported")

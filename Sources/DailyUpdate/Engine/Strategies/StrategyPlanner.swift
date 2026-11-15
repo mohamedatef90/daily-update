@@ -347,6 +347,16 @@ enum StrategyPlanner {
             competing: []))
     }
 
+    /// The post-update "same owner" check. A catalog row is the same owner when the same package manager owns
+    /// the same command path. A discovered row is the same owner when its owner is the same (package manager,
+    /// prefix and package are all in `ResolvedOwner`): its `commandPath` is the installed file, which MOVES when
+    /// the package updates (`Cellar/gh/2.101.0/...` becomes `Cellar/gh/2.104.0/...`), so comparing it reported
+    /// every Homebrew update as a failed verification.
+    static func isSameOwner(config: DetectorConfig, before: OwnerCandidate, after: OwnerCandidate) -> Bool {
+        guard before.owner == after.owner else { return false }
+        return config.source == .inventory || before.commandPath == after.commandPath
+    }
+
     static func ownershipFingerprint(for config: DetectorConfig, resolution: OwnerResolution) -> String? {
         guard var baseFingerprint = resolution.fingerprint else { return nil }
         if let active = resolution.active {
