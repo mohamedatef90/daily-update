@@ -10,7 +10,7 @@
       "enum": ["brewFormula", "brewCask", "npm", "pnpm", "yarn", "pipx", "uvTool", "pip", "cargo", "gem", "nativeInstaller", "appBundle", "system", "manual", "unknown"]
     },
     "versionCommand": {
-      "type": "array",
+      "type": ["array", "null"],
       "minItems": 1,
       "maxItems": 16,
       "items": { "type": "string", "maxLength": 512 }

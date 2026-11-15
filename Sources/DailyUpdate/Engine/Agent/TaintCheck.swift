@@ -1,9 +1,11 @@
 import Foundation
 
 /// AI-1 taint check. A proposal is tainted when one of its argv tokens, URLs or domains appears in the
-/// UNTRUSTED text (the item's description and the extra text the app supplied) but NOT in what the
-/// engine itself collected (the evidence) or in the item's identity. The agent may use its own
-/// knowledge, so a token that appears nowhere is allowed; only "it appears in the poisoned text and
+/// UNTRUSTED text (the item's description, the extra text the app supplied, and the free text of the
+/// evidence: a package description, brew caveats, the output of `--version`) but NOT in the STRUCTURED
+/// identity (the item's identity, plus the evidence's trusted facts: package name and version, bin names,
+/// resolved paths, brew token and tap, bundle id and versions, the parsed version token). The agent may use
+/// its own knowledge, so a token that appears nowhere is allowed; only "it appears in the untrusted text and
 /// nowhere we verified" is a taint. A tainted proposal can never be an `acceptedCandidate`: it is gated.
 enum TaintCheck {
     struct Finding: Equatable {
@@ -19,13 +21,17 @@ enum TaintCheck {
     ]
 
     static func findings(proposal: AgentProposal, context: AgentItemContext, evidence: EvidenceBundle) -> [Finding] {
-        let untrusted = ([context.description].compactMap { $0 } + context.extraText).joined(separator: "\n").lowercased()
+        // Untrusted: the item's description and extra text, AND everything the agent saw in the evidence.
+        // Third-party free text (a package description, brew caveats, the output of `--version`) is untrusted
+        // even though the engine collected it. Only the structured identity parts are trusted (below).
+        let untrusted = ([context.description].compactMap { $0 } + context.extraText + [evidence.combinedText])
+            .joined(separator: "\n").lowercased()
         guard !untrusted.isEmpty else { return [] }
         let trusted = trustedText(context: context, evidence: evidence).lowercased()
 
         var found: [Finding] = []
         var seen = Set<String>()
-        let argv = proposal.versionCommand + (proposal.updateCommand ?? [])
+        let argv = (proposal.versionCommand ?? []) + (proposal.updateCommand ?? [])
         for element in argv {
             for atom in atoms(of: element) {
                 let lowered = atom.lowercased()
@@ -38,7 +44,9 @@ enum TaintCheck {
         return found
     }
 
-    /// What the engine itself knows: the item's identity and the collected evidence.
+    /// What the engine can stand behind: the item's identity and the structured identity facts of the evidence
+    /// (package name and version, bin names, resolved paths, brew token and tap, bundle id and versions, the
+    /// parsed version token). Not the free text of the evidence.
     private static func trustedText(context: AgentItemContext, evidence: EvidenceBundle) -> String {
         var parts: [String] = [context.id, context.name]
         parts += [context.category, context.ecosystem, context.handle, context.root, context.commandName,
@@ -47,7 +55,7 @@ enum TaintCheck {
         for competing in context.competing {
             parts += [competing.path, competing.version, competing.ecosystem, competing.packageID].compactMap { $0 }
         }
-        parts.append(evidence.combinedText)
+        parts.append(evidence.trustedText)
         return parts.joined(separator: "\n")
     }
 

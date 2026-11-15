@@ -1,11 +1,29 @@
 import Foundation
 
 /// One fact about the item, collected by the engine (never by the agent).
+///
+/// `text` is everything the agent sees. `trusted` is the part of it that is STRUCTURED IDENTITY the engine
+/// can stand behind: a package name and version, bin names, resolved paths, a brew token and tap, a bundle id
+/// and its versions, the parsed version token. Everything else in `text` (a package description, keywords,
+/// homepage, repository, publishConfig, a brew description or caveats, the free-form output of `--version`)
+/// was written by a third party and counts as UNTRUSTED for the taint check, even though the engine collected
+/// it. `trusted` is never sent to the agent.
 struct EvidenceItem: Codable, Equatable {
     var kind: String
     var source: String
     var text: String
     var truncated: Bool
+    var trusted: String = ""
+
+    private enum CodingKeys: String, CodingKey { case kind, source, text, truncated }
+
+    init(kind: String, source: String, text: String, truncated: Bool, trusted: String = "") {
+        self.kind = kind
+        self.source = source
+        self.text = text
+        self.truncated = truncated
+        self.trusted = trusted
+    }
 }
 
 struct EvidenceBundle: Equatable {
@@ -13,7 +31,10 @@ struct EvidenceBundle: Equatable {
     /// Why something was not collected (shown to the agent as a fact, and in the CLI report).
     var notes: [String]
 
+    /// Everything the agent sees from the evidence, trusted or not.
     var combinedText: String { (items.map(\.text) + notes).joined(separator: "\n") }
+    /// Only the structured identity facts (see `EvidenceItem`).
+    var trustedText: String { items.map(\.trusted).filter { !$0.isEmpty }.joined(separator: "\n") }
 }
 
 /// AI-1 "evidence in, no tools": the engine gathers a single item's facts deterministically through
@@ -62,7 +83,8 @@ struct EvidenceCollector {
                     let real = fileSystem.realpath(candidate)
                     return real == nil || real == candidate ? candidate : "\(candidate) -> \(real!)"
                 }
-                items.append(makeItem(kind: "which", source: "which -a \(name)", text: lines.joined(separator: "\n")))
+                items.append(makeItem(kind: "which", source: "which -a \(name)", text: lines.joined(separator: "\n"),
+                                      trusted: lines.joined(separator: "\n")))
                 if let active = candidates.first {
                     if let version = await versionEvidence(executable: active, name: name) {
                         items.append(version)
@@ -128,7 +150,15 @@ struct EvidenceCollector {
         case .signaled(let signal): text = "killed by signal \(signal)"
         case .launchFailed: text = "could not start"
         }
-        return makeItem(kind: "version", source: "\(name) --version", text: text)
+        // Only the parsed version token is structured; the rest of the output is free text.
+        let token = Self.versionToken(in: String(decoding: outcome.stdout, as: UTF8.self))
+        return makeItem(kind: "version", source: "\(name) --version", text: text, trusted: token ?? "")
+    }
+
+    /// The first version-looking token (`1.2.3`, `10.157`, `2.0.0-beta.1`) in a command's output.
+    static func versionToken(in output: String) -> String? {
+        guard let range = output.range(of: #"[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9A-Za-z.]+)?"#, options: .regularExpression) else { return nil }
+        return String(output[range])
     }
 
     // MARK: - brew info
@@ -153,14 +183,21 @@ struct EvidenceCollector {
               let object = try? JSONSerialization.jsonObject(with: outcome.stdout) as? [String: Any] else { return nil }
         var summary: [String: Any] = [:]
         if let formula = (object["formulae"] as? [[String: Any]])?.first {
-            summary = pick(formula, ["name", "full_name", "desc", "homepage", "deprecated", "disabled", "keg_only"])
+            summary = pick(formula, ["name", "full_name", "desc", "homepage", "caveats", "deprecated", "disabled", "keg_only"])
             summary["stableVersion"] = (formula["versions"] as? [String: Any])?["stable"]
             summary["installedVersions"] = (formula["installed"] as? [[String: Any]])?.compactMap { $0["version"] }
         } else if let cask = (object["casks"] as? [[String: Any]])?.first {
-            summary = pick(cask, ["token", "desc", "homepage", "version", "auto_updates", "deprecated", "disabled"])
+            summary = pick(cask, ["token", "desc", "homepage", "caveats", "version", "auto_updates", "deprecated", "disabled"])
         }
         guard !summary.isEmpty else { return nil }
-        return makeItem(kind: "brew", source: "brew info --json=v2 \(package)", text: compactJSON(summary))
+        // Trusted: the formula or cask token, its tap, and the versions. Not: desc, homepage, caveats.
+        var identity: [String] = []
+        for key in ["name", "full_name", "token", "tap", "version", "stableVersion"] {
+            if let value = summary[key] as? String { identity.append(value) }
+        }
+        if let installed = summary["installedVersions"] as? [Any] { identity += installed.compactMap { $0 as? String } }
+        return makeItem(kind: "brew", source: "brew info --json=v2 \(package)", text: compactJSON(summary),
+                        trusted: identity.joined(separator: "\n"))
     }
 
     // MARK: - package manifest (npm)
@@ -173,14 +210,25 @@ struct EvidenceCollector {
         let path = expandedRoot + "/lib/node_modules/" + package + "/package.json"
         guard let data = try? fileSystem.readFile(path, maxBytes: Self.maxManifestBytes),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        var summary = pick(object, ["name", "version", "description", "homepage", "license", "engines"])
-        if let bin = object["bin"] as? [String: Any] { summary["binNames"] = Array(bin.keys.sorted().prefix(10)) }
-        else if object["bin"] is String { summary["binNames"] = [package.split(separator: "/").last.map(String.init) ?? package] }
+        var summary = pick(object, ["name", "version", "description", "keywords", "homepage", "publishConfig", "license", "engines"])
+        var identity: [String] = []
+        for key in ["name", "version"] { if let value = object[key] as? String { identity.append(value) } }
+        if let bin = object["bin"] as? [String: Any] {
+            summary["binNames"] = Array(bin.keys.sorted().prefix(10))
+            identity += bin.keys.sorted().prefix(10).map { $0 } + bin.values.compactMap { $0 as? String }.prefix(10)
+        } else if let binPath = object["bin"] as? String {
+            let binName = package.split(separator: "/").last.map(String.init) ?? package
+            summary["binNames"] = [binName]
+            identity += [binName, binPath]
+        }
         if let repository = object["repository"] as? [String: Any] { summary["repository"] = repository["url"] }
         else if let repository = object["repository"] as? String { summary["repository"] = repository }
         // Script NAMES only (a postinstall hook is a fact worth knowing); the commands themselves are not copied.
         if let scripts = object["scripts"] as? [String: Any] { summary["scriptNames"] = Array(scripts.keys.sorted().prefix(15)) }
-        return makeItem(kind: "manifest", source: "\(package)/package.json", text: compactJSON(summary))
+        // Trusted: name, version, and the bin names and paths. Not: description, keywords, homepage,
+        // repository, publishConfig, engines or the script names.
+        return makeItem(kind: "manifest", source: "\(package)/package.json", text: compactJSON(summary),
+                        trusted: identity.joined(separator: "\n"))
     }
 
     // MARK: - app bundle Info.plist
@@ -195,7 +243,14 @@ struct EvidenceCollector {
         let summary = pick(object, ["CFBundleName", "CFBundleDisplayName", "CFBundleIdentifier", "CFBundleShortVersionString",
                                     "CFBundleVersion", "LSMinimumSystemVersion", "SUFeedURL", "SUPublicEDKey"])
         guard !summary.isEmpty else { return nil }
-        return makeItem(kind: "infoPlist", source: URL(fileURLWithPath: appPath).lastPathComponent + "/Contents/Info.plist", text: compactJSON(summary))
+        // Trusted: the bundle id and the two bundle versions, the names of those three keys (engine-chosen, and
+        // exactly what `defaults read <plist> CFBundleShortVersionString` needs), and the plist's own path.
+        // Not: the display name, the feed URL or the update key.
+        let keys = ["CFBundleIdentifier", "CFBundleShortVersionString", "CFBundleVersion"]
+        let identity = keys.compactMap { summary[$0] as? String } + keys
+            + [appPath, appPath + "/Contents/Info.plist", appPath + "/Contents/Info"]
+        return makeItem(kind: "infoPlist", source: URL(fileURLWithPath: appPath).lastPathComponent + "/Contents/Info.plist",
+                        text: compactJSON(summary), trusted: identity.joined(separator: "\n"))
     }
 
     // MARK: - helpers
@@ -227,10 +282,11 @@ struct EvidenceCollector {
         return text
     }
 
-    private func makeItem(kind: String, source: String, text: String) -> EvidenceItem {
+    private func makeItem(kind: String, source: String, text: String, trusted: String = "") -> EvidenceItem {
         let redacted = AgentRedaction.redact(text, home: home, user: user)
         let truncated = redacted.count > Self.maxItemCharacters
         return EvidenceItem(kind: kind, source: AgentRedaction.redact(source, home: home, user: user),
-                            text: String(redacted.prefix(Self.maxItemCharacters)), truncated: truncated)
+                            text: String(redacted.prefix(Self.maxItemCharacters)), truncated: truncated,
+                            trusted: AgentRedaction.redact(trusted, home: home, user: user))
     }
 }

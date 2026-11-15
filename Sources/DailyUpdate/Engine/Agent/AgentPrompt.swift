@@ -96,7 +96,9 @@ enum AgentPrompt {
     No pipes, redirects, `sh -c`, `sudo`, `curl | sh`, or edits to shell profiles.
     - Prefer a bare executable name such as "npm" or "brew" over a path.
     - versionCommand is a read-only command that prints the installed version (usually the tool with \
-    `--version`). versionPattern is a regular expression with exactly one capture group for the version.
+    `--version`). versionPattern is a regular expression with exactly one capture group for the version. \
+    If the evidence does not show how to read the version, set versionCommand to null (and give an empty \
+    versionPattern) and set recommendation to "investigate". Never invent a placeholder command.
     - updateCommand is the tool's own package manager's ordinary update command for this one tool. It is \
     allowed only when recommendation is "update"; otherwise it must be null.
     - Put the facts you used in evidence (action "read": what the evidence shows). Set confidence between 0 \

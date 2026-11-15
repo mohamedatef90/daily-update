@@ -146,6 +146,18 @@ final class AgentSpikeTests: XCTestCase {
         XCTAssertEqual(result.verdict.name, "blocked")
     }
 
+    func testAFetcherIsAllowedOnlyAsAPlainVersionQuery() async {
+        // An item that IS curl or wget needs a version reader; a bare version flag fetches nothing.
+        let plain = await evaluate(proposalJSON(version: #"["curl","--version"]"#))
+        XCTAssertEqual(plain.verdict, .acceptedCandidate, "\(plain.verdict)")
+        for blockedVersion in [#"["curl","https://x.example"]"#, #"["curl","--version","https://x.example"]"#, #"["curl","-o","/tmp/x","--version"]"#] {
+            let result = await evaluate(proposalJSON(version: blockedVersion))
+            XCTAssertEqual(result.verdict.name, "blocked", blockedVersion)
+        }
+        let asUpdate = await evaluate(proposalJSON(update: #"["curl","--version"]"#))
+        XCTAssertEqual(asUpdate.verdict.name, "blocked", "a fetcher is never an update command")
+    }
+
     func testAVersionCommandMayNotInstall() async {
         let result = await evaluate(proposalJSON(version: #"["npm","install","-g","acme"]"#))
         XCTAssertEqual(result.verdict.name, "blocked")

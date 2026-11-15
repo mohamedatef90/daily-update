@@ -120,7 +120,11 @@ enum ProposalValidator {
         var blocked: [String] = []
         var gated: [String] = []
 
-        let version = assess(role: "version", argv: proposal.versionCommand, environment: environment, blocked: &blocked, gated: &gated)
+        // A null version command means no version reader was proposed (only allowed with `investigate`).
+        var version: CommandAssessment?
+        if let argv = proposal.versionCommand {
+            version = assess(role: "version", argv: argv, environment: environment, blocked: &blocked, gated: &gated)
+        }
         var update: CommandAssessment?
         if let argv = proposal.updateCommand {
             update = assess(role: "update", argv: argv, environment: environment, blocked: &blocked, gated: &gated)
@@ -205,7 +209,11 @@ enum ProposalValidator {
             gated.append("\(role) command runs an interpreter (\(base))")
             risks.append("interpreter \(base)")
         }
-        if fetchers.contains(base) { block("network fetcher \(base)") }
+        // A fetcher is blocked, except as a plain version query (`wget --version`): an item that IS curl or
+        // wget needs a version reader, and a bare version flag fetches nothing. Any URL or other argument,
+        // and any use as an update command, stays blocked.
+        let plainVersionQuery = role == "version" && arguments.count == 1 && ["--version", "-V", "-v", "version"].contains(arguments[0])
+        if fetchers.contains(base), !plainVersionQuery { block("network fetcher \(base)") }
         if destructiveExecutables.contains(base) { block("destructive or file-writing executable \(base)") }
         // `defaults` and `plutil` read app versions from Info.plist; only their read forms are allowed.
         if base == "defaults", arguments.first != "read" { block("defaults is allowed only as `defaults read`") }

@@ -123,11 +123,29 @@ Method: ask the model for its own tool list, and try to make it run a command, t
 - `AgentBackend.toolPolicy` carries this in code. The default backend setting is Claude Code.
 
 ## Taint check
-Any argv token, URL or domain in a proposal that appears in the untrusted text (the item's description and the
-extra text the app supplies) but NOT in the evidence or the item's identity makes the verdict `gated(taint)`. A
-token that appears nowhere is the agent's own knowledge and is allowed. A package `name@version` is judged by its
+Any argv token, URL or domain in a proposal that appears in the untrusted text but NOT in the structured identity
+makes the verdict `gated(taint)`. A token that appears nowhere is the agent's own knowledge and is allowed.
+**Untrusted** (after review R1): the item's description, the extra text the app supplies, and the free text of
+the evidence, even though the engine collected it: a package `description`, `keywords`, `homepage`, `repository`,
+`publishConfig`, the script names, a brew `desc`, `homepage` and `caveats`, a plist display name and feed URL, and
+the free-form output of `--version`.
+**Trusted** (`EvidenceItem.trusted`, never sent to the agent): package `name`, `version` and `bin` names and
+paths; the resolved paths from `which -a`; the brew formula or cask token, its tap and its versions; the bundle id
+and the two bundle versions, the names of those three plist keys and the plist's own path; the parsed version
+token (the first `1.2.3`-like token of `--version`), and the item's identity fields. A package `name@version` is judged by its
 name. Ordinary vocabulary (package managers, verbs, flags, versions) is ignored. Blocking rules still win:
 `blocked` beats `gated`, and a blocked verdict lists only its blocking reasons (the findings are in `taint`).
+
+## `versionCommand` may be null (review R2)
+Null means "no version reader is proposed": the evidence does not show one (for example `--version` failed). It is
+allowed only with recommendation `investigate`, so the agent never has to invent a placeholder command; the
+parser rejects any other combination, and `versionPattern` is not evaluated when the command is null. Before
+this, Codex wrote placeholders such as `unknown` for items without evidence (3 of 15 hold-out items).
+
+## A fetcher as a version reader
+`curl`, `wget` and similar are blocked as commands, except as a plain version query (`wget --version`): an item
+that IS curl or wget needs a version reader and a bare version flag fetches nothing. Any URL or other argument,
+and any use as an update command, stays blocked. (Found by a test of the brew-caveats case.)
 
 ## `recommendation`
 `update | ignore | suggestRemoval | investigate`, plus a reason. Only `update` may carry a command (the parser

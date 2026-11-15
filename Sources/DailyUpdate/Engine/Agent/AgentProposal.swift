@@ -37,9 +37,12 @@ struct ProposalEvidence: Codable, Equatable {
 
 struct AgentProposal: Codable, Equatable {
     let ownerKind: ProposalOwnerKind
-    /// argv array: executable first. Never a shell string.
-    let versionCommand: [String]
-    /// Regular expression with exactly one capture group that extracts the version.
+    /// argv array: executable first. Never a shell string. Nil means "no version reader is proposed" (the
+    /// evidence does not show one); that is allowed only with recommendation `investigate`, so an agent
+    /// never has to invent a placeholder command.
+    let versionCommand: [String]?
+    /// Regular expression with exactly one capture group that extracts the version. Not evaluated when
+    /// `versionCommand` is nil.
     let versionPattern: String
     let latestSource: ProposalLatestSource
     /// argv array, or nil when the agent found no safe, ordinary update command.
@@ -107,7 +110,7 @@ enum ProposalSchema {
           "enum": ["brewFormula", "brewCask", "npm", "pnpm", "yarn", "pipx", "uvTool", "pip", "cargo", "gem", "nativeInstaller", "appBundle", "system", "manual", "unknown"]
         },
         "versionCommand": {
-          "type": "array",
+          "type": ["array", "null"],
           "minItems": 1,
           "maxItems": 16,
           "items": { "type": "string", "maxLength": 512 }
@@ -170,16 +173,21 @@ enum ProposalParser {
         let owner: ProposalOwnerKind = try enumValue(object["ownerKind"], key: "ownerKind")
         let latest: ProposalLatestSource = try enumValue(object["latestSource"], key: "latestSource")
         let verify: ProposalVerifyRule = try enumValue(object["verify"], key: "verify")
-        let versionCommand = try argv(object["versionCommand"], key: "versionCommand", nullable: false) ?? []
+        let versionCommand = try argv(object["versionCommand"], key: "versionCommand", nullable: true)
         let updateCommand = try argv(object["updateCommand"], key: "updateCommand", nullable: true)
         let pattern = try text(object["versionPattern"], key: "versionPattern", max: ProposalSchema.maxPatternLength)
-        try checkPattern(pattern)
+        // With no version command there is nothing to extract a version from, so the pattern is not run.
+        if versionCommand != nil { try checkPattern(pattern) }
         let notes = try text(object["notes"], key: "notes", max: ProposalSchema.maxTextLength)
         let recommendation: ProposalRecommendation = try enumValue(object["recommendation"], key: "recommendation")
         let reason = try text(object["recommendationReason"], key: "recommendationReason", max: ProposalSchema.maxReasonLength)
         // Only `update` may carry a command. In particular `suggestRemoval` carries none at all.
         if recommendation != .update, updateCommand != nil {
             throw ProposalSchemaError.badCombination("updateCommand is only allowed with recommendation update")
+        }
+        // No version reader means the agent could not tell how to read the version: that is `investigate`.
+        if versionCommand == nil, recommendation != .investigate {
+            throw ProposalSchemaError.badCombination("versionCommand may be null only with recommendation investigate")
         }
 
         guard let confidenceNumber = object["confidence"] as? NSNumber,
