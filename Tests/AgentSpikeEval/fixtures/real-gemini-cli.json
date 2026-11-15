@@ -1,0 +1,25 @@
+{
+  "kind": "real",
+  "why": "competing /usr/local/bin/gemini shadows the nvm install",
+  "context": {
+    "id": "gemini-cli",
+    "name": "Gemini CLI",
+    "category": "cli",
+    "ecosystem": "npm",
+    "handle": "npm:@google/gemini-cli",
+    "root": "~/.nvm/versions/node/v24.13.0",
+    "commandName": "gemini",
+    "status": "upToDate",
+    "currentPlannedCommand": "'~/.nvm/versions/node/v24.13.0/bin/npm' 'install' '-g' '--prefix' '~/.nvm/versions/node/v24.13.0' '@google/gemini-cli@0.68.0'",
+    "competing": [
+      {
+        "path": "/usr/local/bin/gemini",
+        "version": "0.1.21",
+        "ecosystem": "npm",
+        "packageID": "@google/gemini-cli"
+      }
+    ],
+    "description": "Google Gemini AI agent for the terminal",
+    "extraText": []
+  }
+}

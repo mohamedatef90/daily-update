@@ -28,6 +28,8 @@ enum CLIRunner {
         case update(itemID: String)
         case health
         case discover
+        case propose(itemID: String)
+        case proposeFixture(path: String)
     }
 
     private struct ParsedArguments {
@@ -195,6 +197,18 @@ enum CLIRunner {
                 }
             }
             return 0
+        case .propose(let itemID):
+            guard let context = await AgentProposeCommand.context(forItemID: itemID, state: state) else {
+                output("Unknown item: \(itemID)")
+                return 1
+            }
+            return await AgentProposeCommand.run(context: context, json: parsed.json, output: output)
+        case .proposeFixture(let path):
+            guard let context = AgentProposeCommand.loadFixture(path: path) else {
+                output("Could not read a fixture from \(path)")
+                return 1
+            }
+            return await AgentProposeCommand.run(context: context, json: parsed.json, output: output)
         case .discover:
             let settings = UserSettingsStore().settings
             let catalog = ConfigLoader.loadConfigs(settings: settings)
@@ -243,6 +257,12 @@ enum CLIRunner {
                 try assignCommand(.health)
             case "--discover":
                 try assignCommand(.discover)
+            case "--propose":
+                let itemID = try consumeValue(for: "--propose")
+                try assignCommand(.propose(itemID: itemID))
+            case "--propose-fixture":
+                let path = try consumeValue(for: "--propose-fixture")
+                try assignCommand(.proposeFixture(path: path))
             case "--install-all":
                 try assignCommand(.installAll)
             case "--update-all":
@@ -494,6 +514,8 @@ enum CLIRunner {
           DailyUpdate --yes                Confirm guarded CLI actions when required
           DailyUpdate --health             Run health checks
           DailyUpdate --discover           Enumerate installed dev tools, runtimes and CLIs
+          DailyUpdate --propose <item-id>  AI spike: ask an agent (Codex) for a strategy proposal. Executes and saves nothing
+          DailyUpdate --propose-fixture <file.json>  AI spike: same, for an item described in a JSON file
           DailyUpdate --json               JSON output (with --check, --health or --discover)
           DailyUpdate --help               Show this help
 

@@ -1,0 +1,15 @@
+{
+  "kind": "real",
+  "why": "accidental npm global named \"update\"",
+  "context": {
+    "id": "inv-npm-b2e28c14a41df2f5",
+    "name": "update",
+    "ecosystem": "npm",
+    "handle": "npm:update",
+    "root": "/usr/local",
+    "commandName": "update",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

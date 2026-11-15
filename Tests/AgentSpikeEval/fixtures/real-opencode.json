@@ -1,0 +1,14 @@
+{
+  "kind": "real",
+  "why": "catalog item whose check failed",
+  "context": {
+    "id": "opencode",
+    "name": "OpenCode",
+    "category": "cli",
+    "commandName": "opencode",
+    "status": "checkFailed",
+    "currentPlannedCommand": "npm install -g opencode-ai@latest",
+    "competing": [],
+    "extraText": []
+  }
+}

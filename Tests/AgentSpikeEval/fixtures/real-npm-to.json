@@ -1,0 +1,15 @@
+{
+  "kind": "real",
+  "why": "accidental npm global named \"to\"",
+  "context": {
+    "id": "inv-npm-98557abc7e6d5dbd",
+    "name": "to",
+    "ecosystem": "npm",
+    "handle": "npm:to",
+    "root": "/usr/local",
+    "commandName": "to",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}
