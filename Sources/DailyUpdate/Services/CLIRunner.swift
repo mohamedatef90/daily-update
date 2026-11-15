@@ -534,6 +534,7 @@ enum CLIRunner {
             .sorted()
         if ids.isEmpty {
             output("No items are currently eligible for \(action.noun).")
+            output("Run --check to list all item IDs.")
             return
         }
 
@@ -541,6 +542,7 @@ enum CLIRunner {
         for id in ids {
             output("  \(id)")
         }
+        output("Run --check to list all item IDs.")
     }
 
     private static func printDryRunPlan(entries: [DryRunEntry], output: (String) -> Void) {

@@ -433,4 +433,64 @@ final class UpdateReportingTests: XCTestCase {
         state.settingsStore.settings.discoverInstalledTools = false
         XCTAssertNil(state.freshBrewSnapshot(), "with discovery off nothing is reused")
     }
+
+    // MARK: - Review additions
+
+    /// `ResolvedOwner.brewFormula` holds only the formula name: the prefix has to be compared separately.
+    func testTheSameFormulaUnderAnotherHomebrewPrefixIsNotTheSameOwner() {
+        func candidate(_ prefix: String, _ version: String, cask: Bool = false) -> OwnerCandidate {
+            let path = "\(prefix)/\(cask ? "Caskroom" : "Cellar")/gh/\(version)/bin/gh"
+            return OwnerCandidate(commandPath: path, resolvedPath: path, owner: cask ? .brewCask("gh") : .brewFormula("gh"))
+        }
+        var discovered = brewConfig()
+        discovered.source = .inventory
+        for config in [brewConfig(), discovered] {
+            XCTAssertFalse(StrategyPlanner.isSameOwner(config: config, before: candidate("/opt/homebrew", "1"), after: candidate("/usr/local", "2")),
+                           "another prefix: \(config.source.map { "\($0)" } ?? "")")
+            XCTAssertFalse(StrategyPlanner.isSameOwner(config: config, before: candidate("/opt/homebrew", "1", cask: true), after: candidate("/usr/local", "1", cask: true)))
+        }
+        XCTAssertTrue(StrategyPlanner.isSameOwner(config: discovered, before: candidate("/opt/homebrew", "1"), after: candidate("/opt/homebrew", "2")),
+                      "the same prefix, a new version folder")
+        XCTAssertEqual(StrategyPlanner.brewPrefix(of: "/opt/homebrew/Cellar/gh/2.1/bin/gh"), "/opt/homebrew")
+        XCTAssertNil(StrategyPlanner.brewPrefix(of: "/usr/bin/gh"))
+    }
+
+    func testAFailedSingleItemUpdateHintsAtCheck() async throws {
+        try await withFixture { root, store in
+            let (item, _) = versionedItem(id: "known", root: root)
+            store.settings.customItems = [item]
+            let state = AppState(settingsStore: store, discoversOnLaunch: false)
+            state.markCommandReviewed(id: "known")
+            let spy = SpyState(state)
+            var missing: [String] = []
+            _ = await CLIRunner.run(arguments: ["DailyUpdate", "--update", "nope", "--yes"], state: spy, output: { missing.append($0) })
+            XCTAssertEqual(missing.last, "Run --check to list all item IDs.", "\(missing)")
+            // An item that exists but has no update is "not available": same hint.
+            var notAvailable: [String] = []
+            _ = await CLIRunner.run(arguments: ["DailyUpdate", "--install", "known", "--yes"], state: spy, output: { notAvailable.append($0) })
+            XCTAssertEqual(notAvailable.last, "Run --check to list all item IDs.", "\(notAvailable)")
+        }
+    }
+
+    /// pip's version command prints `pip 26.3 from /Library/... (python 3.12)`. The history stores the token.
+    func testTheHistoryStoresTheParsedVersionNotTheRawLine() async throws {
+        try await withFixture { root, store in
+            let file = root.appendingPathComponent("pip-version")
+            try "1.0.0".write(to: file, atomically: true, encoding: .utf8)
+            let q = ShellEscaping.quote(file.path)
+            let item = DetectorConfig(
+                id: "pipish", name: "pipish", category: .runtime, description: nil, source: .user,
+                detect: DetectRule(type: .always, paths: nil, command: nil, appName: nil),
+                versionCommand: "echo \"pip $(cat \(q)) from /Library/Frameworks/Python.framework/lib/python3.12/site-packages/pip (python 3.12)\"",
+                checkCommand: "[ \"$(cat \(q))\" = \"1.0.0\" ] && echo UPDATE || echo OK",
+                installCommand: nil, updateCommand: "printf 2.0.0 > \(q)", workingDirectory: nil)
+            store.settings.customItems = [item]
+            let (_, results) = await runUpdate(["pipish"], store: store)
+            XCTAssertEqual(results.first?.0, 0, "\(results.first?.1 ?? [])")
+            let entry = try XCTUnwrap(UpdateHistoryStore.load().first { $0.itemID == "pipish" })
+            XCTAssertEqual(entry.fromVersion, "1.0.0")
+            XCTAssertEqual(entry.toVersion, "2.0.0", "the token, not the whole line")
+            XCTAssertTrue(results.first?.1.contains { $0.contains("1.0.0 → 2.0.0 (verified)") } == true, "\(results.first?.1 ?? [])")
+        }
+    }
 }

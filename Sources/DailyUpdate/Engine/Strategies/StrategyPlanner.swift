@@ -354,7 +354,24 @@ enum StrategyPlanner {
     /// every Homebrew update as a failed verification.
     static func isSameOwner(config: DetectorConfig, before: OwnerCandidate, after: OwnerCandidate) -> Bool {
         guard before.owner == after.owner else { return false }
+        // `ResolvedOwner.brewFormula` holds only the formula NAME, so the same formula under another Homebrew
+        // prefix (`/usr/local` and `/opt/homebrew`) would compare equal. The prefix is part of the owner.
+        switch before.owner {
+        case .brewFormula, .brewCask:
+            guard brewPrefix(of: before.resolvedPath) == brewPrefix(of: after.resolvedPath) else { return false }
+        default:
+            break
+        }
         return config.source == .inventory || before.commandPath == after.commandPath
+    }
+
+    /// `/opt/homebrew` for `/opt/homebrew/Cellar/gh/2.101.0/bin/gh` (or `.../Caskroom/...`); nil outside a Cellar.
+    static func brewPrefix(of path: String) -> String? {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        for marker in ["/Cellar/", "/Caskroom/"] {
+            if let range = normalized.range(of: marker) { return String(normalized[..<range.lowerBound]) }
+        }
+        return nil
     }
 
     static func ownershipFingerprint(for config: DetectorConfig, resolution: OwnerResolution) -> String? {

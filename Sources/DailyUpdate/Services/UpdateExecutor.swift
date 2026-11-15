@@ -57,7 +57,8 @@ enum UpdateExecutor {
             return .failed(reason: reason, current: item.currentVersion, latest: item.latestVersion)
         }
 
-        let version = await DetectionService.getVersion(detectorConfig(from: item))
+        let installedConfig = detectorConfig(from: item)
+        let version = parsedVersion(await DetectionService.getVersion(installedConfig), config: installedConfig)
         return .success(current: version, latest: version)
     }
 
@@ -86,7 +87,7 @@ enum UpdateExecutor {
 
         let typed = StrategyPlanner.usesTypedEngine(config: config)
         let before = typed ? await StrategyPlanner.currentVersion(config: config, pathLookup: pathLookup) : nil
-        let beforeVersion = typed ? before?.version : await DetectionService.getVersion(config)
+        let beforeVersion = typed ? before?.version : parsedVersion(await DetectionService.getVersion(config), config: config)
         let targetLatest = item.latestVersion
         let command = item.updateCommand
         let result: ShellRunner.Result
@@ -128,7 +129,7 @@ enum UpdateExecutor {
         // by identity for discovered (inventory) rows.
         let check = await UpdateCheckService.check(config, installed: true,
             reviewedCommandHash: reviewedCommandHash, pathLookup: afterLookup)
-        let afterVersion = typed ? check.currentVersion : await DetectionService.getVersion(config)
+        let afterVersion = typed ? check.currentVersion : parsedVersion(await DetectionService.getVersion(config), config: config)
         if typed {
             let afterOwner: OwnerCandidate?
             if config.source == .inventory {
@@ -197,6 +198,13 @@ enum UpdateExecutor {
             latest: latest,
             reason: "Version still \(currentLabel) — latest is \(latestLabel). The update command may need to run outside Daily Update."
         )
+    }
+
+    /// The version token, not the whole line the version command printed (`pip 26.3 from /Library/... (python 3.12)`
+    /// is stored in the history as `26.3`). Falls back to the line when no token can be parsed.
+    private static func parsedVersion(_ raw: String?, config: DetectorConfig) -> String? {
+        guard let raw, !raw.isEmpty else { return raw }
+        return VersionExtractor.extract(from: raw, pattern: config.versionPattern) ?? raw
     }
 
     private static func detectorConfig(from item: UpdateItem) -> DetectorConfig {
