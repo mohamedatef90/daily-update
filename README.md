@@ -178,6 +178,7 @@ $DD --check --json             # same, as JSON
 $DD --discover                 # read-only inventory of installed dev tools, runtimes and CLIs
 $DD --discover --json          # same, as JSON
 $DD --health                   # health checks (PATH, tools, folders)
+$DD --propose <item-id>        # ask an agent for a strategy proposal (off by default, see below)
 $DD --health --json
 $DD --update <item-id> --yes   # update one item
 $DD --install <item-id> --yes  # install one item
@@ -193,6 +194,7 @@ Each run accepts **one action command** (`--check`, `--discover`, `--health`, `-
 | `--check` | Checks all items and lists each one's status. Exits `1` if any item's check failed, otherwise `0`. |
 | `--discover` | Enumerates tools from Homebrew, npm, pnpm, Yarn, Bun, version managers, pip, pipx, uv, Cargo and RubyGems. Read-only. Exit `0`. |
 | `--health` | Runs the health checks. Exit `0`. |
+| `--propose <item-id>` | Asks an agent (Claude Code or Codex) for a typed strategy proposal for one item and prints it with the engine's verdict. **Off by default**: it needs `"agentProposals": true` in `settings.json` (or `DAILY_UPDATE_AGENT_PROPOSALS=1` for one run), otherwise it prints how to turn it on and exits `3`. Nothing it proposes is executed or saved. `--agent claude|codex` picks the backend (default: the `agentBackend` setting). Design and limits: `docs/adr/ADR-003-spike-notes.md`. |
 | `--update <item-id>` | Runs a check, then updates that one item. |
 | `--install <item-id>` | Runs a check, then installs that one item. |
 | `--update-all` / `--install-all` | Runs a check, then acts on every matching item. |

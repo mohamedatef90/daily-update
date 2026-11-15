@@ -1,0 +1,15 @@
+{
+  "kind": "real",
+  "why": "catalog item whose check failed",
+  "context": {
+    "id": "java",
+    "name": "Java (OpenJDK)",
+    "category": "runtime",
+    "commandName": "java",
+    "status": "checkFailed",
+    "observedVersion": "The operation couldn’t be completed. Unable to locate a Java Runtime.",
+    "currentPlannedCommand": "brew upgrade openjdk",
+    "competing": [],
+    "extraText": []
+  }
+}

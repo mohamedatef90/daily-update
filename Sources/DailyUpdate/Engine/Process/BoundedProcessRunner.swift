@@ -24,6 +24,8 @@ struct BoundedProcessSpec: Sendable {
     let timeout: TimeInterval
     let maxStdoutBytes: Int
     let maxStderrBytes: Int
+    /// AI-1: where the child starts. nil keeps the parent's directory (every existing caller).
+    let workingDirectory: String?
 
     init(
         executable: String,
@@ -31,7 +33,8 @@ struct BoundedProcessSpec: Sendable {
         environment: ProcessEnvironment,
         timeout: TimeInterval,
         maxStdoutBytes: Int,
-        maxStderrBytes: Int = 16 * 1024
+        maxStderrBytes: Int = 16 * 1024,
+        workingDirectory: String? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
@@ -39,6 +42,7 @@ struct BoundedProcessSpec: Sendable {
         self.timeout = timeout
         self.maxStdoutBytes = maxStdoutBytes
         self.maxStderrBytes = maxStderrBytes
+        self.workingDirectory = workingDirectory
     }
 }
 
@@ -65,6 +69,9 @@ enum BoundedProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: spec.executable)
         process.arguments = spec.arguments
+        if let workingDirectory = spec.workingDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        }
         switch spec.environment {
         case .exactly(let dictionary):
             process.environment = dictionary

@@ -1,0 +1,16 @@
+{
+  "kind": "real",
+  "why": "status unknown",
+  "context": {
+    "id": "swift",
+    "name": "Swift",
+    "category": "runtime",
+    "commandName": "swift",
+    "appPath": "//apps.app",
+    "status": "unknown",
+    "observedVersion": "Apple Swift version 6.4.2 (swiftlang-6.4.2.1.9 clang-2100.4.1.1)",
+    "currentPlannedCommand": "open 'macappstore://apps.apple.com/app/id497799835'",
+    "competing": [],
+    "extraText": []
+  }
+}

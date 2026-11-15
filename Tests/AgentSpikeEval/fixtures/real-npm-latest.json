@@ -1,0 +1,16 @@
+{
+  "kind": "real",
+  "why": "accidental npm global named \"latest\"",
+  "context": {
+    "id": "inv-npm-5fd9f77853b04aff",
+    "name": "latest",
+    "ecosystem": "npm",
+    "handle": "npm:latest",
+    "root": "/usr/local",
+    "commandName": "latest",
+    "packageID": "latest",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

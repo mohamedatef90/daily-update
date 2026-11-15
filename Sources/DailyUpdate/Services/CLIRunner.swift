@@ -28,6 +28,8 @@ enum CLIRunner {
         case update(itemID: String)
         case health
         case discover
+        case propose(itemID: String)
+        case proposeFixture(path: String)
     }
 
     private struct ParsedArguments {
@@ -35,6 +37,7 @@ enum CLIRunner {
         var json = false
         var yes = false
         var showHelp = false
+        var agent: AgentBackendChoice?
     }
 
     private enum ParseError: Error {
@@ -195,6 +198,30 @@ enum CLIRunner {
                 }
             }
             return 0
+        case .propose(let itemID):
+            let settings = UserSettingsStore().settings
+            guard AgentProposeCommand.isEnabled(settings: settings) else {
+                output(AgentProposeCommand.disabledMessage)
+                return 3
+            }
+            guard let context = await AgentProposeCommand.context(forItemID: itemID, state: state) else {
+                output("Unknown item: \(itemID)")
+                return 1
+            }
+            let backend = AgentProposeCommand.backend(for: parsed.agent ?? settings.agentBackend)
+            return await AgentProposeCommand.run(context: context, json: parsed.json, backend: backend, output: output)
+        case .proposeFixture(let path):
+            let settings = UserSettingsStore().settings
+            guard AgentProposeCommand.isEnabled(settings: settings) else {
+                output(AgentProposeCommand.disabledMessage)
+                return 3
+            }
+            guard let context = AgentProposeCommand.loadFixture(path: path) else {
+                output("Could not read a fixture from \(path)")
+                return 1
+            }
+            let backend = AgentProposeCommand.backend(for: parsed.agent ?? settings.agentBackend)
+            return await AgentProposeCommand.run(context: context, json: parsed.json, backend: backend, output: output)
         case .discover:
             let settings = UserSettingsStore().settings
             let catalog = ConfigLoader.loadConfigs(settings: settings)
@@ -243,6 +270,19 @@ enum CLIRunner {
                 try assignCommand(.health)
             case "--discover":
                 try assignCommand(.discover)
+            case "--agent":
+                let name = try consumeValue(for: "--agent")
+                switch name {
+                case "claude", "claudeCode": parsed.agent = .claudeCode
+                case "codex": parsed.agent = .codex
+                default: throw ParseError.unexpectedArgument(name)
+                }
+            case "--propose":
+                let itemID = try consumeValue(for: "--propose")
+                try assignCommand(.propose(itemID: itemID))
+            case "--propose-fixture":
+                let path = try consumeValue(for: "--propose-fixture")
+                try assignCommand(.proposeFixture(path: path))
             case "--install-all":
                 try assignCommand(.installAll)
             case "--update-all":
@@ -494,6 +534,9 @@ enum CLIRunner {
           DailyUpdate --yes                Confirm guarded CLI actions when required
           DailyUpdate --health             Run health checks
           DailyUpdate --discover           Enumerate installed dev tools, runtimes and CLIs
+          DailyUpdate --propose <item-id>  Ask an agent for a strategy proposal (needs the agentProposals setting). Executes and saves nothing
+          DailyUpdate --propose-fixture <file.json>  Same, for an item described in a JSON file
+          DailyUpdate --agent claude|codex   Which agent --propose uses (default: the agentBackend setting)
           DailyUpdate --json               JSON output (with --check, --health or --discover)
           DailyUpdate --help               Show this help
 

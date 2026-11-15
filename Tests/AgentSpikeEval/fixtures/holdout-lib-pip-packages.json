@@ -1,0 +1,15 @@
+{
+  "kind": "holdout",
+  "why": "library group whose check failed",
+  "context": {
+    "id": "pip-packages",
+    "name": "pip packages (user)",
+    "category": "library",
+    "commandName": "pip3",
+    "status": "checkFailed",
+    "observedVersion": "22 outdated",
+    "currentPlannedCommand": "pip3 list --outdated --format=freeze | cut -d= -f1 | xargs -n1 pip3 install -U",
+    "competing": [],
+    "extraText": []
+  }
+}

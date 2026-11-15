@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "uv tool",
+  "context": {
+    "id": "inv-uv-bf2d835829783457",
+    "name": "nano-pdf",
+    "ecosystem": "uv",
+    "handle": "uv:nano-pdf",
+    "root": "~/.local/share/uv/tools",
+    "commandName": "nano-pdf",
+    "packageID": "nano-pdf",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "kind": "holdout",
+  "why": "library group whose check failed",
+  "context": {
+    "id": "global-yarn",
+    "name": "Global Yarn packages",
+    "category": "library",
+    "commandName": "yarn",
+    "status": "checkFailed",
+    "observedVersion": "1 outdated",
+    "currentPlannedCommand": "yarn global upgrade",
+    "competing": [],
+    "extraText": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "obscure npm global in /usr/local",
+  "context": {
+    "id": "inv-npm-fb79aaaf7bf4c74b",
+    "name": "sql-cli",
+    "ecosystem": "npm",
+    "handle": "npm:sql-cli",
+    "root": "/usr/local",
+    "commandName": "sql-cli",
+    "packageID": "sql-cli",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

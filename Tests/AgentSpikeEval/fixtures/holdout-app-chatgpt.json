@@ -1,0 +1,15 @@
+{
+  "kind": "holdout",
+  "why": "catalog app whose check failed",
+  "context": {
+    "id": "chatgpt",
+    "name": "ChatGPT",
+    "category": "app",
+    "appPath": "/Applications/ChatGPT.app ~/Applications/ChatGPT.app",
+    "status": "checkFailed",
+    "observedVersion": "26.1106.51428",
+    "currentPlannedCommand": "'~/daily-update/.build/out/Products/Debug/DailyUpdate_DailyUpdate.bundle/Contents/Resources/update-app.sh' brew-or-sparkle chatgpt 'https://persistent.oaistatic.com/codex-app-prod/appcast.xml' /Applications/ChatGPT.app ~/Applications/ChatGPT.app",
+    "competing": [],
+    "extraText": []
+  }
+}

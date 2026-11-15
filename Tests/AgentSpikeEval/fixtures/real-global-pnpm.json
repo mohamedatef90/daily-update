@@ -1,0 +1,15 @@
+{
+  "kind": "real",
+  "why": "library group whose check failed",
+  "context": {
+    "id": "global-pnpm",
+    "name": "Global pnpm packages",
+    "category": "library",
+    "commandName": "pnpm",
+    "status": "checkFailed",
+    "observedVersion": "0 outdated",
+    "currentPlannedCommand": "pnpm update -g",
+    "competing": [],
+    "extraText": []
+  }
+}

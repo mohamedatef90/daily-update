@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "Homebrew formula that is also an app",
+  "context": {
+    "id": "inv-brew-1ab24e35efc7a68f",
+    "name": "ollama",
+    "ecosystem": "brew",
+    "handle": "brew:ollama",
+    "root": "/opt/homebrew",
+    "commandName": "ollama",
+    "packageID": "ollama",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

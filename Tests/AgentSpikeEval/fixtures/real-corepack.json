@@ -1,0 +1,23 @@
+{
+  "kind": "real",
+  "why": "duplicate corepack: nvm, Homebrew and /usr/local",
+  "context": {
+    "id": "inv-npm-7966ae5aa0edd5c0",
+    "name": "corepack",
+    "ecosystem": "npm",
+    "handle": "npm:corepack@nvm v24.13.0",
+    "root": "~/.nvm/versions/node/v24.13.0",
+    "commandName": "corepack",
+    "packageID": "corepack",
+    "status": "listed",
+    "competing": [
+      {
+        "path": "/usr/local/bin/corepack",
+        "version": "0.23.0",
+        "ecosystem": "npm",
+        "packageID": "corepack"
+      }
+    ],
+    "extraText": []
+  }
+}

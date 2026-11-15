@@ -1,0 +1,16 @@
+{
+  "kind": "holdout",
+  "why": "npm global in /usr/local, the executable name differs from the package",
+  "context": {
+    "id": "inv-npm-188c96d1cd71afcb",
+    "name": "@angular/cli",
+    "ecosystem": "npm",
+    "handle": "npm:@angular/cli",
+    "root": "/usr/local",
+    "commandName": "ng",
+    "packageID": "@angular/cli",
+    "status": "listed",
+    "competing": [],
+    "extraText": []
+  }
+}

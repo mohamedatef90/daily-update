@@ -1,0 +1,15 @@
+{
+  "kind": "holdout",
+  "why": "discovered app whose check failed",
+  "context": {
+    "id": "discovered-app-1a49963794149232",
+    "name": "Edits",
+    "category": "app",
+    "appPath": "/Applications/Edits.app",
+    "status": "checkFailed",
+    "observedVersion": "455.0.0",
+    "currentPlannedCommand": "'~/daily-update/.build/out/Products/Debug/DailyUpdate_DailyUpdate.bundle/Contents/Resources/update-app.sh' auto '/Applications/Edits.app'",
+    "competing": [],
+    "extraText": []
+  }
+}
